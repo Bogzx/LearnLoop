@@ -85,4 +85,63 @@ Consider the following levels describing AI adoption in an organization:
 
 ## The Challenge
 
-> For this hackathon, your task will be to **design and implement a technical solution allowing engineers or engineering teams to progress from one level to the next one**.
+> Your task is to **design and implement a technical solution that allows engineers or engineering teams to progress from one adoption level to the next**.
+
+---
+
+## Organizer Briefing — Key Points from the Kickoff
+
+The following notes come directly from the organizer's opening talk and clarify how the challenge will actually be judged and scoped.
+
+### Judging Strategy (read this first)
+
+- **L0 → L1 is an explicitly valid — and often winning — strategy.** Do not feel pressured to build something that jumps from L3 to L4. That is described as **a trap** (*"capcană"*): ambitious but rarely executed well in a hackathon timeframe.
+- **Paradox, stated literally by the organizer:**
+  > *"You don't even need to use AI in your application, and you can still win the competition — as long as your application helps drive AI adoption."*
+- Scoring uses the **standard PoliHack rubric**.
+- **10 mentors** are available on site — use them.
+
+### Scope Is Broader Than It Looks
+
+- **Not restricted to mobile apps.** The mobile-only constraint was intentionally removed to push creativity. Valid form factors include:
+  - Web apps
+  - Desktop apps
+  - CLI tools
+  - IDE extensions (e.g., VS Code)
+  - Smartwatch apps
+  - Hardware integrations
+- **Target audience is your choice:**
+  - An **individual** engineer learning to use AI, **or**
+  - A **team / company** adopting AI at an organizational level.
+- **Engineering ≠ only software.** Solutions targeting other engineering fields are encouraged:
+  - MEP / building-installations engineering
+  - Civil / construction engineering
+  - Automotive / mechanical engineering
+  - Architecture
+
+### Concrete Example Ideas (from the organizer)
+
+- An **MEP / installations engineer** who today searches EU standards by name using their mouse → a focused ChatGPT-style assistant that surfaces the right standard. *(L0 → L1)*
+- A **VS Code extension** that teaches developers about **context windows** and **token efficiency**, nudging them from ad-hoc prompting toward structured prompting. *(L1 → L2, opportunistic → systematized)*
+- A **model-routing guide or tool** that helps users decide when to use an advanced paid model vs. a free one, based on task complexity.
+- A **mini "AI adoption audit" service** — inspired by a previous PoliHack winning-style project — that visits an organization, identifies where AI fits, and trains its people.
+
+### Anti-Pattern — What *Not* to Build
+
+- *"An AI app that tells you what to eat from your fridge."* This is called out explicitly as **not a real problem**. Solutions should address real engineering pain, and someone must plausibly *use* what you build.
+
+### Background Data Worth Referencing
+
+- **Anthropic** has published an ~80-page study on AI adoption, with graphs and data. Recommended reading — and feel free to use AI itself to summarize it.
+- US AI adoption is cited at roughly **~20%**.
+- **European adoption is worse** than US adoption — your solutions land in a market that is behind the curve.
+
+---
+
+## TL;DR
+
+1. Pick a concrete engineering audience (software or otherwise).
+2. Identify which **adoption level** they are at today.
+3. Ship a solution that moves them **one level up** — even L0 → L1 is a winning target.
+4. Make sure a real person would actually use it.
+5. You don't even have to use AI in the solution itself. You just have to help AI adoption happen.
