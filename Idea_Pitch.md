@@ -125,3 +125,12 @@ First run = full index. Every subsequent run = incremental.
 
 **Simple surface. Sophisticated brain. Named user. Live demo.**
 A wiki that writes itself, remembers what the team asked, and keeps the AI inside the lines.
+
+
+  Think about what Git did:
+  - Before Git: engineers coded alone, emailed files, merged in nightmare sessions. Codebase was a pile of individual work.
+  - After Git: codebase is collective, merges are explicit, history is shared, onboarding is possible, blame is attributable.
+
+  Apply it to AI:
+  - Before Hive: engineers prompt alone, knowledge dies in browser tabs, every question is re-asked, new hires inherit nothing.
+  - After Hive: prompts are collective, graduations are explicit, history is shared, onboarding includes team AI context, learning is attributable.
