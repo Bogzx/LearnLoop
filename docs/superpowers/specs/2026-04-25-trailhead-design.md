@@ -448,8 +448,9 @@ This is doable solo in 24h.
 | Database | Postgres on Neon | Free tier, fast cold start, single service |
 | Web frontend | Next.js 15 + Tailwind + shadcn/ui | Fastest dashboard build |
 | Browser extension | Plasmo (TypeScript) | Best-in-class extension framework |
-| Cursor / VS Code extension | TypeScript + VSCode API | Standard |
-| MCP server | Node + TypeScript, MCP SDK | Bundled with the Cursor extension |
+| VS Code extension | TypeScript + VSCode API + WebView for sidebar | Standard; works alongside any AI chat in VS Code |
+| MCP server | Node + TypeScript, MCP SDK | Standalone binary; user registers in `.mcp.json` for Claude Code / Claude Desktop |
+| Demo AI in VS Code | Claude Code (CLI in integrated terminal) | Best MCP support; visible alongside our extension in one window |
 | Coach scoring | Claude Haiku 4.5 with prompt caching | Cheap, fast, cached system prompt |
 | Prompt Diff synthesis | Claude Sonnet 4.6 with prompt caching | Quality matters here, cache helps |
 | Auth | Hardcoded team token (hackathon) → Clerk (post) | Simplest possible |
