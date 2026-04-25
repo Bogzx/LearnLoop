@@ -151,7 +151,7 @@ CREATE INDEX idx_prompts_node_topic ON prompts(node_id, topic);
 CREATE TABLE captures (
   id UUID PRIMARY KEY,
   team_id UUID NOT NULL REFERENCES teams(id),
-  surface TEXT NOT NULL,                 -- 'browser' | 'cursor'
+  surface TEXT NOT NULL,                 -- 'browser' | 'vscode' | 'mcp'
   user_prompt TEXT NOT NULL,
   ai_response TEXT,
   file_path TEXT,                        -- path context if known
@@ -338,7 +338,7 @@ Optional for hackathon. If included:
 - For each capture: call Haiku to extract candidate learnings, post to `/wiki/propose`
 - This is the path that lets the **browser extension also drive wiki updates** (since it can't call MCP)
 
-If skipped for hackathon: only the Cursor MCP path produces wiki updates. The browser extension just captures (`POST /capture`) but doesn't trigger learning extraction. That's fine for the demo — the wiki updates happen visibly in Cursor.
+If skipped for hackathon: only the MCP path (Claude Code in VS Code's terminal) produces wiki updates. The browser extension just captures (`POST /capture`) but doesn't trigger learning extraction. That's fine for the demo — the wiki updates happen visibly via Claude Code.
 
 **Recommendation:** skip for the 24h build. Add post-hackathon.
 
@@ -430,13 +430,13 @@ This is doable solo in 24h.
 > *"Copilot's instructions file is static reference and dies in 8 weeks because someone has to maintain it. We're a coach that develops the engineer, not just the AI. The configuration-decay problem that kills every `copilot-instructions.md` and `.cursorrules` — we own that loop structurally."*
 
 **"Why won't engineers ignore the coach?"**
-> *"Coaching surfaces are passive and respect flow. Socratic Mode appears only when prompts score low. Cursor's pre-prompt nudge is a glance, not a form. Skill arc is your private trajectory. We never interrupt and never judge — that's why it survives."*
+> *"Coaching surfaces are passive and respect flow. Socratic Mode appears only when prompts score low. The VS Code pre-prompt nudge is a glance, not a form. Skill arc is your private trajectory. We never interrupt and never judge — that's why it survives."*
 
 **"What's your moat against Anthropic shipping this?"**
 > *"Three things they probably won't do. One: portable model-agnostic curriculum — your team's wiki works against any LLM. Two: team consensus via reinforcement counters; their memory is per-user. Three: cross-team transfer is a network-effect product no model vendor will build because it doesn't sell more inference."*
 
 **"Privacy?"**
-> *"Code never leaves the user's machine — only the prompt content does, which the user already typed into Claude.ai or Cursor. Hackathon is cloud-stored; production has Enterprise tier with single-tenant VPC deploy. No conversation logs anywhere — we capture distilled learnings, not transcripts. There's no surveillance vector because there's no log to surveil."*
+> *"Code never leaves the user's machine — only the prompt content does, which the user already typed into Claude.ai or VS Code. Hackathon is cloud-stored; production has Enterprise tier with single-tenant VPC deploy. No conversation logs anywhere — we capture distilled learnings, not transcripts. There's no surveillance vector because there's no log to surveil."*
 
 ---
 
@@ -518,7 +518,7 @@ The hackathon is "won" if these all hold during the live pitch:
 
 - [ ] Browser extension intercepts a Claude.ai prompt and visibly augments it with Socratic clarifying questions
 - [ ] Claude.ai responds with the clarifying questions (Socratic Mode worked)
-- [ ] Cursor extension shows team-anchored example prompts in the sidebar for a real file
+- [ ] VS Code extension shows team-anchored example prompts in the sidebar for a real file
 - [ ] An MCP-driven autonomous wiki update fires during the demo with a visible counter increment
 - [ ] Dashboard shows skill arc + L1→L2 progression metrics (even if seeded)
 - [ ] The 7-sentence pitch lands; mentor defenses ready
