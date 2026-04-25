@@ -304,6 +304,97 @@ export async function synthesizeDiff(args: {
   return extractAnswer(resp);
 }
 
+// ----- /improve --------------------------------------------------------------
+// Gemini-driven multi-turn prompt coach. Stateless — caller passes the full
+// conversation each turn. Spec: 2026-04-26-improve-widget-design.md
+const IMPROVE_SYSTEM_PROMPT = `You are a senior engineer's prompt coach. The user is about to send a prompt to Claude. Your job is to ask one focused follow-up question that would meaningfully raise the prompt's quality on the listed weak dimensions, OR — if you already have enough information — return the polished prompt.
+
+Rules:
+- One question per turn. Keep it concrete: file path, expected output shape, constraints, current code location.
+- Stop asking once you have enough to write a strong final prompt. Don't pad the conversation.
+- The polished prompt must preserve the user's original intent. Add specificity, do not invent requirements the user didn't imply.
+- Output JSON matching the schema exactly. No prose outside the JSON.
+
+If the command is "finalize", you MUST return kind="final" regardless of how much information you have. Synthesize the best polished prompt you can from what's available.`;
+
+export interface ImproveCoachInput {
+  original_prompt: string;
+  missing: MissingHints;
+  history: { role: 'assistant' | 'user'; text: string }[];
+  command: 'next' | 'finalize';
+}
+
+export type ImproveCoachOutput =
+  | { kind: 'question'; text: string }
+  | { kind: 'final'; polished: string; rationale?: string };
+
+export async function improveCoach(input: ImproveCoachInput): Promise<ImproveCoachOutput> {
+  const dimList = Object.keys(input.missing).map((d) => d.replace(/_/g, ' '));
+  const weak = dimList.length === 0 ? '(none flagged)' : dimList.join(', ');
+  const transcript = input.history.length === 0
+    ? '(no turns yet)'
+    : input.history
+        .map((t, i) => `${i + 1}. ${t.role === 'assistant' ? 'Coach' : 'User'}: ${t.text}`)
+        .join('\n');
+
+  const userMessage =
+    `Original prompt:\n"""\n${input.original_prompt}\n"""\n\n` +
+    `Weak dimensions: ${weak}\n\n` +
+    `Conversation so far:\n${transcript}\n\n` +
+    `Command: ${input.command}`;
+
+  const resp = await withRetry(
+    () => ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: userMessage,
+      config: {
+        systemInstruction: IMPROVE_SYSTEM_PROMPT,
+        temperature: 0.3,
+        thinkingConfig: { thinkingBudget: 0 },
+        maxOutputTokens: 800,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          required: ['kind'],
+          properties: {
+            kind: { type: Type.STRING, enum: ['question', 'final'] },
+            text: { type: Type.STRING },
+            polished: { type: Type.STRING },
+            rationale: { type: Type.STRING },
+          },
+        },
+      },
+    }),
+    'improve',
+  );
+
+  const raw = extractAnswer(resp);
+  const parsed = tryParseJson<{
+    kind?: string;
+    text?: string;
+    polished?: string;
+    rationale?: string;
+  }>(raw);
+  if (!parsed) throw new Error('improveCoach: unparseable response');
+  if (parsed.kind === 'question') {
+    if (typeof parsed.text !== 'string' || !parsed.text.trim()) {
+      throw new Error('improveCoach: question missing text');
+    }
+    return { kind: 'question', text: parsed.text.trim() };
+  }
+  if (parsed.kind === 'final') {
+    if (typeof parsed.polished !== 'string' || !parsed.polished.trim()) {
+      throw new Error('improveCoach: final missing polished');
+    }
+    return {
+      kind: 'final',
+      polished: parsed.polished.trim(),
+      rationale: typeof parsed.rationale === 'string' ? parsed.rationale.trim() : undefined,
+    };
+  }
+  throw new Error(`improveCoach: unexpected kind=${String(parsed.kind)}`);
+}
+
 // ----- learning extractor (Gemma 4 31B) -------------------------------------
 // Helper kept available for a future server-side learning-extraction path.
 // Not currently wired to any endpoint.

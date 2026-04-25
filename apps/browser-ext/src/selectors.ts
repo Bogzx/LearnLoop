@@ -55,6 +55,12 @@ const CHAINS: SelectorChain[] = [
       'main [class*="conversation"]',
       'main div[role="log"]',
       'main',
+      '[role="main"]',
+      '[data-testid*="conversation"]',
+      // Chat pages on claude.ai/chat/<id> drop <main> entirely — fall back to
+      // whatever ancestor wraps the user/assistant bubbles, then to <body>.
+      'div:has([data-testid="user-message"])',
+      'body',
     ],
   },
 ];
@@ -108,6 +114,7 @@ export function readPrompt(textarea: HTMLElement): string {
 export type BubbleRole = 'user' | 'assistant' | 'unknown';
 
 const USER_HINTS = [
+  '[data-testid="user-message"]',
   '[data-testid*="user"]',
   '[data-testid*="human"]',
   '.font-user-message',
@@ -115,6 +122,7 @@ const USER_HINTS = [
   '[class*="human-turn"]',
 ];
 const ASSISTANT_HINTS = [
+  '[data-testid="assistant-message"]',
   '[data-testid*="assistant"]',
   '[data-testid*="claude"]',
   '.font-claude-message',
