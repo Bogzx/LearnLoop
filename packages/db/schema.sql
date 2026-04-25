@@ -11,9 +11,19 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Tenancy
 CREATE TABLE IF NOT EXISTS teams (
-  id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT NOT NULL
+  id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name  TEXT NOT NULL,
+  token TEXT UNIQUE                              -- X-Team-Token value; nullable on legacy rows
 );
+-- Backfill the column on databases that were created before multi-tenant.
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS token TEXT;
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'teams_token_key'
+  ) THEN
+    ALTER TABLE teams ADD CONSTRAINT teams_token_key UNIQUE (token);
+  END IF;
+END $$;
 
 -- Wiki tree (one row per folder/path)
 CREATE TABLE IF NOT EXISTS nodes (
@@ -85,7 +95,10 @@ CREATE INDEX IF NOT EXISTS idx_skill_obs_team_dim_ts ON skill_observations(team_
 CREATE INDEX IF NOT EXISTS idx_learnings_last_seen_at ON learnings(last_seen_at DESC);
 
 -- Bootstrap the demo team. Hardcoded UUID so every artifact can reference it
--- without first reading the row back. Idempotent on (id).
-INSERT INTO teams (id, name)
-VALUES ('11111111-1111-1111-1111-111111111111', 'Acme Fintech')
-ON CONFLICT (id) DO NOTHING;
+-- without first reading the row back. Idempotent on (id). Token mirrors the
+-- value the legacy single-tenant build expected, so existing installs continue
+-- to work after the multi-tenant cutover.
+INSERT INTO teams (id, name, token)
+VALUES ('11111111-1111-1111-1111-111111111111', 'Acme Fintech', 'trailhead_demo_acme_2026')
+ON CONFLICT (id) DO UPDATE
+  SET token = COALESCE(teams.token, EXCLUDED.token);

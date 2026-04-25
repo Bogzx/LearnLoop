@@ -7,18 +7,20 @@
 //   --no-seed                    skip CLAUDE.md / copilot-instructions.md seed
 //   --dry-run                    print what would be sent; don't POST
 //   --max-depth N                cap discovery depth (default 3)
+//   --yes                        skip the confirmation prompt
+//   --team-token <t>             use this exact token (skips auto-derivation)
+//   --api-url <url>              override TRAILHEAD_API_URL
 import { existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ApiClient, clientFromEnv } from './api-client.ts';
+import { createInterface } from 'node:readline/promises';
+import { stdin, stdout } from 'node:process';
+import { ApiClient } from './api-client.ts';
 import { discoverPaths, readSeedRules, runBootstrap } from './bootstrap.ts';
+import { deriveRepoToken } from './token.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Load env from repo root .env if available — same pattern as smoke-test.mjs
-// and the harness. The CLI typically runs from a user's repo where .env
-// won't exist; in that case env vars must be set externally (or use the
-// hardcoded demo defaults below).
 for (const candidate of ['../../../.env', '../../.env', '.env']) {
   const p = resolve(__dirname, candidate);
   if (existsSync(p)) {
@@ -26,13 +28,6 @@ for (const candidate of ['../../../.env', '../../.env', '.env']) {
     break;
   }
 }
-
-// Demo defaults — match bin/cli.mjs's init defaults so a user can `bootstrap`
-// without setting env vars first. Real teams override via env.
-process.env.TRAILHEAD_API_URL =
-  process.env.TRAILHEAD_API_URL ?? 'https://trailheadapi-production.up.railway.app';
-process.env.TRAILHEAD_TEAM_TOKEN =
-  process.env.TRAILHEAD_TEAM_TOKEN ?? 'trailhead_demo_acme_2026';
 
 const args = process.argv.slice(2);
 const flags = new Set<string>(args.filter((a) => a.startsWith('--') && !a.includes('=')));
@@ -43,7 +38,6 @@ for (const a of args) {
     flagValues.set(k!, v ?? '');
   }
 }
-// Allow space-separated `--paths "..."`
 for (let i = 0; i < args.length - 1; i++) {
   const a = args[i]!;
   const next = args[i + 1]!;
@@ -52,21 +46,13 @@ for (let i = 0; i < args.length - 1; i++) {
   }
 }
 
-const dryRun = flags.has('--dry-run');
-const seedFromFiles = !flags.has('--no-seed');
-const maxDepth = Number(flagValues.get('--max-depth') ?? 3);
-const pathsArg = flagValues.get('--paths');
-const explicitPaths = pathsArg
-  ? pathsArg.split(',').map((s) => s.trim()).filter(Boolean)
-  : undefined;
-const cwd = process.cwd();
-
 if (flags.has('--help') || flags.has('-h')) {
   console.log(`trailhead-mcp bootstrap — bootstrap a Trailhead wiki for the cwd
 
 Usage:
   trailhead-mcp bootstrap [--paths "src/,packages/"] [--no-seed]
-                          [--dry-run] [--max-depth 3]
+                          [--dry-run] [--yes] [--max-depth 3]
+                          [--team-token <t>] [--api-url <url>]
 
 Without --paths, walks cwd up to --max-depth (default 3) and submits every
 folder that contains at least one source file. node_modules / .git / build
@@ -76,10 +62,47 @@ Without --no-seed, the contents of ./CLAUDE.md and
 ./.github/copilot-instructions.md (if present) are seeded onto the wiki's
 synthetic root node.
 
-Env: TRAILHEAD_API_URL, TRAILHEAD_TEAM_TOKEN. Defaults to the public demo team.
+Token is auto-derived from cwd (git remote → ./.trailhead-team) unless
+overridden. Confirmation prompt unless --yes.
 `);
   process.exit(0);
 }
+
+const dryRun = flags.has('--dry-run');
+const seedFromFiles = !flags.has('--no-seed');
+const skipPrompt = flags.has('--yes');
+const maxDepth = Number(flagValues.get('--max-depth') ?? 3);
+const pathsArg = flagValues.get('--paths');
+const explicitPaths = pathsArg
+  ? pathsArg.split(',').map((s) => s.trim()).filter(Boolean)
+  : undefined;
+const cwd = process.cwd();
+
+// Cwd-safety: walking ~ would try to onboard the entire home directory.
+function looksLikeProjectRoot(p: string): boolean {
+  const markers = [
+    'package.json', '.git', 'pyproject.toml', 'Cargo.toml',
+    'go.mod', 'pom.xml', 'build.gradle', '.trailhead-team',
+  ];
+  return markers.some((m) => existsSync(join(p, m)));
+}
+if (!looksLikeProjectRoot(cwd) && !explicitPaths) {
+  console.error(
+    `! cwd "${cwd}" doesn't look like a project root.\n` +
+      `  Refusing to walk — pass --paths "..." explicitly if this is intentional,\n` +
+      `  or cd to a project root before running bootstrap.`,
+  );
+  process.exit(2);
+}
+
+const explicitToken = flagValues.get('--team-token');
+const tokenInfo = explicitToken
+  ? { token: explicitToken, source: 'flag' as const, remoteUrl: undefined as string | undefined }
+  : deriveRepoToken(cwd);
+const apiUrl =
+  flagValues.get('--api-url') ??
+  process.env.TRAILHEAD_API_URL ??
+  'https://trailheadapi-production.up.railway.app';
 
 const discovered = explicitPaths ?? discoverPaths(cwd, { maxDepth });
 
@@ -92,7 +115,8 @@ if (!discovered.length) {
 }
 
 console.log(`Bootstrapping wiki for ${cwd}`);
-console.log(`Source: ${process.env.TRAILHEAD_API_URL}`);
+console.log(`API:    ${apiUrl}`);
+console.log(`Token:  ${tokenInfo.token}  (source: ${tokenInfo.source})`);
 console.log('');
 console.log(`Paths (${discovered.length}):`);
 for (const p of discovered) console.log(`  - ${p}`);
@@ -109,13 +133,18 @@ if (dryRun) {
   process.exit(0);
 }
 
-let client: ApiClient;
-try {
-  client = clientFromEnv();
-} catch (e) {
-  console.error(`! ${(e as Error).message}`);
-  process.exit(1);
+if (!skipPrompt) {
+  console.log('');
+  const rl = createInterface({ input: stdin, output: stdout });
+  const answer = (await rl.question(`Proceed? Type "y" to bootstrap: `)).trim().toLowerCase();
+  rl.close();
+  if (answer !== 'y' && answer !== 'yes') {
+    console.log('Aborted.');
+    process.exit(0);
+  }
 }
+
+const client = new ApiClient({ apiUrl, teamToken: tokenInfo.token });
 
 try {
   const { response } = await runBootstrap(client, {

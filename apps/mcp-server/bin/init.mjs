@@ -1,15 +1,22 @@
 // `trailhead-mcp init` — idempotent installer for Claude Code AND Copilot.
 //
-// One command, autodetects targets:
-//   - Claude Code: writes ~/.claude.json mcpServers.trailhead entry +
-//                  appends the directive to ./CLAUDE.md.
-//   - Copilot:    writes .vscode/mcp.json (workspace-scoped) +
-//                  appends the directive to .github/copilot-instructions.md.
+// Writes per-repo MCP config so each repo can use its own team_id —
+// "auto-switch the wiki for the repo I'm in." Specifically:
+//
+//   - Claude Code:  ./.mcp.json (project-scoped) — always written.
+//                   ~/.claude.json (user-scoped) only when it already
+//                   contains a trailhead entry, or --user-scope is set.
+//   - Copilot:      .vscode/mcp.json (workspace-scoped) — always written.
+//                   .github/copilot-instructions.md (the inlined directive)
 //
 // The directive itself is canonical at apps/mcp-server/src/coaching-directive.md
 // (also exposed as the MCP resource trailhead://coaching-directive). Init
-// reads that file and writes it verbatim into both *.md files. Re-running
+// reads that file and writes it verbatim into the *.md files. Re-running
 // init replaces the directive section in place.
+//
+// Token: callers pass it explicitly (CLI flag) or via auto-derivation
+// (cli.mjs uses src/token.mjs::deriveRepoToken before calling init). init
+// itself stays agnostic.
 //
 // Spec ref: docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md §5
 import {
@@ -83,20 +90,15 @@ function applyDirective(filePath, directiveText) {
     writeFileSync(filePath, `${current}${sep}${directiveText}`, 'utf8');
     return 'appended';
   }
-  // Find the start of the heading line.
   const headingLineStart = current.lastIndexOf('\n', headingIdx) + 1;
-  // Find the next H2 (`\n## `) after the heading. The directive itself starts
-  // with `## ` — search starts AFTER the heading text so we don't match
-  // ourselves.
   const searchFrom = headingLineStart + COACH_DIRECTIVE_HEADING.length;
   const nextH2Match = current.slice(searchFrom).match(/\n## /);
   const sectionEnd = nextH2Match
-    ? searchFrom + nextH2Match.index + 1   // +1 to keep the trailing \n before the next H2
+    ? searchFrom + nextH2Match.index + 1
     : current.length;
 
   const before = current.slice(0, headingLineStart);
   const after = current.slice(sectionEnd);
-  // Ensure the directive ends with a newline so the next section starts cleanly.
   const directive = directiveText.endsWith('\n') ? directiveText : `${directiveText}\n`;
   const updated = `${before}${directive}${after}`;
   if (updated === current) return 'unchanged';
@@ -104,10 +106,8 @@ function applyDirective(filePath, directiveText) {
   return 'replaced';
 }
 
-// Backwards-compat shim — older code paths and tests may rely on the
-// 'unchanged' behavior of the old file (which never replaced). Wrap
-// applyDirective and downgrade 'replaced' to 'unchanged' when the new
-// content is byte-identical.
+// Backwards-compat shim — older code paths expect 'unchanged' (not 'replaced')
+// when the new content is byte-identical to the old.
 function applyDirectiveCompat(filePath, directiveText) {
   const before = existsSync(filePath) ? readFileSync(filePath, 'utf8') : null;
   const result = applyDirective(filePath, directiveText);
@@ -118,22 +118,61 @@ function applyDirectiveCompat(filePath, directiveText) {
   return result;
 }
 
+// MCP-server config entry shared between Claude Code (.mcp.json,
+// ~/.claude.json) and the project-scoped form.
+function buildClaudeServerEntry({ entryServer, apiUrl, teamToken }) {
+  return {
+    command: 'npx',
+    args: ['--yes', 'tsx', entryServer],
+    env: {
+      TRAILHEAD_API_URL: apiUrl,
+      TRAILHEAD_TEAM_TOKEN: teamToken,
+    },
+  };
+}
+
+// Idempotent upsert of the trailhead server entry into a Claude-Code-style
+// JSON file ({ mcpServers: { trailhead: {...} } }). Returns 'created' |
+// 'updated' | 'unchanged'.
+function upsertClaudeMcpJson(jsonPath, entry) {
+  const existing = readJsonOr(jsonPath, {});
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    throw new Error(`${jsonPath} is not a JSON object`);
+  }
+  const mcpServers =
+    existing.mcpServers && typeof existing.mcpServers === 'object'
+      ? existing.mcpServers
+      : {};
+  const before = mcpServers.trailhead;
+  const status = !before
+    ? 'created'
+    : JSON.stringify(before) === JSON.stringify(entry)
+      ? 'unchanged'
+      : 'updated';
+  if (status !== 'unchanged') {
+    writeJson(jsonPath, {
+      ...existing,
+      mcpServers: { ...mcpServers, trailhead: entry },
+    });
+  }
+  return status;
+}
+
 // ---------- detection -------------------------------------------------------
 
-function detectClaudeCode(home) {
-  // Wire if ~/.claude.json is writable (already exists or its parent is
-  // writable) OR ~/.claude/ exists.
-  if (existsSync(join(home, '.claude.json'))) return true;
-  if (existsSync(join(home, '.claude'))) return true;
-  // Fresh machine — `home` always exists, so attempt the write speculatively.
+function detectClaudeCode(home, cwd) {
+  // We always write project-scoped .mcp.json (in cwd), so Claude Code is
+  // considered "wired" whenever we're going to run init at all. The function
+  // is kept for symmetry with detectCopilot and for the explicit-disable
+  // path in applyInit.
+  void home;
+  void cwd;
   return true;
 }
 
 function detectCopilot(cwd) {
   if (existsSync(join(cwd, '.vscode'))) return true;
-  // Running inside the VS Code integrated terminal exposes these.
   if (process.env.VSCODE_PID || process.env.TERM_PROGRAM === 'vscode') return true;
-  // Walk PATH for the `code` binary. Cheap — small handful of stat calls.
   const pathDirs = (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':');
   for (const d of pathDirs) {
     if (!d) continue;
@@ -146,51 +185,55 @@ function detectCopilot(cwd) {
   return false;
 }
 
-// Cwd safety — Copilot's .vscode/mcp.json is workspace-scoped, so writing it
-// to ~ would silently misconfigure the wrong directory. Warn if the cwd
-// doesn't look like a project root.
 function looksLikeProjectRoot(cwd) {
   return existsSync(join(cwd, 'package.json')) || existsSync(join(cwd, '.git'));
 }
 
+// True when ~/.claude.json already has a trailhead entry, indicating an
+// existing legacy install we should keep in sync.
+function hasExistingTrailheadUserScope(home) {
+  const claudeJson = readJsonOr(join(home, '.claude.json'), null);
+  return Boolean(
+    claudeJson &&
+      typeof claudeJson === 'object' &&
+      !Array.isArray(claudeJson) &&
+      claudeJson.mcpServers &&
+      typeof claudeJson.mcpServers === 'object' &&
+      claudeJson.mcpServers.trailhead,
+  );
+}
+
 // ---------- Claude Code wiring ---------------------------------------------
 
-function wireClaudeCode({ home, apiUrl, teamToken, serverEntry, autoCoach, cwd, userScope, directiveText, preservePaths }) {
-  const claudeJsonPath = join(home, '.claude.json');
+function wireClaudeCode({
+  home,
+  apiUrl,
+  teamToken,
+  serverEntry,
+  autoCoach,
+  cwd,
+  userScope,
+  directiveText,
+  preservePaths,
+}) {
   const entryServer = preservePaths ? serverEntry : normalize(serverEntry);
+  const entry = buildClaudeServerEntry({ entryServer, apiUrl, teamToken });
 
-  const claudeJson = readJsonOr(claudeJsonPath, {});
-  if (!claudeJson || typeof claudeJson !== 'object' || Array.isArray(claudeJson)) {
-    throw new Error('~/.claude.json is not a JSON object');
+  // (1) Project-scoped .mcp.json — always.
+  const projectMcpJsonPath = join(cwd, '.mcp.json');
+  const projectMcpInstalled = upsertClaudeMcpJson(projectMcpJsonPath, entry);
+
+  // (2) User-scoped ~/.claude.json — conditionally per Q2 (c).
+  // Write only if the file already has a trailhead entry (legacy install we
+  // need to keep in sync) OR userScope was explicitly requested.
+  const claudeJsonPath = join(home, '.claude.json');
+  let userServerInstalled = 'skipped';
+  if (userScope || hasExistingTrailheadUserScope(home)) {
+    userServerInstalled = upsertClaudeMcpJson(claudeJsonPath, entry);
   }
-  const mcpServers =
-    claudeJson.mcpServers && typeof claudeJson.mcpServers === 'object'
-      ? claudeJson.mcpServers
-      : {};
-  const existed = Boolean(mcpServers.trailhead);
 
-  const env = {
-    TRAILHEAD_API_URL: apiUrl,
-    TRAILHEAD_TEAM_TOKEN: teamToken,
-  };
-  const entry = {
-    command: 'npx',
-    args: ['--yes', 'tsx', entryServer],
-    env,
-  };
-
-  const before = mcpServers.trailhead;
-  const newClaudeJson = {
-    ...claudeJson,
-    mcpServers: { ...mcpServers, trailhead: entry },
-  };
-  const serverInstalled = !existed
-    ? 'created'
-    : JSON.stringify(before) === JSON.stringify(entry)
-      ? 'unchanged'
-      : 'updated';
-  if (serverInstalled !== 'unchanged') writeJson(claudeJsonPath, newClaudeJson);
-
+  // (3) Coach directive — project-scoped CLAUDE.md by default; optionally
+  // also user-global ~/.claude/CLAUDE.md when userScope.
   let projectClaudeMdPath = null;
   let projectCoachInstalled = 'skipped';
   let userClaudeMdPath = null;
@@ -199,7 +242,6 @@ function wireClaudeCode({ home, apiUrl, teamToken, serverEntry, autoCoach, cwd, 
   if (autoCoach) {
     projectClaudeMdPath = join(cwd, 'CLAUDE.md');
     projectCoachInstalled = applyDirectiveCompat(projectClaudeMdPath, directiveText);
-
     if (userScope) {
       userClaudeMdPath = join(home, '.claude', 'CLAUDE.md');
       userCoachInstalled = applyDirectiveCompat(userClaudeMdPath, directiveText);
@@ -207,8 +249,14 @@ function wireClaudeCode({ home, apiUrl, teamToken, serverEntry, autoCoach, cwd, 
   }
 
   return {
-    claudeJsonPath,
-    serverInstalled,
+    projectMcpJsonPath,
+    projectMcpInstalled,
+    claudeJsonPath: userServerInstalled === 'skipped' ? null : claudeJsonPath,
+    userServerInstalled,
+    // Back-compat: older callers expect these names mirroring Claude Code's
+    // user-scope state. With multi-tenant the project-scope path is the
+    // primary, so serverInstalled now reflects the project write.
+    serverInstalled: projectMcpInstalled,
     projectClaudeMdPath,
     projectCoachInstalled,
     userClaudeMdPath,
@@ -218,12 +266,19 @@ function wireClaudeCode({ home, apiUrl, teamToken, serverEntry, autoCoach, cwd, 
 
 // ---------- Copilot wiring -------------------------------------------------
 
-function wireCopilot({ cwd, apiUrl, teamToken, serverEntry, autoCoach, directiveText, preservePaths }) {
+function wireCopilot({
+  cwd,
+  apiUrl,
+  teamToken,
+  serverEntry,
+  autoCoach,
+  directiveText,
+  preservePaths,
+}) {
   const entryServer = preservePaths ? serverEntry : normalize(serverEntry);
   const mcpJsonPath = join(cwd, '.vscode', 'mcp.json');
 
-  // VS Code's MCP config shape uses `servers` with the same command/args/env
-  // structure as Claude Code's. Reference:
+  // VS Code's MCP config shape uses `servers` with `type: 'stdio'`. Reference:
   // https://code.visualstudio.com/docs/copilot/copilot-mcp
   const existing = readJsonOr(mcpJsonPath, null);
   const existingServers =
@@ -276,20 +331,17 @@ function wireCopilot({ cwd, apiUrl, teamToken, serverEntry, autoCoach, directive
 //   teamToken         TRAILHEAD_TEAM_TOKEN value
 //   home?             override homedir() (test hook)
 //   cwd?              override process.cwd() (test hook)
-//   autoCoach?        default true (false = skip directive writes)
-//   userScope?        default false (true = also write ~/.claude/CLAUDE.md)
-//   wireClaudeCode?   default true  — set false to skip Claude Code wiring entirely
-//   wireCopilot?      default true  — set false to skip Copilot wiring entirely
+//   autoCoach?        default true
+//   userScope?        default false — when true, also write ~/.claude.json +
+//                     ~/.claude/CLAUDE.md
+//   wireClaudeCode?   default true — set false to skip Claude Code wiring entirely
+//   wireCopilot?      default true — set false to skip Copilot wiring entirely
 //   directiveText?    default: contents of src/coaching-directive.md
-//   preservePaths?    test hook: keep serverEntry verbatim instead of normalizing
+//   preservePaths?    test hook — keep serverEntry verbatim
 //
-// Returns:
-//   { claudeCode: { wired, ... } | null,
-//     copilot:    { wired, ... } | null,
-//     // backwards-compat top-level fields mirroring claudeCode.* :
-//     claudeJsonPath, serverInstalled,
-//     projectClaudeMdPath, projectCoachInstalled,
-//     userClaudeMdPath,    userCoachInstalled }
+// Result:
+//   { claudeCode: { wired: bool, ... }, copilot: { wired: bool, ... },
+//     plus a flat backwards-compat slice for older tests }
 export async function applyInit(opts) {
   const home = opts.home ?? homedir();
   const cwd = opts.cwd ?? process.cwd();
@@ -305,7 +357,7 @@ export async function applyInit(opts) {
     );
   }
 
-  const claudeWired = wantClaudeCode && detectClaudeCode(home);
+  const claudeWired = wantClaudeCode && detectClaudeCode(home, cwd);
   const copilotWired = wantCopilot && detectCopilot(cwd);
 
   let claudeCode = null;
@@ -339,7 +391,8 @@ export async function applyInit(opts) {
   return {
     claudeCode: claudeCode ? { wired: true, ...claudeCode } : { wired: false },
     copilot: copilot ? { wired: true, ...copilot } : { wired: false },
-    // Backwards-compat: existing tests look at these top-level keys.
+    // Backwards-compat: older tests/log code reach for these top-level keys.
+    // They reflect Claude Code's user-scope state.
     claudeJsonPath: claudeCode?.claudeJsonPath ?? null,
     serverInstalled: claudeCode?.serverInstalled ?? 'skipped',
     projectClaudeMdPath: claudeCode?.projectClaudeMdPath ?? null,
@@ -352,13 +405,12 @@ export async function applyInit(opts) {
 export async function runInit(opts) {
   const cwd = opts.cwd ?? process.cwd();
 
-  // Cwd-safety pre-check (Copilot only — Claude Code's CLAUDE.md is also
-  // project-scoped, so the same check applies).
-  if (opts.wireCopilot !== false && !looksLikeProjectRoot(cwd)) {
+  if (!looksLikeProjectRoot(cwd)) {
     console.warn(
       `! cwd "${cwd}" doesn't look like a project root (no package.json or .git/).\n` +
-        `  Copilot's .vscode/mcp.json is workspace-scoped — running init from the wrong\n` +
-        `  directory will silently misconfigure the wrong project. Continuing anyway.\n`,
+        `  trailhead writes per-repo MCP config (.mcp.json / .vscode/mcp.json).\n` +
+        `  Running init from the wrong directory will silently misconfigure the\n` +
+        `  wrong project. Continuing anyway.\n`,
     );
   }
 
@@ -366,8 +418,13 @@ export async function runInit(opts) {
 
   if (result.claudeCode.wired) {
     console.log(
-      `✓ Claude Code: MCP server registered (${result.claudeCode.serverInstalled}): ${result.claudeCode.claudeJsonPath}`,
+      `✓ Claude Code: project MCP config (${result.claudeCode.projectMcpInstalled}): ${result.claudeCode.projectMcpJsonPath}`,
     );
+    if (result.claudeCode.userServerInstalled !== 'skipped') {
+      console.log(
+        `  ↳ User-scope (${result.claudeCode.userServerInstalled}): ${result.claudeCode.claudeJsonPath}`,
+      );
+    }
     if (result.claudeCode.projectClaudeMdPath) {
       console.log(
         `  ↳ Coach directive (${result.claudeCode.projectCoachInstalled}): ${result.claudeCode.projectClaudeMdPath}`,
@@ -411,6 +468,7 @@ export async function runInit(opts) {
     );
   } else {
     console.log('');
+    console.log(`Token: ${opts.teamToken}`);
     console.log(
       'Coaching directive resource: trailhead://coaching-directive (auto-loaded by clients that support it).',
     );
