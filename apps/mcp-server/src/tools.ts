@@ -18,7 +18,8 @@ import { z } from 'zod';
 import { buildAugmentation } from '@trailhead/scoring';
 import type { Dimension, MissingHints } from '@trailhead/shared';
 import type { ApiClient, ContextResponse, ExamplesResponse, SearchResponse } from './api-client.ts';
-import { runBootstrap } from './bootstrap.ts';
+import { runBootstrap, runRichBootstrap } from './bootstrap.ts';
+import type { WikiJobStatusResponse } from '@trailhead/shared';
 
 // User-id is hardcoded to 'demo' — the MCP server has no real auth, matching
 // the rest of the demo posture.
@@ -151,7 +152,10 @@ export const WIKI_BOOTSTRAP_DESC =
   'Use WHEN the user asks to set up Trailhead for a new repo, bootstrap ' +
   'the wiki, initialize the team wiki, or "/init" the project. Walks the ' +
   'current working directory and creates one wiki node per source folder ' +
-  '(skipping node_modules, .git, build output). Idempotent — safe to re-run.';
+  '(skipping node_modules, .git, build output). Idempotent — safe to re-run. ' +
+  "Pass mode='rich' to also populate every folder/file with an LLM-written " +
+  "narrative (Karpathy-style auto-generated wiki); default mode='minimal' " +
+  'creates empty nodes only.';
 
 // =============================================================================
 // Hero tool 1: `coach`
@@ -415,9 +419,57 @@ export function registerWikiSave(server: McpServer, client: ApiClient): void {
 // project root), upserts one node per source folder, optionally seeds
 // body_md from CLAUDE.md or .github/copilot-instructions.md.
 //
+// Two modes:
+//   - mode='minimal' (default): folder paths only, body_md seeded from
+//     CLAUDE.md on root. Synchronous, fast (<1s).
+//   - mode='rich' (2026-04-26 rollout): file contents bundled and sent to
+//     the API; server runs three Gemini passes (folders, files, root) and
+//     fills body_md with Karpathy-style narratives. Async — the tool
+//     polls in-line for up to 60s, returns either the completion summary
+//     or a job_id for later polling.
+//
 // Safe to re-run: paths that already exist are not duplicated, and existing
-// non-empty body_md is not overwritten.
+// non-empty body_md is not overwritten without `force=true`.
 // =============================================================================
+
+// In-tool poll deadline. Spec §9.1: tool blocks up to 60s waiting for the
+// rich job; if it's still running at the deadline, return the job_id and
+// let the caller poll later.
+const RICH_POLL_DEADLINE_MS = 60_000;
+const RICH_POLL_INTERVAL_MS = 2_000;
+
+async function pollJob(client: ApiClient, jobId: string, deadlineMs: number): Promise<WikiJobStatusResponse> {
+  const start = Date.now();
+  let last: WikiJobStatusResponse | null = null;
+  while (true) {
+    const status = await client.jobStatus(jobId);
+    last = status;
+    if (status.status === 'done' || status.status === 'failed') return status;
+    if (Date.now() - start >= deadlineMs) return status;
+    await new Promise((r) => setTimeout(r, RICH_POLL_INTERVAL_MS));
+  }
+  // Unreachable, but keep TS happy.
+  return last as WikiJobStatusResponse;
+}
+
+function summarizeJobStatus(status: WikiJobStatusResponse): string {
+  const head =
+    status.status === 'done'
+      ? `Rich wiki bootstrap complete: ${status.paths_done} paths populated, ${status.paths_failed} failed.`
+      : status.status === 'failed'
+        ? `Rich wiki bootstrap failed: ${status.error ?? 'unknown error'}`
+        : `Rich wiki bootstrap in progress: ${status.paths_done}/${status.paths_total} paths done` +
+          (status.paths_failed ? ` (${status.paths_failed} failed)` : '') +
+          `. Job id: ${status.job_id}. Call wiki_bootstrap again with job_id="${status.job_id}" to check again.`;
+  const failures = status.paths
+    .filter((p) => p.status === 'failed' && p.error)
+    .slice(0, 8)
+    .map((p) => `  - ${p.kind} ${p.path || '/'}: ${p.error}`);
+  return failures.length
+    ? `${head}\n\nRecent failures:\n${failures.join('\n')}`
+    : head;
+}
+
 export function registerWikiBootstrap(server: McpServer, client: ApiClient): void {
   server.registerTool(
     'wiki_bootstrap',
@@ -438,25 +490,103 @@ export function registerWikiBootstrap(server: McpServer, client: ApiClient): voi
             "If true (default), seed the wiki's root node from ./CLAUDE.md " +
               'and ./.github/copilot-instructions.md when they exist.',
           ),
+        mode: z
+          .enum(['minimal', 'rich'])
+          .optional()
+          .describe(
+            "'minimal' (default) creates empty folder nodes seeded from CLAUDE.md. " +
+              "'rich' bundles file contents and asks Gemini to write per-folder, " +
+              'per-file, and root narratives + extract conventions. Slower (30-90s typical) ' +
+              'and uses LLM credits but produces a real codebase wiki.',
+          ),
+        force: z
+          .boolean()
+          .optional()
+          .describe(
+            "Default false. When true (rich mode only), overwrites bootstrap-generated body_md. " +
+              'Manual edits via wiki_save are still preserved.',
+          ),
+        job_id: z
+          .string()
+          .optional()
+          .describe(
+            'Poll status of an in-progress rich-bootstrap job started by a previous call. ' +
+              'When set, no new walk/POST happens; only status is returned.',
+          ),
       },
       outputSchema: {
-        nodes_created: z.number().int(),
-        nodes_total: z.number().int(),
-        paths_submitted: z.array(z.string()),
+        // Minimal-mode fields (also populated when no work was needed)
+        nodes_created: z.number().int().optional(),
+        nodes_total: z.number().int().optional(),
+        paths_submitted: z.array(z.string()).optional(),
+        // Rich/status fields
+        mode: z.enum(['minimal', 'rich', 'status']).optional(),
+        job_id: z.string().optional(),
+        job_status: z.enum(['pending', 'running', 'done', 'failed']).optional(),
+        paths_total: z.number().int().optional(),
+        paths_done: z.number().int().optional(),
+        paths_failed: z.number().int().optional(),
       },
     },
-    async ({ paths, seed_from_files }) => {
+    async ({ paths, seed_from_files, mode, force, job_id }) => {
       try {
+        // ---- Status check path ---------------------------------------
+        if (job_id) {
+          const status = await pollJob(client, job_id, RICH_POLL_DEADLINE_MS);
+          return {
+            structuredContent: {
+              mode: 'status' as const,
+              job_id: status.job_id,
+              job_status: status.status,
+              paths_total: status.paths_total,
+              paths_done: status.paths_done,
+              paths_failed: status.paths_failed,
+            },
+            content: [{ type: 'text' as const, text: summarizeJobStatus(status) }],
+          };
+        }
+
+        // ---- Rich mode -----------------------------------------------
+        if (mode === 'rich') {
+          const { bundle, response } = await runRichBootstrap(client, {
+            folders: paths,
+            seedFromFiles: seed_from_files !== false,
+            force: force === true,
+          });
+          const status = await pollJob(client, response.job_id, RICH_POLL_DEADLINE_MS);
+          const summary = summarizeJobStatus(status);
+          const truncationLine =
+            bundle.truncatedBy.perFile + bundle.truncatedBy.perFolder + bundle.truncatedBy.globalCap > 0
+              ? `\n\nBundle: ${bundle.folders.length} folders, ${bundle.files.length} files, ${(bundle.bundleBytes / 1024).toFixed(0)} KB. ` +
+                `Truncated: ${bundle.truncatedBy.perFile} files head/tail-truncated, ` +
+                `${bundle.truncatedBy.perFolder} files dropped per per-folder cap, ` +
+                `${bundle.truncatedBy.globalCap} dropped per global cap.`
+              : `\n\nBundle: ${bundle.folders.length} folders, ${bundle.files.length} files, ${(bundle.bundleBytes / 1024).toFixed(0)} KB.`;
+          return {
+            structuredContent: {
+              mode: 'rich' as const,
+              job_id: status.job_id,
+              job_status: status.status,
+              paths_total: status.paths_total,
+              paths_done: status.paths_done,
+              paths_failed: status.paths_failed,
+            },
+            content: [{ type: 'text' as const, text: `${summary}${truncationLine}` }],
+          };
+        }
+
+        // ---- Minimal mode (default; existing behavior) ----------------
         const { paths: submitted, response } = await runBootstrap(client, {
           paths,
           seedFromFiles: seed_from_files !== false,
         });
         const summary =
-          `Wiki bootstrapped: ${response.nodes_created} new, ` +
+          `Wiki bootstrapped (minimal): ${response.nodes_created} new, ` +
           `${response.nodes.length - response.nodes_created} already existed. ` +
           `Total: ${response.nodes.length} nodes across ${submitted.length} paths.`;
         return {
           structuredContent: {
+            mode: 'minimal' as const,
             nodes_created: response.nodes_created,
             nodes_total: response.nodes.length,
             paths_submitted: submitted,
@@ -464,7 +594,8 @@ export function registerWikiBootstrap(server: McpServer, client: ApiClient): voi
           content: [
             {
               type: 'text' as const,
-              text: `${summary}\n\nPaths:\n${submitted.map((p) => `  - ${p}`).join('\n')}`,
+              text: `${summary}\n\nPaths:\n${submitted.map((p) => `  - ${p}`).join('\n')}` +
+                `\n\nFor a Karpathy-style wiki populated from real code, call again with mode="rich".`,
             },
           ],
         };
