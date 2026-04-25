@@ -65,13 +65,28 @@ CREATE TABLE IF NOT EXISTS captures (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Skill arc data — driven by real /score writes (every browser/VS Code prompt)
+-- Skill arc data — driven by real /score writes (every browser/VS Code prompt).
+-- prompt_hash backs the per-(user, dim, prompt-hash) 30s dedup window from
+-- spec §19 risk register: "Cap to one observation per (user, dimension,
+-- prompt-hash) within a 30s window."
 CREATE TABLE IF NOT EXISTS skill_observations (
-  id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id   UUID NOT NULL REFERENCES teams(id),
-  user_id   TEXT NOT NULL,                     -- placeholder; no real users for demo
-  dimension TEXT NOT NULL,                     -- one of the 5 dimensions
-  score     INT  NOT NULL,
-  ts        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id     UUID NOT NULL REFERENCES teams(id),
+  user_id     TEXT NOT NULL,                     -- placeholder; no real users for demo
+  dimension   TEXT NOT NULL,                     -- one of the 5 dimensions
+  score       INT  NOT NULL,
+  prompt_hash TEXT,
+  ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE skill_observations ADD COLUMN IF NOT EXISTS prompt_hash TEXT;
 CREATE INDEX IF NOT EXISTS idx_skill_obs_team_dim_ts ON skill_observations(team_id, dimension, ts);
+
+-- Cheap-insurance index for the GET /wiki/recent polling query
+-- (Person C's roadmap §3 calls this out explicitly).
+CREATE INDEX IF NOT EXISTS idx_learnings_last_seen_at ON learnings(last_seen_at DESC);
+
+-- Bootstrap the demo team. Hardcoded UUID so every artifact can reference it
+-- without first reading the row back. Idempotent on (id).
+INSERT INTO teams (id, name)
+VALUES ('11111111-1111-1111-1111-111111111111', 'Acme Fintech')
+ON CONFLICT (id) DO NOTHING;
