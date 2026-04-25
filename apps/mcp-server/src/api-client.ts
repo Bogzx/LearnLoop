@@ -2,6 +2,8 @@
 // Reads URL + token from env so the same module works in MCP context (env
 // from .mcp.json) and in standalone tests (env from .env).
 import type {
+  OnboardRepoRequest,
+  OnboardRepoResponse,
   ScoreRequest,
   ScoreResponse,
   WikiProposeRequest,
@@ -99,6 +101,10 @@ export class ApiClient {
     const q = new URLSearchParams({ q: query });
     if (scope) q.set('scope', scope);
     return this.req('GET', `/search?${q}`);
+  }
+
+  onboardRepo(body: OnboardRepoRequest): Promise<OnboardRepoResponse> {
+    return this.req('POST', '/onboard/repo', body);
   }
 }
 

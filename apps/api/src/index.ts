@@ -17,6 +17,8 @@ import type {
   ImproveRequest,
   ImproveResponse,
   ImproveTurn,
+  OnboardRepoRequest,
+  OnboardRepoResponse,
   ScoreRequest,
   ScoreResponse,
   SkillArcObservation,
@@ -80,7 +82,7 @@ app.get('/', (c) =>
       'GET  /skill-arc?user_id=&since=ISO',
       'GET  /team/metrics',
       'GET  /wiki/tree',
-      'POST /onboard/repo (501 — scaffolding)',
+      'POST /onboard/repo',
     ],
   }),
 );
@@ -659,23 +661,94 @@ app.post('/improve', async (c) => {
   }
 });
 
-// ----- POST /onboard/repo (SCAFFOLDING) --------------------------------------
-// 501 stub. Future implementation: upsert nodes for each path in the
-// request, optionally seed body_md from initial_rules. See
-// docs/superpowers/specs/2026-04-25-demo-completion-design.md §C.1.
+// ----- POST /onboard/repo ----------------------------------------------------
+// Bootstrap a team wiki by upserting one node per path. Idempotent: re-running
+// with the same paths is a no-op (the existing node row is left untouched).
+// `initial_rules[path]` lets the caller seed `body_md` for any/all of the
+// supplied paths — useful when the caller has, say, scanned a repo's existing
+// CLAUDE.md or copied conventions from another tool.
+//
+// Spec ref:
+//   docs/superpowers/specs/2026-04-25-demo-completion-design.md §C.1
+//   docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md (bootstrap UX
+//     follow-up — wired through wiki_bootstrap MCP tool + `trailhead-mcp
+//     bootstrap` CLI subcommand).
 
-app.post('/onboard/repo', (c) =>
-  c.json(
-    {
-      error: 'not_implemented',
-      roadmap:
-        'Bootstrap a team wiki by upserting nodes for each path and ' +
-        'optionally seeding body_md from initial_rules. See ' +
-        'docs/superpowers/specs/2026-04-25-demo-completion-design.md §C.1.',
-    },
-    501,
-  ),
-);
+const ONBOARD_MAX_PATHS = 200;
+
+app.post('/onboard/repo', async (c) => {
+  const body = await c.req.json<OnboardRepoRequest>().catch(() => null);
+  if (!body || !Array.isArray(body.paths)) {
+    return c.json({ error: 'bad_request', detail: 'paths: string[] required' }, 400);
+  }
+  if (body.paths.length === 0) {
+    return c.json({ error: 'bad_request', detail: 'paths must not be empty' }, 400);
+  }
+  if (body.paths.length > ONBOARD_MAX_PATHS) {
+    return c.json(
+      { error: 'too_many_paths', detail: `max ${ONBOARD_MAX_PATHS} paths per request` },
+      400,
+    );
+  }
+  const initialRules =
+    body.initial_rules && typeof body.initial_rules === 'object' && !Array.isArray(body.initial_rules)
+      ? body.initial_rules
+      : {};
+
+  // Normalize + dedupe paths so we don't issue duplicate inserts inside one
+  // request (the UNIQUE constraint would catch it but the per-row upsert
+  // round-trip is wasted).
+  const seen = new Set<string>();
+  const normalized: { raw: string; path: string }[] = [];
+  for (const raw of body.paths) {
+    if (typeof raw !== 'string') continue;
+    const path = normalizePath(raw);
+    if (!path) continue;                  // empty string after normalization — skip
+    if (seen.has(path)) continue;
+    seen.add(path);
+    normalized.push({ raw, path });
+  }
+
+  if (normalized.length === 0) {
+    return c.json({ error: 'bad_request', detail: 'no valid paths after normalization' }, 400);
+  }
+
+  const nodes: { path: string; id: string }[] = [];
+  let nodes_created = 0;
+
+  for (const { raw, path } of normalized) {
+    // body_md from initial_rules — match against either the normalized form
+    // or the caller's raw string so callers don't need to pre-normalize keys.
+    const seedBody =
+      typeof initialRules[path] === 'string'
+        ? initialRules[path]
+        : typeof initialRules[raw] === 'string'
+          ? initialRules[raw]
+          : '';
+
+    // xmax = 0 in the RETURNING row means the tuple was newly inserted (PG
+    // marks it 0 on fresh inserts; ON CONFLICT updates set xmax to the
+    // current xid). Lets us count creates without a second query.
+    const rows = await q<{ id: string; inserted: boolean }>(
+      `INSERT INTO nodes (team_id, path, body_md)
+         VALUES ($1, $2, $3)
+       ON CONFLICT (team_id, path) DO UPDATE
+         SET body_md = CASE
+               WHEN $3 <> '' AND nodes.body_md = '' THEN $3
+               ELSE nodes.body_md
+             END,
+             updated_at = NOW()
+       RETURNING id, (xmax = 0) AS inserted`,
+      [DEMO_TEAM_ID, path, seedBody],
+    );
+    const row = rows[0]!;
+    if (row.inserted) nodes_created += 1;
+    nodes.push({ path, id: row.id });
+  }
+
+  const res: OnboardRepoResponse = { nodes_created, nodes };
+  return c.json(res);
+});
 
 // Surface unhandled errors as 500 with a one-line shape clients can show.
 app.onError((err, c) => {
