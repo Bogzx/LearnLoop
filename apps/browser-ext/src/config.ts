@@ -4,14 +4,11 @@ export const API_URL = 'https://trailheadapi-production.up.railway.app';
 export const TEAM_TOKEN = 'trailhead_demo_acme_2026';
 export const USER_ID = 'demo';
 
-/** Per-fetch timeout via AbortController (spec §6.1). */
-export const FETCH_TIMEOUT_MS = 4000;
-
-/** Live-scoring debounce on textarea input (spec §6 / §5.2). */
-export const SCORE_DEBOUNCE_MS = 250;
-
-/** Pre-send pulse window before auto-sending unchanged (spec §5.3). */
-export const SEND_NUDGE_MS = 5000;
+/** Per-fetch timeout via AbortController (spec §6.1).
+ *  Raised from 4s to 12s after enabling Gemini thinking on /score: a normal
+ *  scored response now lands at 2-4s; 12s leaves room for tail latency
+ *  without leaving the user staring at a frozen "scoring…" UI forever. */
+export const FETCH_TIMEOUT_MS = 12000;
 
 /** Wiki poll cadence while the tab is visible (spec §5.5). */
 export const WIKI_POLL_MS = 2000;

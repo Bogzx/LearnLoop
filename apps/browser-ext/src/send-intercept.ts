@@ -1,27 +1,35 @@
 // Send-intercept logic. Hooks Enter on the textarea and click on the send
-// button; both route through onSendAttempt. Spec §5.3:
+// button; both route through onSendAttempt.
 //
-//   overall = store.get(currentHash)?.overall ?? 10   (optimistic on missing)
-//   if overall ≥ 7 → return; native send fires; no card highlight
-//   else → preventDefault
-//          pulse card 5s
-//          wait for one of: clarify | as-is | timeout
-//          clarify → augment + send
-//          as-is   → native send
-//          timeout → native send
+// Architecture (post-2026-04-25 rewrite):
 //
-// We never block the user. The 5s timeout fallback is the contract.
+//   Enter / send-button click
+//     → preventDefault + stopPropagation
+//     → readPrompt(textarea)
+//     → scoreAndShow(prompt)               // cache hit instant; miss ~2-4s
+//     → on null (/score failed)            → triggerNativeSend (fail-open)
+//     → on overall ≥ 7                     → hideCard + triggerNativeSend
+//     → on overall < 7                     → card stays visible with three
+//                                            buttons (Improve, Send as-is,
+//                                            Edit). User picks. No timer.
+//
+// What's gone (vs the original):
+//   - The 250ms keystroke debounce in score-card.ts (we don't pre-score).
+//   - The 5-second auto-send nudge timer (the user is in control; we
+//     never auto-fire the prompt).
+//   - The `pendingNudge` promise machinery (no async coordination needed
+//     once we removed the timer — buttons drive the flow directly).
 import { capture as apiCapture } from './api.ts';
-import { SEND_NUDGE_MS, USER_ID } from './config.ts';
+import { USER_ID } from './config.ts';
 import { augment } from './augment.ts';
 import { simpleHash } from './hash.ts';
 import { readPrompt, writePrompt, type Selectors } from './selectors.ts';
 import { store } from './store.ts';
-import { currentPromptHash, pulseCard } from './score-card.ts';
+import { hideCard, scoreAndShow } from './score-card.ts';
 
 let activeSelectors: Selectors | null = null;
-let pendingNudge: { resolve: (action: 'clarify' | 'as-is' | 'timeout') => void } | null = null;
 let sentOnce = false;
+let inFlight = false;
 
 export function attachSendIntercept(sel: Selectors): () => void {
   activeSelectors = sel;
@@ -48,53 +56,62 @@ export function attachSendIntercept(sel: Selectors): () => void {
 
 function onSendAttempt(e: Event): void {
   if (!activeSelectors) return;
-  const hash = currentPromptHash(activeSelectors);
-  const entry = store.getScore(hash);
-  // Optimistic-on-missing: an unknown score means we never block.
-  const overall = entry?.overall ?? 10;
-  if (overall >= 7) return;
+  const text = readPrompt(activeSelectors.textarea).trim();
+  if (!text) return; // empty composer → let native handler no-op
 
-  // <7 → preventDefault for SEND_NUDGE_MS, then auto-send unchanged.
+  // We can't decide whether to send until we have a score. Block the
+  // native send unconditionally; we'll re-fire it programmatically if
+  // the score clears the threshold or the user picks Send-as-is.
   e.preventDefault();
   e.stopPropagation();
 
-  pulseCard(SEND_NUDGE_MS);
+  // Re-arm so the same composer state can be sent after this attempt.
   sentOnce = false;
 
-  // Resolve the previous nudge as a no-op so a second Enter inside the window
-  // immediately auto-sends rather than queuing a second timer (spec §6.3).
-  if (pendingNudge) {
-    pendingNudge.resolve('as-is');
-    pendingNudge = null;
+  // Concurrent submits collapse: if a /score is already in flight for
+  // an earlier Enter on the same prompt, the latest scoreAndShow will
+  // abort the prior request via its own AbortController and supersede.
+  if (inFlight) return;
+  inFlight = true;
+  void runIntercept(text).finally(() => {
+    inFlight = false;
+  });
+}
+
+async function runIntercept(text: string): Promise<void> {
+  const res = await scoreAndShow(text);
+  if (!res) {
+    // /score failed (timeout, network, parse). Fail-open: send the
+    // prompt unchanged. We never block the user on infrastructure.
+    triggerNativeSend();
+    return;
   }
-
-  let timeoutId: number | null = null;
-  const decision = new Promise<'clarify' | 'as-is' | 'timeout'>((resolve) => {
-    pendingNudge = { resolve };
-    timeoutId = window.setTimeout(() => {
-      if (pendingNudge) {
-        const r = pendingNudge.resolve;
-        pendingNudge = null;
-        r('timeout');
-      }
-    }, SEND_NUDGE_MS);
-  });
-
-  void decision.then((action) => {
-    if (timeoutId !== null) clearTimeout(timeoutId);
-    if (action === 'clarify') void augmentAndSend();
-    else triggerNativeSend();
-  });
+  if (res.overall >= 7) {
+    // High-quality prompts go through with no friction. The card was
+    // briefly shown by scoreAndShow; hide it before firing the send so
+    // the UI doesn't flash a result the user never had to read.
+    hideCard();
+    triggerNativeSend();
+    return;
+  }
+  // <7: leave the card visible. Action buttons drive the next step:
+  //   Improve   → augmentAndSend()
+  //   Send as-is → triggerNativeSend()
+  //   Edit      → hideCard() + focusComposer()
 }
 
 export function triggerNativeSend(): void {
   if (sentOnce) return;
-  if (pendingNudge) {
-    pendingNudge.resolve('as-is');
-    pendingNudge = null;
-    return;
-  }
   doNativeSend();
+}
+
+export function focusComposer(): void {
+  if (!activeSelectors) return;
+  try {
+    activeSelectors.textarea.focus();
+  } catch {
+    /* swallow — focus is a nicety */
+  }
 }
 
 // We remember the most-recently-scored prompt so the capture row carries the
@@ -136,6 +153,7 @@ async function doNativeSend(): Promise<void> {
   if (!activeSelectors) return;
   const sel = activeSelectors;
   const sentText = readPrompt(sel.textarea);
+  hideCard();
   const fired = fireSendOnce(sel);
   if (!fired) {
     console.warn('[trailhead] send fallback failed — both button.click() and form.requestSubmit() unavailable');
@@ -159,10 +177,6 @@ async function doNativeSend(): Promise<void> {
 
 export async function augmentAndSend(): Promise<void> {
   if (!activeSelectors || sentOnce) return;
-  if (pendingNudge) {
-    pendingNudge.resolve('clarify');
-    pendingNudge = null;
-  }
   const sel = activeSelectors;
   const original = readPrompt(sel.textarea);
   if (!original.trim()) return;
