@@ -1,6 +1,6 @@
 // Thin SWR-friendly client for the Trailhead API. Every fetcher takes a
 // `token` so the dashboard can render any team's data — the team picker
-// fetches /team/list (no auth) and routes each team card to ?team=<token>;
+// fetches /teams (no auth) and routes each team card to ?team=<token>;
 // downstream pages read that param and pass it into these calls.
 //
 // Tokens aren't secrets in this design — they're derived from public git
@@ -11,8 +11,8 @@ import type {
   ExamplesResponse,
   ScoreResponse,
   SkillArcResponse,
-  TeamListResponse,
   TeamMetricsResponse,
+  TeamsListResponse,
   WikiRecentResponse,
   WikiTreeResponse,
 } from '@trailhead/shared';
@@ -43,20 +43,20 @@ async function fetcher<T>(path: string, token: string): Promise<T> {
 }
 
 // Public team enumeration — no auth header required server-side.
-async function fetchListTeams(): Promise<TeamListResponse> {
-  const res = await fetch(`${API_URL}/team/list`);
+async function fetchListTeams(): Promise<TeamsListResponse> {
+  const res = await fetch(`${API_URL}/teams`);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`trailhead-api /team/list ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`trailhead-api /teams ${res.status}: ${text.slice(0, 200)}`);
   }
-  return (await res.json()) as TeamListResponse;
+  return (await res.json()) as TeamsListResponse;
 }
 
 // Typed convenience wrappers. Each page imports the one it needs and
 // passes it as the SWR fetcher; this keeps useSWR<T> generics inferred
 // without each page restating the path string.
 export const api = {
-  listTeams: (): Promise<TeamListResponse> => fetchListTeams(),
+  listTeams: (): Promise<TeamsListResponse> => fetchListTeams(),
   skillArc: (token: string, since?: string, userId?: string): Promise<SkillArcResponse> => {
     const params = new URLSearchParams();
     if (since) params.set('since', since);

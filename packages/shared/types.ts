@@ -94,16 +94,6 @@ export interface SkillArcObservation {
 }
 export interface SkillArcResponse { observations: SkillArcObservation[]; }
 
-// GET /team/list — every team known to the API. Used by the dashboard's
-// team picker (no auth — tokens aren't secrets in this design; they're
-// derived from public git remotes).
-export interface TeamSummary {
-  id: string;
-  name: string;
-  token: string;
-}
-export interface TeamListResponse { teams: TeamSummary[]; }
-
 // GET /team/metrics — snapshot for the dashboard's /team page. No time-series.
 export interface TeamMetricsResponse {
   avg_overall: number;          // 0-10, current 7-day mean
