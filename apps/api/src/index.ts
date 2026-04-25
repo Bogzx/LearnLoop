@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -10,6 +12,16 @@ import type {
   WikiProposeRequest,
   WikiProposeResponse,
 } from '@trailhead/shared';
+
+// Load .env from cwd or repo root. Railway injects env vars directly, so this
+// silently no-ops there. Node 20.12+/22 ships process.loadEnvFile natively.
+for (const candidate of ['.env', '../../.env']) {
+  const p = resolve(process.cwd(), candidate);
+  if (existsSync(p)) {
+    process.loadEnvFile(p);
+    break;
+  }
+}
 
 const TEAM_TOKEN = process.env.TEAM_TOKEN;
 if (!TEAM_TOKEN) {
