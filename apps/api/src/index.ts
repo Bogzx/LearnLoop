@@ -34,18 +34,22 @@ import type {
 } from '@trailhead/shared';
 import { DIMENSIONS } from '@trailhead/shared';
 import { ancestorPaths, normalize, normalizePath } from '@trailhead/scoring';
-import { DEMO_TEAM_ID, q, upsertNode } from './db.ts';
+import { DEMO_TEAM_TOKEN, q, teamIdForToken, upsertNode, wipeTeamData } from './db.ts';
 import { extractTopic, improveCoach, overallScore, scorePrompt, synthesizeDiff } from './gemini.ts';
 
-const TEAM_TOKEN = process.env.TEAM_TOKEN;
-if (!TEAM_TOKEN) {
-  console.error('TEAM_TOKEN not set. Copy .env.example -> .env at the repo root.');
-  process.exit(1);
-}
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
 if (!process.env.GEMINI_API_KEY) { console.error('GEMINI_API_KEY not set'); process.exit(1); }
 
-const app = new Hono();
+// Multi-tenant policy. Defaults to ON for the hackathon-grade open demo
+// posture: any X-Team-Token spawns its own teams row on first write.
+// Production deploys should set TRAILHEAD_AUTO_CREATE_TEAMS=false and
+// register teams explicitly.
+const AUTO_CREATE_TEAMS = process.env.TRAILHEAD_AUTO_CREATE_TEAMS !== 'false';
+
+// Hono context typing — the auth middleware sets `team_id` so every
+// downstream handler can pull it via c.get('team_id') with type safety.
+type AppEnv = { Variables: { team_id: string } };
+const app = new Hono<AppEnv>();
 
 app.use('*', logger());
 app.use(
@@ -53,16 +57,29 @@ app.use(
   cors({
     origin: '*',
     allowHeaders: ['Content-Type', 'X-Team-Token'],
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
+    allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   }),
 );
 
-// Single hardcoded team token (spec §3). Health check is unauthenticated.
+// Auth middleware — multi-tenant. Resolves the X-Team-Token header into a
+// team_id (cached) and attaches it to the request context. Unknown tokens
+// either spawn a new team (AUTO_CREATE_TEAMS=true, the demo default) or 401.
+//
+// The legacy single-tenant TEAM_TOKEN env var is no longer required: the
+// demo team is identified by its row's `token` column (DEMO_TEAM_TOKEN), so
+// existing clients carrying the old token continue to land on the demo team.
 app.use('*', async (c, next) => {
   if (c.req.method === 'OPTIONS' || c.req.path === '/') return next();
-  if (c.req.header('x-team-token') !== TEAM_TOKEN) {
-    return c.json({ error: 'unauthorized' }, 401);
+  const token = c.req.header('x-team-token');
+  if (!token) return c.json({ error: 'unauthorized', detail: 'missing X-Team-Token' }, 401);
+  const teamId = await teamIdForToken(token, { autoCreate: AUTO_CREATE_TEAMS });
+  if (!teamId) {
+    return c.json(
+      { error: 'unauthorized', detail: 'unknown team token' },
+      401,
+    );
   }
+  c.set('team_id', teamId);
   await next();
 });
 
@@ -70,6 +87,8 @@ app.get('/', (c) =>
   c.json({
     name: 'trailhead-api',
     status: 'ok',
+    multi_tenant: true,
+    auto_create_teams: AUTO_CREATE_TEAMS,
     endpoints: [
       'POST /score',
       'POST /capture',
@@ -83,6 +102,7 @@ app.get('/', (c) =>
       'GET  /team/metrics',
       'GET  /wiki/tree',
       'POST /onboard/repo',
+      'DELETE /team/data',
     ],
   }),
 );
@@ -131,7 +151,7 @@ app.post('/score', async (c) => {
            AND s.ts          > NOW() - INTERVAL '30 seconds'
       )`,
     [
-      DEMO_TEAM_ID,
+      c.get('team_id'),
       body.user_id,
       ...DIMENSIONS.flatMap((d) => [d, result.dimensions[d]]),
       promptHash,
@@ -163,7 +183,7 @@ app.post('/capture', async (c) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id`,
     [
-      DEMO_TEAM_ID,
+      c.get('team_id'),
       surface,
       body.user_prompt,
       body.ai_response ?? null,
@@ -189,7 +209,7 @@ app.post('/wiki/propose', async (c) => {
   if (!body.insight.trim()) return c.json({ error: 'empty_insight' }, 400);
 
   const path = normalizePath(body.node_path);
-  const nodeId = await upsertNode(DEMO_TEAM_ID, path);
+  const nodeId = await upsertNode(c.get('team_id'), path);
   const bodyNormalized = normalize(body.insight);
 
   const existing = await q<{
@@ -266,7 +286,7 @@ app.get('/context', async (c) => {
         AND n.path = ANY($2::text[])
       ORDER BY length(n.path) ASC, n.path ASC,
                COALESCE(l.reinforcement_count, 0) DESC`,
-    [DEMO_TEAM_ID, ancestors],
+    [c.get('team_id'), ancestors],
   );
 
   const byPath = new Map<string, ContextNode>();
@@ -310,7 +330,7 @@ app.get('/examples', async (c) => {
         AND p.status = 'graduated'
       ORDER BY p.reuse_count DESC, length(n.path) DESC
       LIMIT $3`,
-    [DEMO_TEAM_ID, ancestors, limit],
+    [c.get('team_id'), ancestors, limit],
   );
 
   const res: ExamplesResponse = { items: rows.map((r): ExamplesItem => ({
@@ -346,7 +366,7 @@ app.get('/wiki/recent', async (c) => {
         AND l.last_seen_at > $2
       ORDER BY l.last_seen_at DESC
       LIMIT $3`,
-    [DEMO_TEAM_ID, since.toISOString(), limit],
+    [c.get('team_id'), since.toISOString(), limit],
   );
 
   const res: WikiRecentResponse = {
@@ -389,7 +409,7 @@ app.post('/diff', async (c) => {
           AND n.path = ANY($3::text[])
         ORDER BY p.reuse_count DESC, length(n.path) DESC
         LIMIT 1`,
-      [DEMO_TEAM_ID, topic, ancestors],
+      [c.get('team_id'), topic, ancestors],
     )
   )[0];
   if (!candidate) {
@@ -403,7 +423,7 @@ app.post('/diff', async (c) => {
             AND n.path = ANY($2::text[])
           ORDER BY p.reuse_count DESC, length(n.path) DESC
           LIMIT 1`,
-        [DEMO_TEAM_ID, ancestors],
+        [c.get('team_id'), ancestors],
       )
     )[0];
   }
@@ -416,7 +436,7 @@ app.post('/diff', async (c) => {
           WHERE n.team_id = $1 AND p.status = 'graduated'
           ORDER BY p.reuse_count DESC
           LIMIT 1`,
-        [DEMO_TEAM_ID],
+        [c.get('team_id')],
       )
     )[0];
   }
@@ -473,7 +493,7 @@ app.get('/skill-arc', async (c) => {
           WHERE team_id = $1 AND user_id = $2 AND ts > $3
           ORDER BY ts ASC
           LIMIT $4`,
-        [DEMO_TEAM_ID, userIdParam, since.toISOString(), limit],
+        [c.get('team_id'), userIdParam, since.toISOString(), limit],
       )
     : await q<{ dimension: Dimension; score: number; ts: Date }>(
         `SELECT dimension, score, ts
@@ -481,7 +501,7 @@ app.get('/skill-arc', async (c) => {
           WHERE team_id = $1 AND ts > $2
           ORDER BY ts ASC
           LIMIT $3`,
-        [DEMO_TEAM_ID, since.toISOString(), limit],
+        [c.get('team_id'), since.toISOString(), limit],
       );
 
   const res: SkillArcResponse = {
@@ -508,7 +528,7 @@ app.get('/team/metrics', async (c) => {
       `SELECT AVG(score)::float AS avg_overall, COUNT(*)::int AS total_obs
          FROM skill_observations
         WHERE team_id = $1 AND ts > $2`,
-      [DEMO_TEAM_ID, sevenDaysAgo],
+      [c.get('team_id'), sevenDaysAgo],
     ),
     q<{ durable_count: number; draft_count: number }>(
       `SELECT
@@ -517,7 +537,7 @@ app.get('/team/metrics', async (c) => {
          FROM learnings l
          JOIN nodes n ON n.id = l.node_id
         WHERE n.team_id = $1`,
-      [DEMO_TEAM_ID],
+      [c.get('team_id')],
     ),
     q<{ total: number; helpful: number }>(
       `SELECT
@@ -525,13 +545,13 @@ app.get('/team/metrics', async (c) => {
          COUNT(*) FILTER (WHERE outcome = 'helpful')::int AS helpful
          FROM captures
         WHERE team_id = $1 AND created_at > $2`,
-      [DEMO_TEAM_ID, sevenDaysAgo],
+      [c.get('team_id'), sevenDaysAgo],
     ),
     q<{ active_users: number }>(
       `SELECT COUNT(DISTINCT user_id)::int AS active_users
          FROM skill_observations
         WHERE team_id = $1 AND ts > $2`,
-      [DEMO_TEAM_ID, sevenDaysAgo],
+      [c.get('team_id'), sevenDaysAgo],
     ),
   ]);
 
@@ -573,7 +593,7 @@ app.get('/wiki/tree', async (c) => {
       WHERE n.team_id = $1
       ORDER BY n.path ASC,
                COALESCE(l.reinforcement_count, 0) DESC`,
-    [DEMO_TEAM_ID],
+    [c.get('team_id')],
   );
 
   const byPath = new Map<string, WikiTreeNode>();
@@ -661,6 +681,40 @@ app.post('/improve', async (c) => {
   }
 });
 
+// ----- DELETE /team/data -----------------------------------------------------
+// Wipe every nodes / learnings / prompts / captures / skill_observations row
+// for the requesting team. The teams row itself is preserved so re-running
+// the same token continues to land in the same id (matters for the
+// trailhead-mcp reset CLI which talks to localhost first then prod).
+//
+// The demo team is protected against accidental nukes — wiping it would
+// erase the seeded data the dashboard demo relies on. Override with
+// TRAILHEAD_ALLOW_DEMO_RESET=true if you really need to reseed.
+
+app.delete('/team/data', async (c) => {
+  const body = await c.req.json<{ confirm?: boolean }>().catch(() => null);
+  if (!body || body.confirm !== true) {
+    return c.json(
+      { error: 'confirm_required', detail: 'POST { "confirm": true } to wipe.' },
+      400,
+    );
+  }
+  const teamId = c.get('team_id');
+  const isDemo = c.req.header('x-team-token') === DEMO_TEAM_TOKEN;
+  if (isDemo && process.env.TRAILHEAD_ALLOW_DEMO_RESET !== 'true') {
+    return c.json(
+      {
+        error: 'demo_team_protected',
+        detail:
+          'Refusing to wipe the demo team. Set TRAILHEAD_ALLOW_DEMO_RESET=true on the API to override.',
+      },
+      403,
+    );
+  }
+  const deleted = await wipeTeamData(teamId);
+  return c.json({ team_id: teamId, deleted });
+});
+
 // ----- POST /onboard/repo ----------------------------------------------------
 // Bootstrap a team wiki by upserting one node per path. Idempotent: re-running
 // with the same paths is a no-op (the existing node row is left untouched).
@@ -739,7 +793,7 @@ app.post('/onboard/repo', async (c) => {
              END,
              updated_at = NOW()
        RETURNING id, (xmax = 0) AS inserted`,
-      [DEMO_TEAM_ID, path, seedBody],
+      [c.get('team_id'), path, seedBody],
     );
     const row = rows[0]!;
     if (row.inserted) nodes_created += 1;

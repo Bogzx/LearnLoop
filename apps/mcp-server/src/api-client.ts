@@ -60,7 +60,7 @@ export class ApiClient {
 
   // Network failure is converted into a thrown Error with a stable message
   // shape so MCP tool handlers can present it to the model uniformly.
-  private async req<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  private async req<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<T> {
     const url = `${this.cfg.apiUrl.replace(/\/$/, '')}${path}`;
     const init: RequestInit = { method, headers: this.headers() };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -105,6 +105,13 @@ export class ApiClient {
 
   onboardRepo(body: OnboardRepoRequest): Promise<OnboardRepoResponse> {
     return this.req('POST', '/onboard/repo', body);
+  }
+
+  resetTeam(): Promise<{
+    team_id: string;
+    deleted: { nodes: number; learnings: number; prompts: number; captures: number; observations: number };
+  }> {
+    return this.req('DELETE', '/team/data', { confirm: true });
   }
 }
 

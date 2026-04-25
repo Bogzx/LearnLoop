@@ -1,5 +1,14 @@
-// Tests for the trailhead-mcp init logic. Each test uses a fresh temp dir
-// as $HOME so we never touch the real config.
+// Tests for the trailhead-mcp init logic. Each test uses fresh temp dirs as
+// $HOME and cwd so we never touch real config or pollute the repo.
+//
+// Multi-tenant init (per docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md
+// follow-up):
+//   - Always writes project-scoped ./.mcp.json for Claude Code.
+//   - Writes ~/.claude.json only if a trailhead entry already exists OR
+//     userScope is true (Q2 c).
+//   - Always writes .vscode/mcp.json for Copilot when detected.
+//   - Coach directive: ./CLAUDE.md (project) and optionally
+//     ~/.claude/CLAUDE.md (--user-scope).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -11,109 +20,166 @@ import {
   existsSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { applyInit, COACH_DIRECTIVE } from './init.mjs';
 
 function makeHome() {
   return mkdtempSync(join(tmpdir(), 'trailhead-init-'));
 }
-
 function makeCwd() {
   return mkdtempSync(join(tmpdir(), 'trailhead-cwd-'));
 }
-
 function readJson(p) {
   return JSON.parse(readFileSync(p, 'utf8'));
 }
 
-// Default opts skip the coach directive so existing tests keep working,
-// and skip Copilot wiring so tests that focus on Claude Code don't get
-// noise from the dev machine's PATH detection.
-// New coach-related tests opt in explicitly.
-const baseOpts = (home) => ({
+// Default opts: skip the directive write (autoCoach false) and skip Copilot
+// (wireCopilot false) so each test focuses on one slice. Tests that need
+// those behaviors opt in explicitly.
+const baseOpts = (home, cwd) => ({
   serverEntry: '/abs/path/server/index.ts',
   apiUrl: 'https://api.example.com',
   teamToken: 'tok-123',
   home,
+  cwd,
   preservePaths: true,
   autoCoach: false,
   wireCopilot: false,
 });
 
-test('creates ~/.claude.json with mcpServers.trailhead from scratch', async () => {
+// ---------------------------------------------------------------------------
+// Project-scoped .mcp.json (the new default)
+// ---------------------------------------------------------------------------
+
+test('writes project-scoped .mcp.json from scratch; does not touch ~/.claude.json', async () => {
   const home = makeHome();
+  const cwd = makeCwd();
   try {
-    const r = await applyInit(baseOpts(home));
-    assert.equal(r.serverInstalled, 'created');
-    const cfg = readJson(r.claudeJsonPath);
-    assert.ok(cfg.mcpServers?.trailhead);
+    const r = await applyInit(baseOpts(home, cwd));
+    assert.equal(r.claudeCode.wired, true);
+    assert.equal(r.claudeCode.projectMcpInstalled, 'created');
+    assert.equal(r.claudeCode.projectMcpJsonPath, join(cwd, '.mcp.json'));
+    assert.equal(r.claudeCode.userServerInstalled, 'skipped');
+    assert.equal(r.claudeCode.claudeJsonPath, null);
+    assert.equal(existsSync(join(home, '.claude.json')), false);
+
+    const cfg = readJson(join(cwd, '.mcp.json'));
     assert.equal(cfg.mcpServers.trailhead.command, 'npx');
     assert.deepEqual(cfg.mcpServers.trailhead.args.slice(0, 2), ['--yes', 'tsx']);
     assert.equal(cfg.mcpServers.trailhead.env.TRAILHEAD_API_URL, 'https://api.example.com');
     assert.equal(cfg.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-123');
   } finally {
     rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 
-test('preserves unrelated keys in ~/.claude.json', async () => {
+test('idempotent — second run reports unchanged for .mcp.json', async () => {
   const home = makeHome();
+  const cwd = makeCwd();
   try {
-    const claudeJsonPath = join(home, '.claude.json');
-    writeFileSync(claudeJsonPath, JSON.stringify({
-      mcpServers: { other: { command: 'echo', args: ['hi'] } },
-      someOtherKey: 'preserve me',
-    }));
-    await applyInit(baseOpts(home));
-    const cfg = readJson(claudeJsonPath);
-    assert.equal(cfg.someOtherKey, 'preserve me');
-    assert.ok(cfg.mcpServers.other);
-    assert.ok(cfg.mcpServers.trailhead);
+    const r1 = await applyInit(baseOpts(home, cwd));
+    const r2 = await applyInit(baseOpts(home, cwd));
+    assert.equal(r1.claudeCode.projectMcpInstalled, 'created');
+    assert.equal(r2.claudeCode.projectMcpInstalled, 'unchanged');
   } finally {
     rmSync(home, { recursive: true, force: true });
-  }
-});
-
-test('idempotent — second run reports unchanged', async () => {
-  const home = makeHome();
-  try {
-    const r1 = await applyInit(baseOpts(home));
-    const r2 = await applyInit(baseOpts(home));
-    assert.equal(r1.serverInstalled, 'created');
-    assert.equal(r2.serverInstalled, 'unchanged');
-  } finally {
-    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 
 test('changing apiUrl on second run reports updated', async () => {
   const home = makeHome();
+  const cwd = makeCwd();
   try {
-    await applyInit(baseOpts(home));
-    const r2 = await applyInit({ ...baseOpts(home), apiUrl: 'https://other.example.com' });
-    assert.equal(r2.serverInstalled, 'updated');
+    await applyInit(baseOpts(home, cwd));
+    const r2 = await applyInit({ ...baseOpts(home, cwd), apiUrl: 'https://other.example.com' });
+    assert.equal(r2.claudeCode.projectMcpInstalled, 'updated');
   } finally {
     rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 
-// --- Coach-directive (B.2) ---------------------------------------------------
+// ---------------------------------------------------------------------------
+// User-scoped ~/.claude.json — Q2 (c) conditional behavior
+// ---------------------------------------------------------------------------
 
-test('autoCoach=true (default) creates ./CLAUDE.md with the directive', async () => {
+test('legacy ~/.claude.json with trailhead entry IS updated automatically', async () => {
   const home = makeHome();
   const cwd = makeCwd();
   try {
-    const r = await applyInit({ ...baseOpts(home), autoCoach: true, cwd });
+    // Simulate a legacy install: ~/.claude.json already has a trailhead entry.
+    const claudeJsonPath = join(home, '.claude.json');
+    writeFileSync(claudeJsonPath, JSON.stringify({
+      mcpServers: { trailhead: { command: 'old', args: [], env: {} } },
+      someOtherKey: 'preserve me',
+    }));
+
+    const r = await applyInit(baseOpts(home, cwd));
+    assert.equal(r.claudeCode.userServerInstalled, 'updated');
+    const after = readJson(claudeJsonPath);
+    assert.equal(after.someOtherKey, 'preserve me');
+    assert.equal(after.mcpServers.trailhead.command, 'npx');
+    assert.equal(after.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-123');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('~/.claude.json with NO trailhead entry is left alone (Q2 c)', async () => {
+  const home = makeHome();
+  const cwd = makeCwd();
+  try {
+    const claudeJsonPath = join(home, '.claude.json');
+    writeFileSync(claudeJsonPath, JSON.stringify({
+      mcpServers: { other: { command: 'echo', args: ['hi'] } },
+    }));
+    const r = await applyInit(baseOpts(home, cwd));
+    assert.equal(r.claudeCode.userServerInstalled, 'skipped');
+    const after = readJson(claudeJsonPath);
+    assert.ok(!after.mcpServers.trailhead, 'should not have added trailhead to user-scope');
+    assert.ok(after.mcpServers.other, 'unrelated entry preserved');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('--user-scope forces ~/.claude.json write even on a fresh user', async () => {
+  const home = makeHome();
+  const cwd = makeCwd();
+  try {
+    const r = await applyInit({ ...baseOpts(home, cwd), userScope: true });
+    assert.equal(r.claudeCode.userServerInstalled, 'created');
+    const cfg = readJson(join(home, '.claude.json'));
+    assert.equal(cfg.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-123');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Coaching directive
+// ---------------------------------------------------------------------------
+
+test('autoCoach=true creates ./CLAUDE.md with the directive', async () => {
+  const home = makeHome();
+  const cwd = makeCwd();
+  try {
+    const r = await applyInit({ ...baseOpts(home, cwd), autoCoach: true });
     assert.equal(r.projectCoachInstalled, 'created');
     assert.equal(r.userCoachInstalled, 'skipped');
     const projectPath = join(cwd, 'CLAUDE.md');
     assert.equal(r.projectClaudeMdPath, projectPath);
-    assert.ok(existsSync(projectPath));
     const content = readFileSync(projectPath, 'utf8');
     assert.match(content, /## Trailhead coaching/);
     assert.match(content, /\bcoach\b/);
     assert.match(content, /\bwiki_lookup\b/);
     assert.match(content, /\bwiki_save\b/);
+    assert.match(content, /\bwiki_bootstrap\b/);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -126,7 +192,7 @@ test('autoCoach=true appends to existing ./CLAUDE.md without overwriting', async
   try {
     const projectPath = join(cwd, 'CLAUDE.md');
     writeFileSync(projectPath, '# Project conventions\n\nUse 2-space indents.\n');
-    const r = await applyInit({ ...baseOpts(home), autoCoach: true, cwd });
+    const r = await applyInit({ ...baseOpts(home, cwd), autoCoach: true });
     assert.equal(r.projectCoachInstalled, 'appended');
     const content = readFileSync(projectPath, 'utf8');
     assert.match(content, /Project conventions/);
@@ -142,8 +208,8 @@ test('autoCoach=true is idempotent — second run reports unchanged', async () =
   const home = makeHome();
   const cwd = makeCwd();
   try {
-    const r1 = await applyInit({ ...baseOpts(home), autoCoach: true, cwd });
-    const r2 = await applyInit({ ...baseOpts(home), autoCoach: true, cwd });
+    const r1 = await applyInit({ ...baseOpts(home, cwd), autoCoach: true });
+    const r2 = await applyInit({ ...baseOpts(home, cwd), autoCoach: true });
     assert.equal(r1.projectCoachInstalled, 'created');
     assert.equal(r2.projectCoachInstalled, 'unchanged');
     const content = readFileSync(join(cwd, 'CLAUDE.md'), 'utf8');
@@ -155,13 +221,12 @@ test('autoCoach=true is idempotent — second run reports unchanged', async () =
   }
 });
 
-test('autoCoach=false (the --no-auto-coach flag) writes no CLAUDE.md', async () => {
+test('autoCoach=false writes no CLAUDE.md', async () => {
   const home = makeHome();
   const cwd = makeCwd();
   try {
-    const r = await applyInit({ ...baseOpts(home), autoCoach: false, cwd });
+    const r = await applyInit({ ...baseOpts(home, cwd), autoCoach: false });
     assert.equal(r.projectCoachInstalled, 'skipped');
-    assert.equal(r.projectClaudeMdPath, null);
     assert.equal(existsSync(join(cwd, 'CLAUDE.md')), false);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -169,12 +234,12 @@ test('autoCoach=false (the --no-auto-coach flag) writes no CLAUDE.md', async () 
   }
 });
 
-test('userScope=true writes both project and user CLAUDE.md', async () => {
+test('--user-scope writes both project and user CLAUDE.md', async () => {
   const home = makeHome();
   const cwd = makeCwd();
   try {
     const r = await applyInit({
-      ...baseOpts(home), autoCoach: true, userScope: true, cwd,
+      ...baseOpts(home, cwd), autoCoach: true, userScope: true,
     });
     assert.equal(r.projectCoachInstalled, 'created');
     assert.equal(r.userCoachInstalled, 'created');
@@ -188,50 +253,69 @@ test('userScope=true writes both project and user CLAUDE.md', async () => {
 });
 
 test('COACH_DIRECTIVE references the 4 hero tool names', () => {
-  // The directive (loaded from src/coaching-directive.md) must mention all
-  // four hero tools by their MCP wire names, since these are what the
-  // host LLM sees in the tool list.
   assert.match(COACH_DIRECTIVE, /\bcoach\b/);
   assert.match(COACH_DIRECTIVE, /\bwiki_lookup\b/);
   assert.match(COACH_DIRECTIVE, /\bwiki_save\b/);
   assert.match(COACH_DIRECTIVE, /\bwiki_bootstrap\b/);
-  // Old names must be gone — referencing them confuses Copilot's tool selector.
   assert.doesNotMatch(COACH_DIRECTIVE, /coach_score/);
   assert.doesNotMatch(COACH_DIRECTIVE, /wiki_update_learnings/);
   assert.doesNotMatch(COACH_DIRECTIVE, /wiki_context_for/);
 });
 
-// --- Copilot wiring (new in mcp-plugin-ux-design.md §5) ----------------------
-
-test('wireCopilot=true writes .vscode/mcp.json and .github/copilot-instructions.md', async () => {
+test('directive section is replaced (not duplicated) when content changes', async () => {
   const home = makeHome();
   const cwd = makeCwd();
   try {
-    const r = await applyInit({
-      ...baseOpts(home),
+    const opts1 = {
+      ...baseOpts(home, cwd),
       autoCoach: true,
-      cwd,
+      directiveText: '## Trailhead coaching v1\n\nfirst version body\n',
+    };
+    await applyInit(opts1);
+    const after1 = readFileSync(join(cwd, 'CLAUDE.md'), 'utf8');
+    assert.match(after1, /first version body/);
+
+    const opts2 = {
+      ...opts1,
+      directiveText: '## Trailhead coaching v2\n\nSECOND version body\n',
+    };
+    const r2 = await applyInit(opts2);
+    assert.equal(r2.projectCoachInstalled, 'replaced');
+    const after2 = readFileSync(join(cwd, 'CLAUDE.md'), 'utf8');
+    assert.match(after2, /SECOND version body/);
+    assert.doesNotMatch(after2, /first version body/);
+    const matches = after2.match(/## Trailhead coaching/g) ?? [];
+    assert.equal(matches.length, 1);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Copilot wiring
+// ---------------------------------------------------------------------------
+
+test('wireCopilot=true writes .vscode/mcp.json + .github/copilot-instructions.md', async () => {
+  const home = makeHome();
+  const cwd = makeCwd();
+  try {
+    mkdirSync(join(cwd, '.vscode'), { recursive: true });
+    const r = await applyInit({
+      ...baseOpts(home, cwd),
+      autoCoach: true,
       wireCopilot: true,
-      // Force-detect by setting one of the env vars detectCopilot looks at.
-      // Otherwise we'd rely on the dev machine's PATH for the `code` binary.
     });
-    // The detection has to match — if it didn't, copilot will be { wired: false }
-    // and the test should still pass on dev machines where `code` is in PATH.
-    if (r.copilot.wired) {
-      assert.equal(r.copilot.mcpJsonInstalled, 'created');
-      assert.ok(existsSync(join(cwd, '.vscode', 'mcp.json')));
-      const mcp = JSON.parse(readFileSync(join(cwd, '.vscode', 'mcp.json'), 'utf8'));
-      assert.equal(mcp.servers.trailhead.command, 'npx');
-      assert.equal(mcp.servers.trailhead.env.TRAILHEAD_API_URL, 'https://api.example.com');
-      assert.equal(mcp.servers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-123');
-      assert.equal(r.copilot.instructionsInstalled, 'created');
-      const instructions = readFileSync(
-        join(cwd, '.github', 'copilot-instructions.md'),
-        'utf8',
-      );
-      assert.match(instructions, /## Trailhead coaching/);
-      assert.match(instructions, /\bcoach\b/);
-    }
+    assert.equal(r.copilot.wired, true);
+    assert.equal(r.copilot.mcpJsonInstalled, 'created');
+    const mcp = readJson(join(cwd, '.vscode', 'mcp.json'));
+    assert.equal(mcp.servers.trailhead.command, 'npx');
+    assert.equal(mcp.servers.trailhead.env.TRAILHEAD_API_URL, 'https://api.example.com');
+    assert.equal(mcp.servers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-123');
+    assert.equal(r.copilot.instructionsInstalled, 'created');
+    const instructions = readFileSync(join(cwd, '.github', 'copilot-instructions.md'), 'utf8');
+    assert.match(instructions, /## Trailhead coaching/);
+    assert.match(instructions, /\bcoach\b/);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -242,12 +326,10 @@ test('wireCopilot=true is idempotent — second run reports unchanged', async ()
   const home = makeHome();
   const cwd = makeCwd();
   try {
-    // Force Copilot detection by creating .vscode/ in cwd.
     mkdirSync(join(cwd, '.vscode'), { recursive: true });
-    const opts = { ...baseOpts(home), autoCoach: true, cwd, wireCopilot: true };
+    const opts = { ...baseOpts(home, cwd), autoCoach: true, wireCopilot: true };
     const r1 = await applyInit(opts);
     const r2 = await applyInit(opts);
-    assert.equal(r1.copilot.wired, true);
     assert.equal(r1.copilot.mcpJsonInstalled, 'created');
     assert.equal(r2.copilot.mcpJsonInstalled, 'unchanged');
     assert.equal(r2.copilot.instructionsInstalled, 'unchanged');
@@ -261,12 +343,10 @@ test('wireCopilot=false skips Copilot wiring', async () => {
   const home = makeHome();
   const cwd = makeCwd();
   try {
-    // Force-detect Copilot — would normally write — but the flag overrides.
     mkdirSync(join(cwd, '.vscode'), { recursive: true });
     const r = await applyInit({
-      ...baseOpts(home),
+      ...baseOpts(home, cwd),
       autoCoach: true,
-      cwd,
       wireCopilot: false,
     });
     assert.equal(r.copilot.wired, false);
@@ -278,53 +358,19 @@ test('wireCopilot=false skips Copilot wiring', async () => {
   }
 });
 
-test('wireClaudeCode=false skips Claude Code wiring', async () => {
+test('wireClaudeCode=false skips Claude Code wiring entirely', async () => {
   const home = makeHome();
   const cwd = makeCwd();
   try {
     const r = await applyInit({
-      ...baseOpts(home),
+      ...baseOpts(home, cwd),
       autoCoach: true,
-      cwd,
       wireClaudeCode: false,
     });
     assert.equal(r.claudeCode.wired, false);
+    assert.equal(existsSync(join(cwd, '.mcp.json')), false);
     assert.equal(existsSync(join(home, '.claude.json')), false);
     assert.equal(existsSync(join(cwd, 'CLAUDE.md')), false);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test('directive section is replaced (not duplicated) when src/coaching-directive.md changes', async () => {
-  const home = makeHome();
-  const cwd = makeCwd();
-  try {
-    // First run with one directive text.
-    const opts1 = {
-      ...baseOpts(home),
-      autoCoach: true,
-      cwd,
-      directiveText: '## Trailhead coaching v1\n\nfirst version body\n',
-    };
-    await applyInit(opts1);
-    const after1 = readFileSync(join(cwd, 'CLAUDE.md'), 'utf8');
-    assert.match(after1, /first version body/);
-
-    // Second run with a different directive — section must be replaced.
-    const opts2 = {
-      ...opts1,
-      directiveText: '## Trailhead coaching v2\n\nSECOND version body\n',
-    };
-    const r2 = await applyInit(opts2);
-    assert.equal(r2.projectCoachInstalled, 'replaced');
-    const after2 = readFileSync(join(cwd, 'CLAUDE.md'), 'utf8');
-    assert.match(after2, /SECOND version body/);
-    assert.doesNotMatch(after2, /first version body/);
-    // No duplication.
-    const matches = after2.match(/## Trailhead coaching/g) ?? [];
-    assert.equal(matches.length, 1);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
