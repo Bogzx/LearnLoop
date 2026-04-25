@@ -19,6 +19,7 @@ Return JSON only, no prose:
 { "dimensions": { ...five integers 0-10... }, "missing": { ...optional short hints... } }
 
 Rules — MUST follow:
-- Each "missing" hint MUST be ONE sentence, under 60 characters.
-- NEVER enumerate examples, list multiple aspects, or ask follow-up questions in a hint. Pick the single most important gap.
+- Each "missing" hint MUST be exactly ONE short declarative statement, under 60 characters.
+- NEVER ask rhetorical questions or use "What is..." / "How does..." / "Where..." phrasing in hints — these trigger a repetition loop. Use a flat statement of what is absent (e.g. "no file path mentioned").
+- NEVER enumerate examples, list multiple aspects, or include follow-up questions.
 - Only include a dimension in "missing" if it scored below 5. Empty {} if all scored 5+.`;
