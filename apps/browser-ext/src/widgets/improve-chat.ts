@@ -1,21 +1,35 @@
 // Improve-chat widget — Gemini-driven multi-turn prompt coach.
 // Spec: docs/superpowers/specs/2026-04-26-improve-widget-design.md
 //
-// Replaces the score-card body with a chat thread when "Improve" is
-// clicked. The user has up to 5 turns; the conversation collapses into a
-// polished prompt that gets dropped into Claude's composer (no auto-send).
+// Card layout (single, persistent close button):
+//
+//   ┌─────────────────────────────────────────┐
+//   │ <stage header>                       [×] │  ← X always cancels
+//   ├─────────────────────────────────────────┤
+//   │ <choice | thread+input | preview | err> │  ← stage-specific body
+//   └─────────────────────────────────────────┘
+//
+// Stages:
+//   1. choice  — opening screen with a single "Start coaching" button.
+//                (The wiki-context option lives in the extension popup,
+//                not here.)
+//   2. asking  — chat thread + input row, Send only.
+//   3. preview — polished prompt + Use this. Use this writes the prompt
+//                into Claude's composer and marks it approved so the
+//                user's next Enter goes straight to Claude.
+//   4. error   — coach unreachable; "Use template instead" fallback.
 
 import type { ImproveResponse, ImproveTurn, MissingHints } from '@trailhead/shared';
 import { improve as apiImprove } from '../api.ts';
 import { USER_ID } from '../config.ts';
 import { writePrompt, type Selectors } from '../selectors.ts';
-import { hideCard } from '../score-card.ts';
-import { augmentAndSend } from '../send-intercept.ts';
+import { resetCard } from '../score-card.ts';
+import { augmentAndSend, markApproved } from '../send-intercept.ts';
 
 export const IMPROVE_TURN_CAP = 5;
 
 type ImproveState =
-  | { stage: 'idle' }
+  | { stage: 'choice' }
   | { stage: 'asking'; history: ImproveTurn[]; pending: false }
   | { stage: 'asking'; history: ImproveTurn[]; pending: true; command: 'next' | 'finalize' }
   | { stage: 'preview'; history: ImproveTurn[]; polished: string; rationale?: string }
@@ -25,21 +39,31 @@ type ImproveState =
 
 interface ChatRefs {
   root: HTMLDivElement;
+  // Header (always visible)
   header: HTMLDivElement;
+  headerTitle: HTMLDivElement;
+  closeBtn: HTMLButtonElement;
+  // Choice screen
+  choice: HTMLDivElement;
+  startBtn: HTMLButtonElement;
+  // Chat thread
   thread: HTMLDivElement;
   inputRow: HTMLDivElement;
   input: HTMLTextAreaElement;
   sendBtn: HTMLButtonElement;
-  doneBtn: HTMLButtonElement;
-  cancelBtn: HTMLButtonElement;
-  preview: HTMLDivElement;
+  // Preview body (the polished prompt — preview stage only)
   previewBody: HTMLPreElement;
+  // Universal "Use AI prompt" row: visible in asking + preview, disabled
+  // until a polished prompt arrives.
+  useThisRow: HTMLDivElement;
   useThisBtn: HTMLButtonElement;
-  editFurtherBtn: HTMLButtonElement;
+  // I'm done lives in its own row, visible in preview only.
+  previewActionsRow: HTMLDivElement;
+  previewImDoneBtn: HTMLButtonElement;
+  // Error
   errorBody: HTMLDivElement;
   errorMsg: HTMLDivElement;
   useTemplateBtn: HTMLButtonElement;
-  cancelErrBtn: HTMLButtonElement;
 }
 
 function userReplyCount(history: ImproveTurn[]): number {
@@ -51,11 +75,15 @@ export function openImproveChat(
   originalPrompt: string,
   missing: MissingHints,
 ): void {
+  console.info('[trailhead] openImproveChat: originalPrompt=', originalPrompt.slice(0, 60), 'missing=', Object.keys(missing));
   const cardEl = document.getElementById('trailhead-score-card') as HTMLDivElement | null;
-  if (!cardEl) return;
+  if (!cardEl) {
+    console.warn('[trailhead] openImproveChat: no #trailhead-score-card in DOM');
+    return;
+  }
 
   const refs = buildChatDom(cardEl);
-  let state: ImproveState = { stage: 'idle' };
+  let state: ImproveState = { stage: 'choice' };
 
   const setState = (next: ImproveState): void => {
     state = next;
@@ -98,7 +126,6 @@ export function openImproveChat(
     });
   };
 
-  // Wire interactions.
   const sendUserReply = (): void => {
     if (state.stage !== 'asking' || state.pending) return;
     const text = refs.input.value.trim();
@@ -110,6 +137,28 @@ export function openImproveChat(
     setState({ stage: 'asking', history, pending: true, command });
   };
 
+  // "I'm done" — bail out of the widget and use the user's ORIGINAL
+  // prompt as it stands in the composer. We mark it as approved so the
+  // next Enter sends straight to Claude without re-opening the score
+  // card. Used from the chat (asking) and preview stages.
+  const onImDone = (): void => {
+    console.info('[trailhead] improve: I\'m done clicked, originalPrompt=', originalPrompt.slice(0, 60));
+    markApproved(originalPrompt);
+    sel.textarea.focus();
+    setState({ stage: 'done' });
+  };
+
+  // ----- Header X (single cancel for the whole widget)
+  refs.closeBtn.addEventListener('click', () => setState({ stage: 'cancelled' }));
+
+  // ----- Choice screen
+  refs.startBtn.addEventListener('click', () => {
+    if (state.stage !== 'choice') return;
+    setState({ stage: 'asking', history: [], pending: true, command: 'next' });
+    requestAnimationFrame(() => refs.input.focus());
+  });
+
+  // ----- Chat
   refs.sendBtn.addEventListener('click', sendUserReply);
   refs.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -121,49 +170,70 @@ export function openImproveChat(
       setState({ stage: 'cancelled' });
     }
   });
-  refs.doneBtn.addEventListener('click', () => {
-    if (state.stage !== 'asking' || state.pending) return;
-    setState({ stage: 'asking', history: state.history, pending: true, command: 'finalize' });
-  });
-  refs.cancelBtn.addEventListener('click', () => setState({ stage: 'cancelled' }));
-  refs.cancelErrBtn.addEventListener('click', () => setState({ stage: 'cancelled' }));
+
+  // ----- Preview
   refs.useThisBtn.addEventListener('click', () => {
     if (state.stage !== 'preview') return;
     const polished = state.polished;
     try {
       writePrompt(sel.textarea, polished);
       sel.textarea.focus();
+      // Tell send-intercept this exact text is pre-approved so the user's
+      // next Enter sends straight to Claude (no score-card, no widget).
+      markApproved(polished);
     } catch (err) {
       console.warn('[trailhead] writePrompt failed', err);
     }
     setState({ stage: 'done' });
   });
-  refs.editFurtherBtn.addEventListener('click', () => {
-    if (state.stage !== 'preview') return;
-    setState({ stage: 'asking', history: state.history, pending: false });
-  });
+  refs.previewImDoneBtn.addEventListener('click', onImDone);
+
+  // ----- Error
   refs.useTemplateBtn.addEventListener('click', () => {
     setState({ stage: 'done' });
     void augmentAndSend();
   });
 
   cardEl.hidden = false;
-  setState({ stage: 'asking', history: [], pending: true, command: 'next' });
-  refs.input.focus();
+  render(refs, state);
 }
 
 function buildChatDom(card: HTMLDivElement): ChatRefs {
-  // Wipe existing children — the score-card body is being repurposed.
   card.replaceChildren();
   card.dataset.mode = 'improve';
 
+  // Header with title + persistent X
   const header = document.createElement('div');
   header.className = 'trailhead-improve-header';
-  header.textContent = 'Improving your prompt';
+  const headerTitle = document.createElement('div');
+  headerTitle.className = 'trailhead-improve-header-title';
+  headerTitle.textContent = 'Improve your prompt';
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'trailhead-improve-close';
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.textContent = '×';
+  header.append(headerTitle, closeBtn);
 
+  // Choice screen — single Start button now that wiki context lives in
+  // the popup.
+  const choice = document.createElement('div');
+  choice.className = 'trailhead-improve-choice';
+  const choiceIntro = document.createElement('div');
+  choiceIntro.className = 'trailhead-improve-choice-intro';
+  choiceIntro.textContent = 'Want me to coach this prompt with a few quick questions?';
+  const choiceActions = document.createElement('div');
+  choiceActions.className = 'trailhead-improve-choice-actions';
+  const startBtn = document.createElement('button');
+  startBtn.type = 'button';
+  startBtn.className = 'is-primary';
+  startBtn.textContent = 'Start coaching';
+  choiceActions.append(startBtn);
+  choice.append(choiceIntro, choiceActions);
+
+  // Chat
   const thread = document.createElement('div');
   thread.className = 'trailhead-improve-thread';
-
   const inputRow = document.createElement('div');
   inputRow.className = 'trailhead-improve-input-row';
   const input = document.createElement('textarea');
@@ -174,31 +244,37 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   sendBtn.type = 'button';
   sendBtn.className = 'is-primary';
   sendBtn.textContent = 'Send';
-  const doneBtn = document.createElement('button');
-  doneBtn.type = 'button';
-  doneBtn.textContent = 'I’m done';
-  const cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.textContent = 'Cancel';
-  inputRow.append(input, sendBtn, doneBtn, cancelBtn);
+  inputRow.append(input, sendBtn);
 
-  const preview = document.createElement('div');
-  preview.className = 'trailhead-improve-preview';
-  preview.hidden = true;
+  // Preview body (the polished prompt) — preview stage only.
   const previewBody = document.createElement('pre');
   previewBody.className = 'trailhead-improve-preview-body';
-  const previewActions = document.createElement('div');
-  previewActions.className = 'trailhead-improve-preview-actions';
+  previewBody.hidden = true;
+
+  // Universal "Use AI prompt" row — visible across asking + preview so
+  // the action is always discoverable. Stays disabled until polished
+  // arrives, then lights up.
+  const useThisRow = document.createElement('div');
+  useThisRow.className = 'trailhead-improve-preview-actions';
   const useThisBtn = document.createElement('button');
   useThisBtn.type = 'button';
   useThisBtn.className = 'is-primary';
-  useThisBtn.textContent = 'Use this';
-  const editFurtherBtn = document.createElement('button');
-  editFurtherBtn.type = 'button';
-  editFurtherBtn.textContent = 'Edit further';
-  previewActions.append(useThisBtn, editFurtherBtn);
-  preview.append(previewBody, previewActions);
+  useThisBtn.disabled = true;
+  useThisBtn.title = 'Available once the coach has polished your prompt.';
+  useThisBtn.textContent = 'Use AI prompt';
+  useThisRow.append(useThisBtn);
 
+  // Preview-only actions row (currently just I'm done).
+  const previewActionsRow = document.createElement('div');
+  previewActionsRow.className = 'trailhead-improve-preview-actions';
+  previewActionsRow.hidden = true;
+  const previewImDoneBtn = document.createElement('button');
+  previewImDoneBtn.type = 'button';
+  previewImDoneBtn.title = 'Discard the polished version — use the prompt I originally typed.';
+  previewImDoneBtn.textContent = 'I’m done';
+  previewActionsRow.append(previewImDoneBtn);
+
+  // Error
   const errorBody = document.createElement('div');
   errorBody.className = 'trailhead-improve-error';
   errorBody.hidden = true;
@@ -210,65 +286,98 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   useTemplateBtn.type = 'button';
   useTemplateBtn.className = 'is-primary';
   useTemplateBtn.textContent = 'Use template instead';
-  const cancelErrBtn = document.createElement('button');
-  cancelErrBtn.type = 'button';
-  cancelErrBtn.textContent = 'Cancel';
-  errActions.append(useTemplateBtn, cancelErrBtn);
+  errActions.append(useTemplateBtn);
   errorBody.append(errorMsg, errActions);
 
-  card.append(header, thread, inputRow, preview, errorBody);
+  card.append(
+    header,
+    choice,
+    thread,
+    inputRow,
+    previewBody,
+    useThisRow,
+    previewActionsRow,
+    errorBody,
+  );
 
   return {
-    root: card, header, thread, inputRow, input,
-    sendBtn, doneBtn, cancelBtn,
-    preview, previewBody, useThisBtn, editFurtherBtn,
-    errorBody, errorMsg, useTemplateBtn, cancelErrBtn,
+    root: card, header, headerTitle, closeBtn,
+    choice, startBtn,
+    thread, inputRow, input, sendBtn,
+    previewBody, useThisRow, useThisBtn, previewActionsRow, previewImDoneBtn,
+    errorBody, errorMsg, useTemplateBtn,
   };
 }
 
 function render(refs: ChatRefs, state: ImproveState): void {
-  // Re-render the thread bubbles. Conversations are short (≤ 5 turns), so
-  // a full replace is cheaper than a diff.
-  refs.thread.replaceChildren();
-  if (state.stage === 'asking' || state.stage === 'preview' || state.stage === 'error') {
+  refs.choice.hidden = state.stage !== 'choice';
+  refs.thread.hidden = state.stage !== 'asking';
+  refs.inputRow.hidden = state.stage !== 'asking';
+  refs.previewBody.hidden = state.stage !== 'preview';
+  // Use AI prompt row is visible across asking + preview.
+  refs.useThisRow.hidden = state.stage !== 'asking' && state.stage !== 'preview';
+  // I'm done row stays preview-only.
+  refs.previewActionsRow.hidden = state.stage !== 'preview';
+  refs.errorBody.hidden = state.stage !== 'error';
+
+  if (state.stage === 'choice') {
+    refs.headerTitle.textContent = 'Improve your prompt';
+  } else if (state.stage === 'asking') {
+    refs.headerTitle.textContent = 'Coaching…';
+  } else if (state.stage === 'preview') {
+    refs.headerTitle.textContent = 'Polished prompt ready';
+  } else if (state.stage === 'error') {
+    refs.headerTitle.textContent = 'Coach unavailable';
+  }
+
+  if (state.stage === 'asking') {
+    refs.thread.replaceChildren();
     for (const t of state.history) {
       const bubble = document.createElement('div');
       bubble.className = `trailhead-bubble trailhead-bubble--${t.role}`;
       bubble.textContent = (t.role === 'assistant' ? '🤖 ' : '👤 ') + t.text;
       refs.thread.appendChild(bubble);
     }
-    if (state.stage === 'asking' && state.pending) {
+    if (state.pending) {
       const bubble = document.createElement('div');
       bubble.className = 'trailhead-bubble trailhead-bubble--assistant trailhead-bubble--pending';
       bubble.textContent = '…';
       refs.thread.appendChild(bubble);
     }
     refs.thread.scrollTop = refs.thread.scrollHeight;
+
+    const pending = state.pending;
+    refs.input.disabled = pending;
+    refs.sendBtn.disabled = pending;
+    // "I'm done" stays enabled even while a request is in flight — the
+    // user is allowed to bail at any moment. Pending API responses are
+    // ignored once we transition to 'done'.
+    refs.input.placeholder = pending ? 'Coach is thinking…' : 'Type your answer…';
   }
-
-  const isAsking = state.stage === 'asking';
-  const pending = isAsking && state.pending;
-  refs.inputRow.hidden = state.stage !== 'asking';
-  refs.preview.hidden = state.stage !== 'preview';
-  refs.errorBody.hidden = state.stage !== 'error';
-
-  refs.input.disabled = pending;
-  refs.input.placeholder = pending ? 'Coach is thinking…' : 'Type your answer…';
-  refs.sendBtn.disabled = pending;
-  refs.doneBtn.disabled = pending || (isAsking && state.history.length === 0);
 
   if (state.stage === 'preview') {
     refs.previewBody.textContent = state.polished;
-    refs.header.textContent = 'Polished prompt ready';
-  } else if (state.stage === 'error') {
-    refs.errorMsg.textContent = state.message;
-    refs.header.textContent = 'Coach unavailable';
+    // Enable Use AI prompt now that we have a polished prompt to use.
+    // Defensive empty-check stays in case the API ever returns "".
+    refs.useThisBtn.disabled = !state.polished?.trim();
+    refs.useThisBtn.title = 'Drop the AI-polished prompt into Claude’s composer.';
   } else {
-    refs.header.textContent = 'Improving your prompt';
+    // Asking (and any pre-preview state) — keep the button disabled
+    // until the coach finalizes.
+    refs.useThisBtn.disabled = true;
+    refs.useThisBtn.title = 'Available once the coach has polished your prompt.';
+  }
+  if (state.stage === 'error') {
+    refs.errorMsg.textContent = state.message;
   }
 }
 
 function teardown(refs: ChatRefs): void {
   delete refs.root.dataset.mode;
-  hideCard();
+  // buildChatDom wiped cardEl's children and replaced them with chat
+  // DOM, so the score-card module's bodyEl/actionsEl references are now
+  // stale. Tear cardEl all the way down so the next scoreAndShow
+  // rebuilds a fresh card with live refs — otherwise the next send
+  // would reveal the leftover chat DOM ("widget opens again" bug).
+  resetCard();
 }
