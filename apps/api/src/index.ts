@@ -10,15 +10,22 @@ import type {
   ContextResponse,
   DiffRequest,
   DiffResponse,
+  Dimension,
   DimensionScores,
   ExamplesItem,
   ExamplesResponse,
   ScoreRequest,
   ScoreResponse,
+  SkillArcObservation,
+  SkillArcResponse,
+  TeamMetricsResponse,
   WikiProposeRequest,
   WikiProposeResponse,
   WikiRecentItem,
   WikiRecentResponse,
+  WikiTreeLearning,
+  WikiTreeNode,
+  WikiTreeResponse,
 } from '@trailhead/shared';
 import { DIMENSIONS } from '@trailhead/shared';
 import { ancestorPaths, normalize, normalizePath } from '@trailhead/scoring';
@@ -66,6 +73,10 @@ app.get('/', (c) =>
       'GET  /examples?path=',
       'GET  /wiki/recent?since=ISO',
       'POST /diff',
+      'GET  /skill-arc?user_id=&since=ISO',
+      'GET  /team/metrics',
+      'GET  /wiki/tree',
+      'POST /onboard/repo (501 — scaffolding)',
     ],
   }),
 );
@@ -435,6 +446,169 @@ app.post('/diff', async (c) => {
   };
   return c.json(res);
 });
+
+// ----- GET /skill-arc?user_id=&since=ISO -------------------------------------
+// Time-series of per-dimension scores for the dashboard hero chart. Drives
+// the §13 close beat (live tick during demo). Defaults: any user, last 7
+// days. Capped at 5000 rows to keep the chart responsive.
+
+app.get('/skill-arc', async (c) => {
+  const userIdParam = c.req.query('user_id');
+  const sinceParam = c.req.query('since');
+  const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(since.getTime())) return c.json({ error: 'bad_since' }, 400);
+  const limit = Math.max(1, Math.min(5000, Number(c.req.query('limit') ?? 1000)));
+
+  const rows = userIdParam
+    ? await q<{ dimension: Dimension; score: number; ts: Date }>(
+        `SELECT dimension, score, ts
+           FROM skill_observations
+          WHERE team_id = $1 AND user_id = $2 AND ts > $3
+          ORDER BY ts ASC
+          LIMIT $4`,
+        [DEMO_TEAM_ID, userIdParam, since.toISOString(), limit],
+      )
+    : await q<{ dimension: Dimension; score: number; ts: Date }>(
+        `SELECT dimension, score, ts
+           FROM skill_observations
+          WHERE team_id = $1 AND ts > $2
+          ORDER BY ts ASC
+          LIMIT $3`,
+        [DEMO_TEAM_ID, since.toISOString(), limit],
+      );
+
+  const res: SkillArcResponse = {
+    observations: rows.map((r): SkillArcObservation => ({
+      dimension: r.dimension,
+      score: r.score,
+      ts: r.ts.toISOString(),
+    })),
+  };
+  return c.json(res);
+});
+
+// ----- GET /team/metrics -----------------------------------------------------
+// Snapshot for the dashboard /team page. All cheap aggregate counts; no
+// time-series. Reuse rate is captures with outcome='helpful' over total
+// captures (proxy for "team's prompts work" until we have the real
+// graduated-prompt-match metric).
+
+app.get('/team/metrics', async (c) => {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const [obs, learnings, captures, users] = await Promise.all([
+    q<{ avg_overall: number | null; total_obs: number }>(
+      `SELECT AVG(score)::float AS avg_overall, COUNT(*)::int AS total_obs
+         FROM skill_observations
+        WHERE team_id = $1 AND ts > $2`,
+      [DEMO_TEAM_ID, sevenDaysAgo],
+    ),
+    q<{ durable_count: number; draft_count: number }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE l.status = 'durable')::int AS durable_count,
+         COUNT(*) FILTER (WHERE l.status = 'draft')::int   AS draft_count
+         FROM learnings l
+         JOIN nodes n ON n.id = l.node_id
+        WHERE n.team_id = $1`,
+      [DEMO_TEAM_ID],
+    ),
+    q<{ total: number; helpful: number }>(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE outcome = 'helpful')::int AS helpful
+         FROM captures
+        WHERE team_id = $1 AND created_at > $2`,
+      [DEMO_TEAM_ID, sevenDaysAgo],
+    ),
+    q<{ active_users: number }>(
+      `SELECT COUNT(DISTINCT user_id)::int AS active_users
+         FROM skill_observations
+        WHERE team_id = $1 AND ts > $2`,
+      [DEMO_TEAM_ID, sevenDaysAgo],
+    ),
+  ]);
+
+  const obsRow = obs[0]!;
+  const learningsRow = learnings[0]!;
+  const capturesRow = captures[0]!;
+  const usersRow = users[0]!;
+
+  const res: TeamMetricsResponse = {
+    avg_overall: obsRow.avg_overall ? Math.round(obsRow.avg_overall * 10) / 10 : 0,
+    reuse_rate: capturesRow.total > 0 ? capturesRow.helpful / capturesRow.total : 0,
+    durable_count: learningsRow.durable_count,
+    draft_count: learningsRow.draft_count,
+    total_obs: obsRow.total_obs,
+    active_users: usersRow.active_users,
+  };
+  return c.json(res);
+});
+
+// ----- GET /wiki/tree --------------------------------------------------------
+// Full node list for the dashboard /wiki page. One row per node with its
+// learnings split into durable vs draft. Sort by path (prefix-friendly).
+
+app.get('/wiki/tree', async (c) => {
+  const rows = await q<{
+    node_id: string;
+    path: string;
+    body_md: string;
+    learning_id: string | null;
+    learning_body: string | null;
+    learning_status: 'draft' | 'durable' | null;
+    reinforcement_count: number | null;
+  }>(
+    `SELECT n.id AS node_id, n.path, n.body_md,
+            l.id AS learning_id, l.body AS learning_body,
+            l.status AS learning_status, l.reinforcement_count
+       FROM nodes n
+       LEFT JOIN learnings l ON l.node_id = n.id
+      WHERE n.team_id = $1
+      ORDER BY n.path ASC,
+               COALESCE(l.reinforcement_count, 0) DESC`,
+    [DEMO_TEAM_ID],
+  );
+
+  const byPath = new Map<string, WikiTreeNode>();
+  for (const r of rows) {
+    let node = byPath.get(r.path);
+    if (!node) {
+      node = { path: r.path, body_md: r.body_md, durable_learnings: [], draft_learnings: [] };
+      byPath.set(r.path, node);
+    }
+    if (r.learning_id && r.learning_body && r.learning_status) {
+      const learning: WikiTreeLearning = {
+        id: r.learning_id,
+        body: r.learning_body,
+        status: r.learning_status,
+        reinforcement_count: r.reinforcement_count ?? 0,
+      };
+      if (r.learning_status === 'durable') node.durable_learnings.push(learning);
+      else node.draft_learnings.push(learning);
+    }
+  }
+
+  const res: WikiTreeResponse = { nodes: Array.from(byPath.values()) };
+  return c.json(res);
+});
+
+// ----- POST /onboard/repo (SCAFFOLDING) --------------------------------------
+// 501 stub. Future implementation: upsert nodes for each path in the
+// request, optionally seed body_md from initial_rules. See
+// docs/superpowers/specs/2026-04-25-demo-completion-design.md §C.1.
+
+app.post('/onboard/repo', (c) =>
+  c.json(
+    {
+      error: 'not_implemented',
+      roadmap:
+        'Bootstrap a team wiki by upserting nodes for each path and ' +
+        'optionally seeding body_md from initial_rules. See ' +
+        'docs/superpowers/specs/2026-04-25-demo-completion-design.md §C.1.',
+    },
+    501,
+  ),
+);
 
 // Surface unhandled errors as 500 with a one-line shape clients can show.
 app.onError((err, c) => {
