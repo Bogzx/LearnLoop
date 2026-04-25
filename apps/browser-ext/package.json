@@ -1,0 +1,25 @@
+{
+  "name": "@trailhead/browser-ext",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Trailhead browser extension — live 5-dimension score-card on Claude.ai",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test --experimental-strip-types src/hash.test.mts src/augment.test.mts src/api.test.mts src/diff-parse.test.mts src/widgets/wiki-toast.test.mts test/bundle-load.test.mjs",
+    "smoke": "bash scripts/smoke.sh"
+  },
+  "dependencies": {
+    "@trailhead/scoring": "*",
+    "@trailhead/score-card": "*",
+    "@trailhead/shared": "*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2"
+  }
+}
