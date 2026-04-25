@@ -30,9 +30,9 @@
    - Detects user's draft prompt, scores it via backend
    - Augments with coaching that makes the AI itself ask clarifying questions
    - This is the visceral cross-platform "wow" moment
-2. **Cursor extension** with pre-prompt nudge showing team-anchored examples
+2. **VS Code extension** with pre-prompt nudge sidebar showing team-anchored examples
 3. **Backend** that: scores prompts on 7 dimensions, retrieves team examples by tree-walk, captures sessions
-4. **MCP server** with at least one autonomous wiki update during the demo (`wiki.update_learnings`)
+4. **MCP server** for Claude Code / Claude Desktop, with at least one autonomous wiki update during the demo (`wiki.update_learnings`). For the demo, Claude Code runs in VS Code's integrated terminal so both surfaces are visible in one window.
 5. **Web dashboard** with skill arc + L1→L2 metrics view (mostly seeded data, but live navigation)
 
 ### Cuts in priority order (cut first if behind)
@@ -63,8 +63,8 @@
 ┌────────────────────────────────────────────────────┐
 │  THIN CLIENTS                                      │
 │   Browser ext (Plasmo, Claude.ai)                  │
-│   Cursor extension (TypeScript)                    │
-│   MCP server (bundled with Cursor extension)       │
+│   VS Code extension (TypeScript)                   │
+│   MCP server (standalone, for Claude Code/Desktop) │
 │   Web dashboard (Next.js)                          │
 └────────────────────┬───────────────────────────────┘
                      │ HTTPS, single hardcoded team token
@@ -257,13 +257,24 @@ Hackathon ships **Claude.ai only**. Other browsers (ChatGPT, Gemini) become a sl
 
 ---
 
-## 7. Cursor extension
+## 7. VS Code extension + MCP server
 
-### What it does
+### Two surfaces, two jobs
 
-- **Pre-prompt panel** (sidebar) showing 2-3 team-anchored example prompts when the user is editing a file. Source: tree-walk on `prompts.node_id` matching ancestor paths.
+The IDE-side coaching is split across **two coordinated components** because VS Code's built-in chat APIs are limited and we don't want to fight them:
+
+**(A) VS Code extension** — the visible coaching UI alongside whatever AI chat the user is in (Copilot Chat, Continue, Cline, or just our own panel):
+- **Pre-prompt panel** (sidebar) showing 2-3 team-anchored example prompts when the user opens a file. Source: tree-walk on `prompts.node_id` matching ancestor paths.
+- **Articulation scaffold** (Cmd+Shift+K) — the 3-field thinking helper.
 - **Post-prompt outcome rating** widget (one keystroke).
-- **MCP server bundled** with the extension — exposes `wiki.update_learnings`, `wiki.context_for`, `wiki.search`, `wiki.rules_for`.
+- **Manual "send to Trailhead" command** for capturing prompts from any chat surface in the editor.
+
+**(B) MCP server (standalone Node binary)** — the autonomous-write path that any MCP client can connect to:
+- **Claude Code** (running in VS Code's integrated terminal — primary demo target)
+- **Claude Desktop** (separate window — alternative)
+- **Continue / Cline** (if user has them — bonus reach)
+
+Configuration: user adds the MCP server to their `.mcp.json` or Claude Code config. Once registered, the AI in any of those clients sees and can call our tools.
 
 ### MCP tools (minimal surface for demo)
 
@@ -285,7 +296,19 @@ wiki.rules_for(file_path)
   → returns active rules from ancestor nodes
 ```
 
-The autonomous demo moment: user says *"actually we always use exponential backoff with jitter here"* → Claude (in Cursor) calls `wiki.update_learnings` → MCP popup shows the proposed update + counter ("2/3, one more reinforcement and this becomes durable") → user clicks approve.
+### The autonomous demo moment
+
+VS Code is open. Integrated terminal at the bottom runs Claude Code with our MCP server registered. User says to Claude Code:
+
+> *"actually we always use exponential backoff with jitter here, that's our convention."*
+
+Claude Code calls `wiki.update_learnings`. The MCP server returns:
+
+```
+{ action: "reinforced", current_count: 3, promoted_to_durable: true }
+```
+
+The Claude Code response shows: *"Updated team wiki. This pattern was reinforced for the third time and is now a durable team learning."* The audience sees both the IDE (with our extension's sidebar) and the terminal (with Claude Code) in one VS Code window.
 
 ---
 
@@ -353,13 +376,13 @@ Hand-craft these to be plausible and to hit the demo flow.
 
 ## 12. Build sequencing for a 4-person team
 
-| Hours | Person A (frontend) | Person B (browser ext) | Person C (Cursor ext + MCP) | Person D (backend) |
+| Hours | Person A (frontend) | Person B (browser ext) | Person C (VS Code ext + MCP) | Person D (backend) |
 |-------|---------------------|------------------------|------------------------------|---------------------|
-| 0–2 | Next.js scaffold, Tailwind, dashboard skeleton | Plasmo scaffold, manifest for Claude.ai | VS Code/Cursor ext scaffold + activation | Hono + Postgres schema + deploy to Railway |
-| 2–6 | Dashboard pages (skill arc, team metrics, wiki view) — all reading from API | DOM hooks: detect input, intercept send, render augmentation UI | Pre-prompt sidebar pulling `/examples?path=` | `/score`, `/capture`, `/context`, `/examples` endpoints + Haiku integration |
-| 6–10 | Polish dashboard, add the wiki tree view | Implement `/score` call + augmentation rewrite | MCP server + `wiki.update_learnings` tool | `/wiki/propose` + dedup + counter promotion |
-| 10–14 | Wire dashboard to live data, add the L1→L2 progression chart | Polish UX, edge cases (multi-line prompts, paste events) | Post-prompt outcome widget + Prompt Diff display | Demo seeding scripts; populate Acme Fintech data |
-| 14–18 | All-hands: demo seeding, polish | Test demo flow end-to-end on Claude.ai | Test demo flow end-to-end in Cursor | Validate all data renders correctly |
+| 0–2 | Next.js scaffold, Tailwind, dashboard skeleton | Plasmo scaffold, manifest for Claude.ai | VS Code extension scaffold + sidebar webview; standalone MCP server scaffold | Hono + Postgres schema + deploy to Railway |
+| 2–6 | Dashboard pages (skill arc, team metrics, wiki view) — all reading from API | DOM hooks: detect input, intercept send, render augmentation UI | Pre-prompt sidebar pulling `/examples?path=`; articulation scaffold (Cmd+Shift+K) | `/score`, `/capture`, `/context`, `/examples` endpoints + Haiku integration |
+| 6–10 | Polish dashboard, add the wiki tree view | Implement `/score` call + augmentation rewrite | MCP server tools (`wiki.update_learnings`, `wiki.context_for`, `wiki.search`); test against Claude Code | `/wiki/propose` + dedup + counter promotion |
+| 10–14 | Wire dashboard to live data, add the L1→L2 progression chart | Polish UX, edge cases (multi-line prompts, paste events) | Post-prompt outcome widget + Prompt Diff display; bundle MCP install instructions | Demo seeding scripts; populate Acme Fintech data |
+| 14–18 | All-hands: demo seeding, polish | Test demo flow end-to-end on Claude.ai | Test demo flow end-to-end in VS Code + Claude Code in integrated terminal | Validate all data renders correctly |
 | 18–22 | All-hands: bug fixes, fallback recordings | All-hands: rehearse demo 3+ times | All-hands: prepare slides | All-hands: stress-test |
 | 22–24 | Final polish, last bug fixes, final rehearsal |
 
@@ -367,7 +390,7 @@ Hand-craft these to be plausible and to hit the demo flow.
 
 Cut to:
 - Browser ext only (the headline) + minimal backend
-- Skip Cursor extension entirely
+- Skip VS Code extension entirely
 - Skip MCP server entirely (mention as "v2")
 - Dashboard is a single static page with seeded data
 - Demo is browser-only — still very compelling
@@ -384,9 +407,9 @@ This is doable solo in 24h.
 
 **0:40 — Socratic Mode in browser (60s)** — Open Claude.ai. Type *"fix the retry"*. Trailhead extension panel appears: *"Your prompt is missing 2 dimensions. Want me to ask Claude to clarify first?"* Click yes. Augmented prompt sends. Claude responds asking 3 clarifying questions. Demonstrator answers them. Claude gives a perfect answer using the team's actual retry pattern. **The user just went through an articulation scaffold without an articulation scaffold.**
 
-**1:40 — Cursor with team-anchored examples (40s)** — Open Cursor on a pre-seeded Acme Fintech repo. Click in `src/api/webhooks/handler.ts`. Pre-prompt sidebar shows: *"Your team has 3 graduated prompts for webhook patterns. Most-reinforced: idempotent retry with backoff."* Use one. Get team-aware answer.
+**1:40 — VS Code with team-anchored examples (40s)** — Open VS Code on a pre-seeded Acme Fintech repo. Click into `src/api/webhooks/handler.ts`. Trailhead sidebar shows: *"Your team has 3 graduated prompts for webhook patterns. Most-reinforced: idempotent retry with backoff."* Demonstrator opens the integrated terminal, runs Claude Code, pastes the team's pattern, gets team-aware answer.
 
-**2:20 — The autonomous wiki update (30s)** — Mid-conversation in Cursor, demonstrator says *"actually we always use exponential backoff with jitter here."* Claude (via MCP) immediately calls `wiki.update_learnings`. Popup: *"This insight matches a draft from yesterday — reinforcing. 2/3."* Approve. *"This is how the team brain grows itself. No one had to remember to write it down."*
+**2:20 — The autonomous wiki update (30s)** — Still in VS Code, with Claude Code in the integrated terminal. Demonstrator says: *"actually we always use exponential backoff with jitter here."* Claude Code (via our MCP server) immediately calls `wiki.update_learnings`. Response shows: *"This insight matches a draft from yesterday — reinforcing. Counter: 3/3 → promoted to durable."* Cut to the sidebar — the new durable learning appears. *"This is how the team brain grows itself. No one had to remember to write it down."*
 
 **2:50 — Close (10s)** — Cut back to dashboard. Skill arc visibly ticks up. *"We didn't build another AI tool. We built the coach that turns your team's work into a curriculum, makes prompting visible without surveillance, and proves L1→L2 progression with real metrics."*
 
