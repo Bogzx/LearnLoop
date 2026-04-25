@@ -102,6 +102,7 @@ function bucketize(obs: SkillArcResponse['observations']): BucketRow[] {
 }
 
 interface SkillArcChartProps {
+  token: string;
   // Look-back window in hours. Default 24 — covers the demo seed.
   hoursBack?: number;
   // SWR revalidation cadence. 2000 ms during demo; tunable for dev to
@@ -110,6 +111,7 @@ interface SkillArcChartProps {
 }
 
 export function SkillArcChart({
+  token,
   hoursBack = 24,
   refreshInterval = 2000,
 }: SkillArcChartProps) {
@@ -121,8 +123,8 @@ export function SkillArcChart({
   const since = new Date(sinceMs).toISOString();
 
   const { data, error, isLoading } = useSWR<SkillArcResponse>(
-    ['skill-arc', since],
-    () => api.skillArc(since),
+    ['skill-arc', token, since],
+    () => api.skillArc(token, since),
     {
       refreshInterval,
       revalidateOnFocus: true,

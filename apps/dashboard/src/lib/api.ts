@@ -1,13 +1,17 @@
-// Thin SWR-friendly client for the Trailhead API. Reads URL + token from
-// NEXT_PUBLIC_* env so the values end up bundled into the client. This is
-// acceptable for the demo (single hardcoded team token, no real users —
-// see master spec §3). Production would proxy through a server route.
+// Thin SWR-friendly client for the Trailhead API. Every fetcher takes a
+// `token` so the dashboard can render any team's data — the team picker
+// fetches /team/list (no auth) and routes each team card to ?team=<token>;
+// downstream pages read that param and pass it into these calls.
+//
+// Tokens aren't secrets in this design — they're derived from public git
+// remotes. See master spec §3 for the trust model.
 
 import type {
   ContextResponse,
   ExamplesResponse,
   ScoreResponse,
   SkillArcResponse,
+  TeamListResponse,
   TeamMetricsResponse,
   WikiRecentResponse,
   WikiTreeResponse,
@@ -15,21 +19,22 @@ import type {
 
 const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'https://trailheadapi-production.up.railway.app';
 const API_URL = RAW_API_URL.replace(/\/$/, '');
-const TEAM_TOKEN = process.env.NEXT_PUBLIC_TEAM_TOKEN ?? 'trailhead_demo_acme_2026';
 
-// Single source of truth for headers — every fetch goes through here so
-// the token is never accidentally dropped.
-function headers(): HeadersInit {
+// Default fallback when no `?team=` param is present in the URL. Keeps the
+// existing demo-team links (`/wiki`, `/skill-arc`) working without changes.
+export const DEFAULT_TEAM_TOKEN =
+  process.env.NEXT_PUBLIC_TEAM_TOKEN ?? 'trailhead_demo_acme_2026';
+
+function headers(token: string): HeadersInit {
   return {
     'Content-Type': 'application/json',
-    'X-Team-Token': TEAM_TOKEN,
+    'X-Team-Token': token,
   };
 }
 
 // SWR-friendly fetcher. Throws on non-2xx so SWR's `error` channel fires.
-// Path is the URL portion after the API base, e.g. '/skill-arc?since=...'.
-export async function fetcher<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { headers: headers() });
+async function fetcher<T>(path: string, token: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, { headers: headers(token) });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`trailhead-api ${path} ${res.status}: ${text.slice(0, 200)}`);
@@ -37,40 +42,48 @@ export async function fetcher<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+// Public team enumeration — no auth header required server-side.
+async function fetchListTeams(): Promise<TeamListResponse> {
+  const res = await fetch(`${API_URL}/team/list`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`trailhead-api /team/list ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return (await res.json()) as TeamListResponse;
+}
+
 // Typed convenience wrappers. Each page imports the one it needs and
 // passes it as the SWR fetcher; this keeps useSWR<T> generics inferred
 // without each page restating the path string.
 export const api = {
-  skillArc: (since?: string, userId?: string): Promise<SkillArcResponse> => {
+  listTeams: (): Promise<TeamListResponse> => fetchListTeams(),
+  skillArc: (token: string, since?: string, userId?: string): Promise<SkillArcResponse> => {
     const params = new URLSearchParams();
     if (since) params.set('since', since);
     if (userId) params.set('user_id', userId);
     const qs = params.toString();
-    return fetcher(`/skill-arc${qs ? `?${qs}` : ''}`);
+    return fetcher(`/skill-arc${qs ? `?${qs}` : ''}`, token);
   },
-  teamMetrics: (): Promise<TeamMetricsResponse> => fetcher('/team/metrics'),
-  wikiTree: (): Promise<WikiTreeResponse> => fetcher('/wiki/tree'),
-  wikiRecent: (since?: string): Promise<WikiRecentResponse> => {
+  teamMetrics: (token: string): Promise<TeamMetricsResponse> => fetcher('/team/metrics', token),
+  wikiTree: (token: string): Promise<WikiTreeResponse> => fetcher('/wiki/tree', token),
+  wikiRecent: (token: string, since?: string): Promise<WikiRecentResponse> => {
     const qs = since ? `?since=${encodeURIComponent(since)}` : '';
-    return fetcher(`/wiki/recent${qs}`);
+    return fetcher(`/wiki/recent${qs}`, token);
   },
-  context: (path: string): Promise<ContextResponse> =>
-    fetcher(`/context?path=${encodeURIComponent(path)}`),
-  examples: (path: string): Promise<ExamplesResponse> =>
-    fetcher(`/examples?path=${encodeURIComponent(path)}`),
+  context: (token: string, path: string): Promise<ContextResponse> =>
+    fetcher(`/context?path=${encodeURIComponent(path)}`, token),
+  examples: (token: string, path: string): Promise<ExamplesResponse> =>
+    fetcher(`/examples?path=${encodeURIComponent(path)}`, token),
 };
 
-// Score is POST so it doesn't fit the GET fetcher pattern. Inlined for
-// the rare case the dashboard wants to demonstrate scoring directly
-// (not used by the live tick — that just reads /skill-arc).
-export async function scorePrompt(args: {
-  prompt: string;
-  user_id: string;
-  file_path?: string;
-}): Promise<ScoreResponse> {
+// Score is POST so it doesn't fit the GET fetcher pattern.
+export async function scorePrompt(
+  token: string,
+  args: { prompt: string; user_id: string; file_path?: string },
+): Promise<ScoreResponse> {
   const res = await fetch(`${API_URL}/score`, {
     method: 'POST',
-    headers: headers(),
+    headers: headers(token),
     body: JSON.stringify(args),
   });
   if (!res.ok) {

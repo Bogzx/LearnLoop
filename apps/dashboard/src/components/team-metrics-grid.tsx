@@ -16,10 +16,10 @@ function formatPercent(n: number): string {
   return `${Math.round(n * 100)}%`;
 }
 
-export function TeamMetricsGrid() {
+export function TeamMetricsGrid({ token }: { token: string }) {
   const { data, error, isLoading } = useSWR<TeamMetricsResponse>(
-    'team-metrics',
-    () => api.teamMetrics(),
+    ['team-metrics', token],
+    () => api.teamMetrics(token),
     { refreshInterval: REFRESH_MS, revalidateOnFocus: true },
   );
 
