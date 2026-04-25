@@ -84,3 +84,49 @@ export interface DiffResponse {
   team: { prompt: string; overall: number; dimensions: DimensionScores; node_path: string; topic: string | null };
   narrative: string;
 }
+
+// GET /skill-arc?user_id=&since=ISO — time-series of per-dimension scores
+// for the dashboard's hero chart. Drives the §13 close beat.
+export interface SkillArcObservation {
+  dimension: Dimension;
+  score: number;
+  ts: string;       // ISO
+}
+export interface SkillArcResponse { observations: SkillArcObservation[]; }
+
+// GET /team/metrics — snapshot for the dashboard's /team page. No time-series.
+export interface TeamMetricsResponse {
+  avg_overall: number;          // 0-10, current 7-day mean
+  reuse_rate: number;           // 0-1, fraction of captures matching a graduated prompt
+  durable_count: number;        // learnings with status='durable'
+  draft_count: number;          // learnings with status='draft'
+  total_obs: number;            // skill_observations rows
+  active_users: number;         // distinct user_id in skill_observations (last 7d)
+}
+
+// GET /wiki/tree — full team wiki for the dashboard's /wiki page.
+export interface WikiTreeLearning {
+  id: string;
+  body: string;
+  status: 'draft' | 'durable';
+  reinforcement_count: number;
+}
+export interface WikiTreeNode {
+  path: string;
+  body_md: string;
+  durable_learnings: WikiTreeLearning[];   // status='durable' only
+  draft_learnings: WikiTreeLearning[];     // status='draft' only
+}
+export interface WikiTreeResponse { nodes: WikiTreeNode[]; }
+
+// POST /onboard/repo — bootstrap a team's wiki from a list of paths.
+// SCAFFOLDING ONLY: handler returns 501. Shapes locked for future build.
+// Spec ref: 2026-04-25-demo-completion-design.md §C.1
+export interface OnboardRepoRequest {
+  paths: string[];                              // e.g., ['src/api/', 'src/db/', ...]
+  initial_rules?: Record<string, string>;       // path → markdown body for body_md
+}
+export interface OnboardRepoResponse {
+  nodes_created: number;
+  nodes: Array<{ path: string; id: string }>;
+}
