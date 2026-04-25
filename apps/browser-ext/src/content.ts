@@ -19,6 +19,9 @@ import { attachSendIntercept } from './send-intercept.ts';
 import { startWikiToastLoop } from './widgets/wiki-toast.ts';
 import { initCoachingState } from './coaching-state.ts';
 import { initTeamState } from './team-state.ts';
+import { initContextState } from './context-state.ts';
+import { initContextBundle } from './context-bundle.ts';
+import { mountContextPill } from './widgets/context-pill.ts';
 import { mountScoreBadge } from './widgets/score-badge.ts';
 import { mountPromptDiff } from './widgets/prompt-diff.ts';
 import {
@@ -162,6 +165,7 @@ function tryStart(): void {
   started = true;
   activeSel = sel;
   injectStyles();
+  detachers.push(mountContextPill(sel));
   detachers.push(attachScoreCard(sel));
   detachers.push(attachSendIntercept(sel));
   observer = startMutationObserver(sel);
@@ -181,6 +185,11 @@ async function main(): Promise<void> {
   // Same pattern for the popup's Select-team dropdown — every fetch
   // after the user picks a team uses that team's X-Team-Token.
   initTeamState();
+  // Sticky wiki context: popup writes a node path to chrome.storage,
+  // content script reads it sync and prepends the rendered subtree to
+  // every Claude.ai send + every /score and /improve call.
+  initContextState();
+  initContextBundle();
   attachGlobalGuard();
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', tryStart);

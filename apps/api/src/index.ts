@@ -43,6 +43,7 @@ import { DIMENSIONS } from '@trailhead/shared';
 import { ancestorPaths, normalize, normalizePath } from '@trailhead/scoring';
 import { DEMO_TEAM_TOKEN, q, teamIdForToken, upsertNode, wipeTeamData } from './db.ts';
 import { extractTopic, improveCoach, overallScore, scorePrompt, synthesizeDiff } from './gemini.ts';
+import { renderTeamContext } from './team-context.ts';
 import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
 
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
@@ -141,7 +142,19 @@ app.post('/score', async (c) => {
     return c.json({ error: 'bad_request' }, 400);
   }
 
-  const result = await scorePrompt({ prompt: body.prompt, file_path: body.file_path });
+  // Optional sticky wiki context from the popup picker. Bundle is rendered
+  // out-of-band and prepended to Gemini's system instruction so the rubric
+  // is calibrated against the team's conventions without inflating the
+  // prompt being scored.
+  const teamContext = body.context_path
+    ? await renderTeamContext(c.get('team_id'), body.context_path)
+    : null;
+
+  const result = await scorePrompt({
+    prompt: body.prompt,
+    file_path: body.file_path,
+    team_context: teamContext ?? undefined,
+  });
   const overall = overallScore(result.dimensions);
 
   // Skill_observation writes — 5 rows per call, with per-(user, dim,
@@ -685,12 +698,20 @@ app.post('/improve', async (c) => {
   const userReplies = body.history.filter((t) => t.role === 'user').length;
   const command = userReplies >= IMPROVE_TURN_CAP ? 'finalize' : body.command;
 
+  // Same context-injection pattern as /score — give Gemini the team's wiki
+  // subtree as system context so the coach's clarifying questions and the
+  // polished prompt land in the team's idiom.
+  const teamContext = body.context_path
+    ? await renderTeamContext(c.get('team_id'), body.context_path)
+    : null;
+
   try {
     const out = await improveCoach({
       original_prompt: body.original_prompt,
       missing: body.missing ?? {},
       history: body.history,
       command,
+      team_context: teamContext ?? undefined,
     });
     if (out.kind === 'question') {
       const res: ImproveResponse = {
