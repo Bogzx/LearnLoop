@@ -66,9 +66,12 @@ Trigger on phrases like:
 - "create the Trailhead wiki for this codebase"
 
 Call `wiki_bootstrap({})` with no arguments — the server walks the working
-directory and creates one wiki node per source folder automatically. Pass
-`paths: [...]` only when the user lists specific folders explicitly. The
-operation is idempotent.
+directory, bundles source files, and runs LLM passes that fill every
+folder/file with a narrative summary plus draft learnings (rich mode is
+the default; takes ~30-90s). Pass `paths: [...]` only when the user lists
+specific folders explicitly. Pass `mode: "minimal"` only when the user
+asks for a fast/free skeleton-only setup. The operation is idempotent —
+already-populated nodes are left alone.
 
 ### Order of operations on a typical code task
 
