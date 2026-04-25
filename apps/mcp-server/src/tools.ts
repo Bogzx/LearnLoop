@@ -151,11 +151,13 @@ export const WIKI_SAVE_DESC =
 export const WIKI_BOOTSTRAP_DESC =
   'Use WHEN the user asks to set up Trailhead for a new repo, bootstrap ' +
   'the wiki, initialize the team wiki, or "/init" the project. Walks the ' +
-  'current working directory and creates one wiki node per source folder ' +
-  '(skipping node_modules, .git, build output). Idempotent — safe to re-run. ' +
-  "Pass mode='rich' to also populate every folder/file with an LLM-written " +
-  "narrative (Karpathy-style auto-generated wiki); default mode='minimal' " +
-  'creates empty nodes only.';
+  'current working directory, bundles source files, and runs LLM passes ' +
+  'to populate every folder/file with a narrative summary plus draft ' +
+  'learnings (Karpathy-style auto-generated wiki). Async — returns a ' +
+  'job_id and polls until done (typically 30-90s). Idempotent: re-running ' +
+  "leaves already-populated nodes alone. Pass mode='minimal' to skip the " +
+  'LLM passes (path skeleton only, no body_md). Skips node_modules, .git, ' +
+  'build output, hidden dirs.';
 
 // =============================================================================
 // Hero tool 1: `coach`
@@ -494,10 +496,11 @@ export function registerWikiBootstrap(server: McpServer, client: ApiClient): voi
           .enum(['minimal', 'rich'])
           .optional()
           .describe(
-            "'minimal' (default) creates empty folder nodes seeded from CLAUDE.md. " +
-              "'rich' bundles file contents and asks Gemini to write per-folder, " +
-              'per-file, and root narratives + extract conventions. Slower (30-90s typical) ' +
-              'and uses LLM credits but produces a real codebase wiki.',
+            "'rich' (DEFAULT) bundles file contents and asks Gemini to write per-folder, " +
+              'per-file, and root narratives + extract conventions. ~30-90s, uses LLM ' +
+              "credits, produces a real codebase wiki. 'minimal' skips the LLM passes " +
+              'and just creates empty folder nodes seeded from CLAUDE.md — much faster, ' +
+              'no LLM credits, but the wiki is empty.',
           ),
         force: z
           .boolean()
@@ -546,58 +549,64 @@ export function registerWikiBootstrap(server: McpServer, client: ApiClient): voi
           };
         }
 
-        // ---- Rich mode -----------------------------------------------
-        if (mode === 'rich') {
-          const { bundle, response } = await runRichBootstrap(client, {
-            folders: paths,
+        // Default mode is 'rich' — produces a real codebase wiki with
+        // narrative body_md and extracted draft learnings on first run.
+        // 'minimal' is the explicit opt-out for the path-skeleton-only path.
+        const resolvedMode = mode ?? 'rich';
+
+        // ---- Minimal mode (explicit opt-out) -------------------------
+        if (resolvedMode === 'minimal') {
+          const { paths: submitted, response } = await runBootstrap(client, {
+            paths,
             seedFromFiles: seed_from_files !== false,
-            force: force === true,
           });
-          const status = await pollJob(client, response.job_id, RICH_POLL_DEADLINE_MS);
-          const summary = summarizeJobStatus(status);
-          const truncationLine =
-            bundle.truncatedBy.perFile + bundle.truncatedBy.perFolder + bundle.truncatedBy.globalCap > 0
-              ? `\n\nBundle: ${bundle.folders.length} folders, ${bundle.files.length} files, ${(bundle.bundleBytes / 1024).toFixed(0)} KB. ` +
-                `Truncated: ${bundle.truncatedBy.perFile} files head/tail-truncated, ` +
-                `${bundle.truncatedBy.perFolder} files dropped per per-folder cap, ` +
-                `${bundle.truncatedBy.globalCap} dropped per global cap.`
-              : `\n\nBundle: ${bundle.folders.length} folders, ${bundle.files.length} files, ${(bundle.bundleBytes / 1024).toFixed(0)} KB.`;
+          const summary =
+            `Wiki bootstrapped (minimal): ${response.nodes_created} new, ` +
+            `${response.nodes.length - response.nodes_created} already existed. ` +
+            `Total: ${response.nodes.length} nodes across ${submitted.length} paths.`;
           return {
             structuredContent: {
-              mode: 'rich' as const,
-              job_id: status.job_id,
-              job_status: status.status,
-              paths_total: status.paths_total,
-              paths_done: status.paths_done,
-              paths_failed: status.paths_failed,
+              mode: 'minimal' as const,
+              nodes_created: response.nodes_created,
+              nodes_total: response.nodes.length,
+              paths_submitted: submitted,
             },
-            content: [{ type: 'text' as const, text: `${summary}${truncationLine}` }],
+            content: [
+              {
+                type: 'text' as const,
+                text:
+                  `${summary}\n\nPaths:\n${submitted.map((p) => `  - ${p}`).join('\n')}` +
+                  `\n\nFor a Karpathy-style wiki populated from real code, call again without mode="minimal".`,
+              },
+            ],
           };
         }
 
-        // ---- Minimal mode (default; existing behavior) ----------------
-        const { paths: submitted, response } = await runBootstrap(client, {
-          paths,
+        // ---- Rich mode (default) -------------------------------------
+        const { bundle, response } = await runRichBootstrap(client, {
+          folders: paths,
           seedFromFiles: seed_from_files !== false,
+          force: force === true,
         });
-        const summary =
-          `Wiki bootstrapped (minimal): ${response.nodes_created} new, ` +
-          `${response.nodes.length - response.nodes_created} already existed. ` +
-          `Total: ${response.nodes.length} nodes across ${submitted.length} paths.`;
+        const status = await pollJob(client, response.job_id, RICH_POLL_DEADLINE_MS);
+        const summary = summarizeJobStatus(status);
+        const truncationLine =
+          bundle.truncatedBy.perFile + bundle.truncatedBy.perFolder + bundle.truncatedBy.globalCap > 0
+            ? `\n\nBundle: ${bundle.folders.length} folders, ${bundle.files.length} files, ${(bundle.bundleBytes / 1024).toFixed(0)} KB. ` +
+              `Truncated: ${bundle.truncatedBy.perFile} files head/tail-truncated, ` +
+              `${bundle.truncatedBy.perFolder} files dropped per per-folder cap, ` +
+              `${bundle.truncatedBy.globalCap} dropped per global cap.`
+            : `\n\nBundle: ${bundle.folders.length} folders, ${bundle.files.length} files, ${(bundle.bundleBytes / 1024).toFixed(0)} KB.`;
         return {
           structuredContent: {
-            mode: 'minimal' as const,
-            nodes_created: response.nodes_created,
-            nodes_total: response.nodes.length,
-            paths_submitted: submitted,
+            mode: 'rich' as const,
+            job_id: status.job_id,
+            job_status: status.status,
+            paths_total: status.paths_total,
+            paths_done: status.paths_done,
+            paths_failed: status.paths_failed,
           },
-          content: [
-            {
-              type: 'text' as const,
-              text: `${summary}\n\nPaths:\n${submitted.map((p) => `  - ${p}`).join('\n')}` +
-                `\n\nFor a Karpathy-style wiki populated from real code, call again with mode="rich".`,
-            },
-          ],
+          content: [{ type: 'text' as const, text: `${summary}${truncationLine}` }],
         };
       } catch (e) {
         return asError(e);

@@ -1,16 +1,21 @@
 // CLI entry point for `trailhead-mcp bootstrap`. Spawned via tsx by the
 // dispatcher in bin/cli.mjs. Walks cwd (or a passed --paths list), POSTs to
-// /onboard/repo (or /onboard/repo/full for --rich), prints a summary.
+// /onboard/repo/full (or /onboard/repo for --minimal), prints a summary.
+//
+// Default is RICH mode — bundles repo files, asks Gemini to write per-folder
+// /per-file/root narratives, and extracts conventions into draft learnings.
+// Pass --minimal to skip the LLM passes and create empty folder nodes only
+// (much faster, no LLM credits).
 //
 // Args:
 //   --paths "src/api/,src/db/"      comma-separated explicit list (skips walk)
 //   --no-seed                       skip CLAUDE.md / copilot-instructions.md seed
 //   --dry-run                       print what would be sent; don't POST
-//   --max-depth N                   cap discovery depth (default 3 minimal / 5 rich)
+//   --max-depth N                   cap discovery depth (default 5 rich / 3 minimal)
 //   --yes                           skip the confirmation prompt
 //   --team-token <t>                use this exact token (skips auto-derivation)
 //   --api-url <url>                 override TRAILHEAD_API_URL
-//   --rich                          use the LLM-populated bootstrap (spec 2026-04-26)
+//   --minimal                       skip the LLM passes; just upsert path skeleton
 //   --force                         (rich only) overwrite bootstrap-generated body_md
 //   --max-chars-per-file N          rich cap (default 8000)
 //   --max-files-per-folder N        rich cap (default 30)
@@ -67,25 +72,27 @@ Usage:
   trailhead-mcp bootstrap [--paths "src/,packages/"] [--no-seed]
                           [--dry-run] [--yes] [--max-depth N]
                           [--team-token <t>] [--api-url <url>]
-                          [--rich] [--force]
+                          [--minimal] [--force]
                           [--max-chars-per-file N] [--max-files-per-folder N]
                           [--max-files N] [--max-bundle-mb N]
 
-Default (minimal mode):
-  Walks cwd up to --max-depth (default 3) and submits every folder that
-  contains at least one source file. body_md stays empty per folder; the
-  root node is seeded from CLAUDE.md / copilot-instructions.md.
-
---rich (Karpathy-style auto-generated wiki):
+Default (rich mode — Karpathy-style auto-generated wiki):
   Bundles file contents (subject to caps) and POSTs to /onboard/repo/full.
   The API runs three Gemini passes (per-folder, per-file, root) to fill
   every body_md with a narrative summary, plus extracts conventions into
-  the learnings table. Async — the CLI polls for progress and prints a
-  live progress bar. Default --max-depth bumps to 5 in rich mode.
+  draft learnings. Async — the CLI polls for progress and prints a live
+  progress bar. Default --max-depth is 5 in rich mode.
 
   Re-runs are a no-op for already-populated nodes. Use --force to refresh
   bootstrap-generated body_md (manual edits via wiki_save are always
   preserved).
+
+--minimal (skip LLM passes):
+  Walks cwd up to --max-depth (default 3) and just upserts the folder path
+  skeleton — body_md stays empty per folder; the root node is seeded from
+  CLAUDE.md / copilot-instructions.md if present. Fast, free, but the wiki
+  carries no narrative or extracted conventions until somebody calls
+  wiki_save manually.
 
 In every mode: node_modules / .git / build output / hidden dirs / archive
 are skipped automatically. Token is auto-derived from cwd (git remote →
@@ -97,7 +104,10 @@ are skipped automatically. Token is auto-derived from cwd (git remote →
 const dryRun = flags.has('--dry-run');
 const seedFromFiles = !flags.has('--no-seed');
 const skipPrompt = flags.has('--yes');
-const richMode = flags.has('--rich');
+// Rich is the default — produces a real codebase wiki from real code on
+// first run. --minimal is the explicit opt-out for the path-skeleton-only
+// behavior. (Older docs / scripts that pass --rich keep working as a no-op.)
+const richMode = !flags.has('--minimal');
 const force = flags.has('--force');
 const maxDepth = Number(flagValues.get('--max-depth') ?? (richMode ? 5 : 3));
 const pathsArg = flagValues.get('--paths');
@@ -330,7 +340,10 @@ if (richMode) {
     console.log('Next: have your team start prompting in Claude Code or Copilot.');
     console.log('Conventions stated as "we always X" will be saved automatically.');
     console.log('');
-    console.log('Tip: re-run with --rich to populate every wiki page from real code.');
+    console.log(
+      'Tip: re-run without --minimal to populate every wiki page from real code\n' +
+        '     (default rich mode; ~30-90s; uses Gemini credits).',
+    );
   } catch (e) {
     console.error(`! Bootstrap failed: ${(e as Error).message}`);
     process.exit(1);
