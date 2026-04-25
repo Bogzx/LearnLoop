@@ -23,7 +23,7 @@ import type { ImproveResponse, ImproveTurn, MissingHints } from '@trailhead/shar
 import { improve as apiImprove } from '../api.ts';
 import { USER_ID } from '../config.ts';
 import { writePrompt, type Selectors } from '../selectors.ts';
-import { hideCard } from '../score-card.ts';
+import { resetCard } from '../score-card.ts';
 import { augmentAndSend, markApproved } from '../send-intercept.ts';
 
 export const IMPROVE_TURN_CAP = 5;
@@ -341,5 +341,10 @@ function render(refs: ChatRefs, state: ImproveState): void {
 
 function teardown(refs: ChatRefs): void {
   delete refs.root.dataset.mode;
-  hideCard();
+  // buildChatDom wiped cardEl's children and replaced them with chat
+  // DOM, so the score-card module's bodyEl/actionsEl references are now
+  // stale. Tear cardEl all the way down so the next scoreAndShow
+  // rebuilds a fresh card with live refs — otherwise the next send
+  // would reveal the leftover chat DOM ("widget opens again" bug).
+  resetCard();
 }

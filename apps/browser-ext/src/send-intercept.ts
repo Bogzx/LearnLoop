@@ -98,6 +98,26 @@ export function attachSendIntercept(sel: Selectors): () => void {
   };
 }
 
+// Re-resolves the live composer text instead of trusting the cached
+// activeSelectors.textarea. On claude.ai/chat/<id> the composer can be
+// re-rendered between sends — the cached element ends up disconnected
+// and either returns empty or stale text, which would either block the
+// send (mismatch with approvedPrompt → preventDefault) or open a card
+// for the wrong prompt. Reading live keeps the bypass honest.
+function readLiveCompactText(): string {
+  const candidates = [
+    'div[contenteditable="true"][role="textbox"]',
+    '[contenteditable="true"]',
+    'textarea[data-testid="composer"]',
+    'textarea',
+  ];
+  for (const sel of candidates) {
+    const el = document.querySelector(sel) as HTMLElement | null;
+    if (el && el.isConnected) return readPrompt(el).trim();
+  }
+  return '';
+}
+
 function onSendAttempt(e: Event): void {
   // Our own programmatic dispatch (Path 3 in fireSendOnce) — let the event
   // through untouched so Claude.ai's own handler picks it up.
@@ -106,17 +126,24 @@ function onSendAttempt(e: Event): void {
   // off, the chat behaves as if Trailhead weren't installed for sends.
   if (!isCoachingEnabled()) return;
   if (!activeSelectors) return;
-  const text = readPrompt(activeSelectors.textarea).trim();
+  // Read live, not from the (possibly stale) cached selector.
+  const text = readLiveCompactText();
   if (!text) return; // empty composer → let native handler no-op
 
-  // Approved-prompt bypass: the user just clicked "Use this" in the
-  // Improve widget and we wrote the polished prompt into the composer.
+  // Approved-prompt bypass: the user just clicked "Use this" or "I'm done"
+  // in the Improve widget; the textarea content was approved by them.
   // The next native send should go straight through. We clear after one
   // hit so a later edit-and-resend resumes normal coaching.
   if (approvedPrompt && text === approvedPrompt.trim()) {
     console.info('[trailhead] send approved (post-Improve) — skipping intercept');
     approvedPrompt = null;
     return;
+  }
+  if (approvedPrompt) {
+    console.info(
+      '[trailhead] approved="' + approvedPrompt.slice(0, 40) +
+      '" but text="' + text.slice(0, 40) + '" — no match, intercepting',
+    );
   }
 
   // We can't decide whether to send until we have a score. Block the
