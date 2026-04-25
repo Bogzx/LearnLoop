@@ -130,3 +130,23 @@ export interface OnboardRepoResponse {
   nodes_created: number;
   nodes: Array<{ path: string; id: string }>;
 }
+
+// POST /improve — Gemini-driven multi-turn prompt coaching (spec
+// 2026-04-26-improve-widget-design.md). Stateless: extension carries the
+// full conversation each turn; server holds no session state.
+export interface ImproveTurn {
+  role: 'assistant' | 'user';
+  text: string;
+}
+
+export interface ImproveRequest {
+  original_prompt: string;
+  missing: MissingHints;
+  history: ImproveTurn[];
+  command: 'next' | 'finalize';
+  user_id: string;
+}
+
+export type ImproveResponse =
+  | { kind: 'question'; text: string; turn: number }
+  | { kind: 'final'; polished: string; rationale?: string };

@@ -38,6 +38,16 @@ curl -sS -X POST "${API_URL}/diff" "${H_JSON[@]}" \
   -d '{"user_prompt":"fix the retry","file_path":"src/api/webhooks/handler.ts","user_id":"demo"}' | $JQ
 echo
 
+echo "=== POST /improve (next, empty history) ==="
+curl -sS -X POST "${API_URL}/improve" "${H_JSON[@]}" \
+  -d '{"original_prompt":"fix the retry","missing":{"specificity":"name the file"},"history":[],"command":"next","user_id":"demo"}' | $JQ
+echo
+
+echo "=== POST /improve (finalize after one turn) ==="
+curl -sS -X POST "${API_URL}/improve" "${H_JSON[@]}" \
+  -d '{"original_prompt":"fix the retry","missing":{"specificity":"name the file"},"history":[{"role":"assistant","text":"What file?"},{"role":"user","text":"src/api/webhooks/handler.ts"}],"command":"finalize","user_id":"demo"}' | $JQ
+echo
+
 echo "=== GET /wiki/recent ==="
 SINCE=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null \
   || date -u -v-1H +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null \
