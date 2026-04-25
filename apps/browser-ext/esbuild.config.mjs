@@ -1,7 +1,7 @@
-// Bundles src/content.ts into dist/content.js as a single IIFE the browser
-// loads as the only content script. Mirrors apps/vscode-ext/esbuild.config.mjs
-// in style; differences are platform=browser, format=iife, and a tiny manifest
-// copy step so `dist/` is the directory you load unpacked into Chrome.
+// Bundles src/content.ts → dist/content.js (the content script Chrome
+// loads on claude.ai pages) and src/popup/popup.ts → dist/popup.js (the
+// browser-action popup logic). Also copies manifest.json and popup.html
+// straight into dist/ so `dist/` is the directory you load unpacked.
 import * as esbuild from 'esbuild';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -14,11 +14,9 @@ const production = process.argv.includes('--production');
 const distDir = resolve(__dirname, 'dist');
 await mkdir(distDir, { recursive: true });
 
-const config = {
-  entryPoints: [resolve(__dirname, 'src/content.ts')],
+const baseConfig = {
   bundle: true,
-  outfile: resolve(distDir, 'content.js'),
-  format: 'iife',                 // content scripts are not ESM
+  format: 'iife',                 // content scripts and popup scripts are not ESM
   platform: 'browser',
   target: ['chrome120'],          // pinned demo Chrome (spec §19)
   sourcemap: !production ? 'inline' : false,
@@ -30,28 +28,46 @@ const config = {
   },
 };
 
-async function copyManifest() {
+const contentConfig = {
+  ...baseConfig,
+  entryPoints: [resolve(__dirname, 'src/content.ts')],
+  outfile: resolve(distDir, 'content.js'),
+};
+
+const popupConfig = {
+  ...baseConfig,
+  entryPoints: [resolve(__dirname, 'src/popup/popup.ts')],
+  outfile: resolve(distDir, 'popup.js'),
+};
+
+async function copyStaticAssets() {
   await copyFile(
     resolve(__dirname, 'manifest.json'),
     resolve(distDir, 'manifest.json'),
   );
+  await copyFile(
+    resolve(__dirname, 'src/popup/popup.html'),
+    resolve(distDir, 'popup.html'),
+  );
 }
 
-await copyManifest();
+await copyStaticAssets();
 
 if (watch) {
-  const ctx = await esbuild.context({
-    ...config,
+  const ctxContent = await esbuild.context({
+    ...contentConfig,
     plugins: [
       {
-        name: 'manifest-copy',
+        name: 'static-copy',
         setup(build) {
-          build.onEnd(() => copyManifest().catch(() => {}));
+          build.onEnd(() => copyStaticAssets().catch(() => {}));
         },
       },
     ],
   });
-  await ctx.watch();
+  const ctxPopup = await esbuild.context(popupConfig);
+  await ctxContent.watch();
+  await ctxPopup.watch();
 } else {
-  await esbuild.build(config);
+  await Promise.all([esbuild.build(contentConfig), esbuild.build(popupConfig)]);
 }
