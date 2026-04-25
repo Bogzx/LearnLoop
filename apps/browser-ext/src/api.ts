@@ -18,7 +18,8 @@ import type {
   ScoreResponse,
   WikiRecentResponse,
 } from '@trailhead/shared';
-import { API_URL, FETCH_TIMEOUT_MS, TEAM_TOKEN, TRAILHEAD_ERROR_TAG } from './config.ts';
+import { API_URL, FETCH_TIMEOUT_MS, TRAILHEAD_ERROR_TAG } from './config.ts';
+import { getTeamToken } from './team-state.ts';
 
 type EndpointKey = 'score' | 'capture' | 'diff' | 'wiki' | 'improve';
 const inflight = new Map<EndpointKey, AbortController>();
@@ -43,7 +44,7 @@ function withTimeout(ac: AbortController, ms: number): () => void {
 function headers(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
-    'X-Team-Token': TEAM_TOKEN,
+    'X-Team-Token': getTeamToken(),
   };
 }
 

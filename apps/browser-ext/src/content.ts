@@ -18,6 +18,7 @@ import { attachScoreCard } from './score-card.ts';
 import { attachSendIntercept } from './send-intercept.ts';
 import { startWikiToastLoop } from './widgets/wiki-toast.ts';
 import { initCoachingState } from './coaching-state.ts';
+import { initTeamState } from './team-state.ts';
 import { mountScoreBadge } from './widgets/score-badge.ts';
 import { mountPromptDiff } from './widgets/prompt-diff.ts';
 import {
@@ -177,6 +178,9 @@ async function main(): Promise<void> {
   // Subscribe to the coaching toggle so the popup switch takes effect
   // live — no page reload needed.
   initCoachingState();
+  // Same pattern for the popup's Select-team dropdown — every fetch
+  // after the user picks a team uses that team's X-Team-Token.
+  initTeamState();
   attachGlobalGuard();
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', tryStart);
