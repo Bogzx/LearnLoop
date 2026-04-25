@@ -14,6 +14,9 @@ import type {
   DimensionScores,
   ExamplesItem,
   ExamplesResponse,
+  ImproveRequest,
+  ImproveResponse,
+  ImproveTurn,
   ScoreRequest,
   ScoreResponse,
   SkillArcObservation,
@@ -30,7 +33,7 @@ import type {
 import { DIMENSIONS } from '@trailhead/shared';
 import { ancestorPaths, normalize, normalizePath } from '@trailhead/scoring';
 import { DEMO_TEAM_ID, q, upsertNode } from './db.ts';
-import { extractTopic, overallScore, scorePrompt, synthesizeDiff } from './gemini.ts';
+import { extractTopic, improveCoach, overallScore, scorePrompt, synthesizeDiff } from './gemini.ts';
 
 const TEAM_TOKEN = process.env.TEAM_TOKEN;
 if (!TEAM_TOKEN) {
@@ -73,6 +76,7 @@ app.get('/', (c) =>
       'GET  /examples?path=',
       'GET  /wiki/recent?since=ISO',
       'POST /diff',
+      'POST /improve',
       'GET  /skill-arc?user_id=&since=ISO',
       'GET  /team/metrics',
       'GET  /wiki/tree',
@@ -591,6 +595,68 @@ app.get('/wiki/tree', async (c) => {
 
   const res: WikiTreeResponse = { nodes: Array.from(byPath.values()) };
   return c.json(res);
+});
+
+// ----- POST /improve ---------------------------------------------------------
+// Gemini-driven multi-turn prompt coach. Stateless — caller carries the full
+// conversation each turn. Spec: 2026-04-26-improve-widget-design.md
+const IMPROVE_TURN_CAP = 5; // user replies; history.length cap is 2 * cap
+
+app.post('/improve', async (c) => {
+  const body = await c.req.json<ImproveRequest>().catch(() => null);
+  if (
+    !body ||
+    typeof body.original_prompt !== 'string' ||
+    typeof body.user_id !== 'string' ||
+    !Array.isArray(body.history) ||
+    (body.command !== 'next' && body.command !== 'finalize')
+  ) {
+    return c.json({ error: 'bad_request' }, 400);
+  }
+
+  // Validate every history entry; reject anything malformed so we never
+  // hand garbage to Gemini.
+  for (const t of body.history as ImproveTurn[]) {
+    if (
+      !t ||
+      (t.role !== 'assistant' && t.role !== 'user') ||
+      typeof t.text !== 'string'
+    ) {
+      return c.json({ error: 'bad_request' }, 400);
+    }
+  }
+
+  // Server-side cap: if the user has already replied IMPROVE_TURN_CAP times,
+  // force finalize regardless of the client-supplied command. The client
+  // also enforces this; the server check is a safety net.
+  const userReplies = body.history.filter((t) => t.role === 'user').length;
+  const command = userReplies >= IMPROVE_TURN_CAP ? 'finalize' : body.command;
+
+  try {
+    const out = await improveCoach({
+      original_prompt: body.original_prompt,
+      missing: body.missing ?? {},
+      history: body.history,
+      command,
+    });
+    if (out.kind === 'question') {
+      const res: ImproveResponse = {
+        kind: 'question',
+        text: out.text,
+        turn: userReplies + 1,
+      };
+      return c.json(res);
+    }
+    const res: ImproveResponse = {
+      kind: 'final',
+      polished: out.polished,
+      rationale: out.rationale,
+    };
+    return c.json(res);
+  } catch (err) {
+    console.warn('[api] /improve failed', err);
+    return c.json({ error: 'improve_failed' }, 502);
+  }
 });
 
 // ----- POST /onboard/repo (SCAFFOLDING) --------------------------------------
