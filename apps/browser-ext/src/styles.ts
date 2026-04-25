@@ -241,6 +241,124 @@ export const TRAILHEAD_CSS = `
   from { opacity: 1; transform: translateX(0); }
   to   { opacity: 0; transform: translateX(8px); }
 }
+
+/* Improve chat widget — replaces the score-card body when the user
+ * clicks Improve. Spec: 2026-04-26-improve-widget-design.md */
+#trailhead-score-card[data-mode="improve"] {
+  border-color: rgba(177, 185, 249, 0.4);
+}
+.trailhead-improve-header {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+  color: rgba(255,255,255,0.85);
+}
+.trailhead-improve-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px;
+  background: rgba(0,0,0,0.18);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.trailhead-bubble {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  max-width: 86%;
+}
+.trailhead-bubble--assistant {
+  background: rgba(177,185,249,0.10);
+  align-self: flex-start;
+}
+.trailhead-bubble--user {
+  background: rgba(74,107,255,0.18);
+  align-self: flex-end;
+}
+.trailhead-bubble--pending { opacity: 0.55; font-style: italic; }
+.trailhead-improve-input-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 6px;
+  align-items: stretch;
+}
+.trailhead-improve-input {
+  resize: vertical;
+  min-height: 36px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  padding: 6px 8px;
+  box-sizing: border-box;
+}
+.trailhead-improve-input:disabled { opacity: 0.5; }
+.trailhead-improve-input-row button,
+.trailhead-improve-preview-actions button,
+.trailhead-improve-error-actions button {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.trailhead-improve-input-row button:hover:not(:disabled),
+.trailhead-improve-preview-actions button:hover:not(:disabled),
+.trailhead-improve-error-actions button:hover:not(:disabled) {
+  background: rgba(255,255,255,0.10);
+}
+.trailhead-improve-input-row button.is-primary,
+.trailhead-improve-preview-actions button.is-primary,
+.trailhead-improve-error-actions button.is-primary {
+  background: #4a6bff;
+  border-color: #4a6bff;
+  color: #fff;
+}
+.trailhead-improve-input-row button.is-primary:hover:not(:disabled),
+.trailhead-improve-preview-actions button.is-primary:hover:not(:disabled),
+.trailhead-improve-error-actions button.is-primary:hover:not(:disabled) {
+  background: #3a5be0;
+}
+.trailhead-improve-input-row button:disabled,
+.trailhead-improve-preview-actions button:disabled,
+.trailhead-improve-error-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.trailhead-improve-preview,
+.trailhead-improve-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.trailhead-improve-preview-body {
+  background: rgba(0,0,0,0.25);
+  padding: 10px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12.5px/1.45 ui-monospace, "SF Mono", Menlo, monospace;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+}
+.trailhead-improve-preview-actions,
+.trailhead-improve-error-actions {
+  display: flex;
+  gap: 6px;
+}
+.trailhead-improve-error-msg {
+  color: rgba(255,140,140,0.92);
+  font-size: 12.5px;
+}
 `;
 
 export function injectStyles(): void {

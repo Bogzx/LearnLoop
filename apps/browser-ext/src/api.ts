@@ -12,13 +12,15 @@ import type {
   CaptureResponse,
   DiffRequest,
   DiffResponse,
+  ImproveRequest,
+  ImproveResponse,
   ScoreRequest,
   ScoreResponse,
   WikiRecentResponse,
 } from '@trailhead/shared';
 import { API_URL, FETCH_TIMEOUT_MS, TEAM_TOKEN, TRAILHEAD_ERROR_TAG } from './config.ts';
 
-type EndpointKey = 'score' | 'capture' | 'diff' | 'wiki';
+type EndpointKey = 'score' | 'capture' | 'diff' | 'wiki' | 'improve';
 const inflight = new Map<EndpointKey, AbortController>();
 
 function abortPrev(key: EndpointKey): AbortController {
@@ -89,4 +91,29 @@ export async function diff(body: DiffRequest): Promise<DiffResponse | null> {
 export async function wikiRecent(sinceIso: string): Promise<WikiRecentResponse | null> {
   const q = new URLSearchParams({ since: sinceIso }).toString();
   return call<WikiRecentResponse>('wiki', `/wiki/recent?${q}`, { method: 'GET' });
+}
+
+// /improve calls take much longer than other endpoints (Gemini round-trip
+// per turn). Bypass the 4s default timeout — we manage our own through the
+// widget's UX (the user sees the … placeholder while it pends).
+export async function improve(body: ImproveRequest): Promise<ImproveResponse | null> {
+  const ac = new AbortController();
+  const stop = setTimeout(() => ac.abort(), 25_000);
+  try {
+    const res = await fetch(`${API_URL}/improve`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as ImproveResponse;
+  } catch (err) {
+    if (!(err instanceof DOMException && err.name === 'AbortError')) {
+      console.warn(`${TRAILHEAD_ERROR_TAG} /improve failed`, err);
+    }
+    return null;
+  } finally {
+    clearTimeout(stop);
+  }
 }

@@ -21,18 +21,18 @@
 // the submit decision-point is both cheaper and more pedagogically
 // honest — we coach committed prompts, not typing fragments.
 import { renderScoreCard } from '@trailhead/score-card';
-import type { ScoreResponse } from '@trailhead/shared';
+import type { MissingHints, ScoreResponse } from '@trailhead/shared';
 import { score as apiScore } from './api.ts';
 import { USER_ID } from './config.ts';
 import { simpleHash } from './hash.ts';
-import type { Selectors } from './selectors.ts';
+import { readPrompt, type Selectors } from './selectors.ts';
 import { store } from './store.ts';
 import {
-  augmentAndSend,
   focusComposer,
   rememberScoredPrompt,
   triggerNativeSend,
 } from './send-intercept.ts';
+import { openImproveChat } from './widgets/improve-chat.ts';
 
 const CARD_ID = 'trailhead-score-card';
 
@@ -40,6 +40,13 @@ let cardEl: HTMLDivElement | null = null;
 let bodyEl: HTMLDivElement | null = null;
 let actionsEl: HTMLDivElement | null = null;
 let activeAbort: AbortController | null = null;
+// Tracks the latest score's missing hints so the Improve widget can pass
+// them to /improve. Updated on every showResult().
+let lastMissing: MissingHints = {};
+// Tracks the prompt that was most recently scored so the Improve widget
+// can use it as the conversation seed instead of re-reading the textarea
+// (which augmentAndSend may have already mutated).
+let lastPrompt = '';
 
 function ensureCardMounted(sel: Selectors): HTMLDivElement {
   if (cardEl && cardEl.isConnected) return cardEl;
@@ -60,7 +67,9 @@ function ensureCardMounted(sel: Selectors): HTMLDivElement {
   improve.textContent = 'Improve';
   improve.dataset.role = 'clarify';
   improve.addEventListener('click', () => {
-    void augmentAndSend();
+    const prompt = lastPrompt || readPrompt(sel.textarea).trim();
+    if (!prompt) return;
+    openImproveChat(sel, prompt, lastMissing);
   });
 
   const asIs = document.createElement('button');
@@ -121,13 +130,14 @@ function showLoading(): void {
 
 function showResult(res: ScoreResponse): void {
   if (!cardEl || !bodyEl || !actionsEl) return;
+  lastMissing = res.missing ?? {};
   const tree = renderScoreCard(res);
   bodyEl.replaceChildren(tree);
   cardEl.hidden = false;
   cardEl.dataset.bucket = bucketFor(res.overall);
-  // Buttons appear for every result the user lands on; even at ≥7 the
-  // intercept hides the card and fires native send before we get here,
-  // so any visible card is a "you should consider improving" surface.
+  // Buttons appear for every result the user lands on; the Improve flow
+  // now opens an in-card chat widget instead of auto-sending, so the
+  // card is always a "you choose what happens next" surface.
   actionsEl.hidden = false;
 }
 
@@ -158,6 +168,7 @@ export async function scoreAndShow(prompt: string): Promise<ScoreResponse | null
       missing: cached.missing,
     };
     rememberScoredPrompt(text);
+    lastPrompt = text;
     showResult(res);
     return res;
   }
