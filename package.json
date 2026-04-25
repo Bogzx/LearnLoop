@@ -10,7 +10,9 @@
   "scripts": {
     "dev": "npm --workspace=apps/api run dev",
     "start": "npm --workspace=apps/api run start",
-    "typecheck": "npm --workspaces --if-present run typecheck"
+    "typecheck": "npm --workspaces --if-present run typecheck",
+    "test": "npm --workspaces --if-present run test",
+    "build": "npm --workspaces --if-present run build"
   },
   "engines": {
     "node": ">=20"
