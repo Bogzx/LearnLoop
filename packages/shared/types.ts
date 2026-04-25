@@ -198,3 +198,16 @@ export interface ImproveRequest {
 export type ImproveResponse =
   | { kind: 'question'; text: string; turn: number }
   | { kind: 'final'; polished: string; rationale?: string };
+
+// GET /teams — list every team in the database (id, name, token).
+// Unauthenticated so the popup can populate a Select-team dropdown
+// before any token is configured. Demo simplicity: no per-user
+// permission filter (the user explicitly asked for "all teams").
+export interface TeamSummary {
+  id: string;
+  name: string;
+  token: string;
+}
+export interface TeamsListResponse {
+  teams: TeamSummary[];
+}
