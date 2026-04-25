@@ -120,8 +120,9 @@ export interface WikiTreeNode {
 export interface WikiTreeResponse { nodes: WikiTreeNode[]; }
 
 // POST /onboard/repo — bootstrap a team's wiki from a list of paths.
-// SCAFFOLDING ONLY: handler returns 501. Shapes locked for future build.
-// Spec ref: 2026-04-25-demo-completion-design.md §C.1
+// Live since 2026-04-25-demo-completion-design.md §C.1. This is the
+// "minimal" bootstrap — folder paths only, body_md seeded from CLAUDE.md.
+// For rich (LLM-generated) bootstrap see OnboardRepoFullRequest below.
 export interface OnboardRepoRequest {
   paths: string[];                              // e.g., ['src/api/', 'src/db/', ...]
   initial_rules?: Record<string, string>;       // path → markdown body for body_md
@@ -129,6 +130,53 @@ export interface OnboardRepoRequest {
 export interface OnboardRepoResponse {
   nodes_created: number;
   nodes: Array<{ path: string; id: string }>;
+}
+
+// POST /onboard/repo/full — rich bootstrap. Client sends folder + file paths
+// AND the file contents (subject to caps in spec §7); server runs three
+// Gemini passes (folder narratives, file summaries, root tour) and writes
+// body_md + draft learnings. Returns a job_id; the work is async — clients
+// poll GET /onboard/jobs/:id until status is 'done' or 'failed'.
+//
+// Spec: docs/superpowers/specs/2026-04-26-wiki-bootstrap-rich-design.md
+export interface OnboardRepoFullFile {
+  path: string;        // file-shaped path, e.g. 'src/api/auth/issue.ts'
+  content: string;     // already truncated client-side (head + tail) to fit caps
+  truncated?: boolean; // true if content was head/tail-truncated; LLM should hedge
+}
+export interface OnboardRepoFullRequest {
+  folders: string[];                              // folder-shaped paths, e.g. 'src/api/'
+  files: OnboardRepoFullFile[];                   // file-shaped paths + capped content
+  initial_rules?: Record<string, string>;         // CLAUDE.md / copilot-instructions seed (root only by convention)
+  manifests?: Record<string, string>;             // 'package.json' / 'Cargo.toml' / etc → raw content for tech-stack pass
+  force?: boolean;                                // overwrite body_source='bootstrap' rows; manual edits still preserved
+}
+export interface OnboardRepoFullResponse {
+  job_id: string;
+  paths_total: number;     // folders.length + files.length + 1 (root)
+}
+
+// GET /onboard/jobs/:id — async job status. Status: pending | running | done | failed.
+// `paths` lists every node the worker is operating on with its current status.
+// `done` with paths_failed > 0 = partial success.
+export type WikiJobStatus = 'pending' | 'running' | 'done' | 'failed';
+export type WikiJobPathKind = 'folder' | 'file' | 'root';
+export interface WikiJobPathStatus {
+  path: string;
+  kind: WikiJobPathKind;
+  status: WikiJobStatus;
+  error?: string;
+}
+export interface WikiJobStatusResponse {
+  job_id: string;
+  status: WikiJobStatus;
+  paths_total: number;
+  paths_done: number;
+  paths_failed: number;
+  started_at: string | null;   // ISO
+  finished_at: string | null;  // ISO
+  error: string | null;
+  paths: WikiJobPathStatus[];
 }
 
 // POST /improve — Gemini-driven multi-turn prompt coaching (spec

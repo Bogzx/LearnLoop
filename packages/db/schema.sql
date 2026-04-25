@@ -25,16 +25,22 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Wiki tree (one row per folder/path)
+-- Wiki tree (one row per folder OR file path).
+-- Folder paths end in '/'; file paths do not. Both shapes coexist after the
+-- 2026-04-26 rich-bootstrap rollout (spec: docs/superpowers/specs/2026-04-26-
+-- wiki-bootstrap-rich-design.md).
 CREATE TABLE IF NOT EXISTS nodes (
-  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id    UUID NOT NULL REFERENCES teams(id),
-  path       TEXT NOT NULL,                    -- e.g., 'src/api/auth/'
-  body_md    TEXT NOT NULL DEFAULT '',         -- the node.md content
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id     UUID NOT NULL REFERENCES teams(id),
+  path        TEXT NOT NULL,                    -- e.g., 'src/api/auth/' OR 'src/api/auth/issue.ts'
+  body_md     TEXT NOT NULL DEFAULT '',         -- the node.md content
+  body_source TEXT NOT NULL DEFAULT 'manual',   -- 'manual' | 'bootstrap'; protects user edits from --force re-runs
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (team_id, path)
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_team_path ON nodes(team_id, path);
+-- Backfill the column on databases that pre-date rich bootstrap.
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS body_source TEXT NOT NULL DEFAULT 'manual';
 
 -- Accumulated learnings (the "AI-managed" content)
 CREATE TABLE IF NOT EXISTS learnings (
@@ -93,6 +99,35 @@ CREATE INDEX IF NOT EXISTS idx_skill_obs_team_dim_ts ON skill_observations(team_
 
 -- Cheap-insurance index for the GET /wiki/recent polling query.
 CREATE INDEX IF NOT EXISTS idx_learnings_last_seen_at ON learnings(last_seen_at DESC);
+
+-- Rich-bootstrap async job header. One row per `trailhead-mcp bootstrap --rich`
+-- invocation (or wiki_bootstrap mode='rich' tool call). The worker fans out
+-- per-path Gemini calls and updates these counters.
+CREATE TABLE IF NOT EXISTS wiki_jobs (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id       UUID NOT NULL REFERENCES teams(id),
+  status        TEXT NOT NULL DEFAULT 'pending',  -- pending | running | done | failed
+  paths_total   INT NOT NULL,
+  paths_done    INT NOT NULL DEFAULT 0,
+  paths_failed  INT NOT NULL DEFAULT 0,
+  started_at    TIMESTAMPTZ,
+  finished_at   TIMESTAMPTZ,
+  error         TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_wiki_jobs_team_created ON wiki_jobs(team_id, created_at DESC);
+
+-- Per-path progress for a wiki_jobs row. `kind` lets the worker pick the
+-- right LLM prompt template. ON DELETE CASCADE so an admin clearing old jobs
+-- (future cron) doesn't leave orphans.
+CREATE TABLE IF NOT EXISTS wiki_job_paths (
+  job_id  UUID NOT NULL REFERENCES wiki_jobs(id) ON DELETE CASCADE,
+  path    TEXT NOT NULL,
+  kind    TEXT NOT NULL,                     -- 'folder' | 'file' | 'root'
+  status  TEXT NOT NULL DEFAULT 'pending',   -- pending | running | done | failed
+  error   TEXT,
+  PRIMARY KEY (job_id, path)
+);
 
 -- Bootstrap the demo team. Hardcoded UUID so every artifact can reference it
 -- without first reading the row back. Idempotent on (id). Token mirrors the
