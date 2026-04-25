@@ -26,12 +26,24 @@ export const TRAILHEAD_CSS = `
 #trailhead-score-card[data-bucket="high"] { border-color: rgba(255,255,255,0.06); }
 #trailhead-score-card[hidden] { display: none; }
 
-#trailhead-score-card.is-pulsing {
-  animation: trailhead-pulse 1s ease-in-out infinite;
+.trailhead-loading {
+  font-size: 13px;
+  opacity: 0.7;
+  padding: 6px 0;
 }
-@keyframes trailhead-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(214,168,60,0.0); }
-  50%      { box-shadow: 0 0 0 4px rgba(214,168,60,0.35); }
+.trailhead-loading::after {
+  content: '';
+  display: inline-block;
+  margin-left: 6px;
+  width: 8px; height: 8px;
+  border: 1.5px solid rgba(255,255,255,0.4);
+  border-top-color: #4a6bff;
+  border-radius: 50%;
+  animation: trailhead-spin 700ms linear infinite;
+  vertical-align: -1px;
+}
+@keyframes trailhead-spin {
+  to { transform: rotate(360deg); }
 }
 
 .trailhead-sc-overall {

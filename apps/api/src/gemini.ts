@@ -40,12 +40,14 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 //     "fix the retry" — 2026-04-25 incident). Retrying just runs the same
 //     loop again. Better to fail fast and let callers fail-open.
 //
-// Per-call timeout is 15s — `/score` should complete in 1-2s; 15s is a
-// generous ceiling that catches stalls without burning much LLM budget.
+// Per-call timeout is 20s — `/score` with dynamic thinking lands around
+// 2-4s; 20s is a generous ceiling that catches stalls without burning
+// much LLM budget. (Was 15s when thinking was disabled; raised after
+// switching to thinkingBudget=-1.)
 async function withRetry<T>(
   fn: () => Promise<T>,
   label: string,
-  perCallTimeoutMs = 15_000,
+  perCallTimeoutMs = 20_000,
 ): Promise<T> {
   const sleeps = [200, 600, 1500];
   for (let i = 0; i <= sleeps.length; i++) {
@@ -122,11 +124,20 @@ export interface ScoreModelResult {
 }
 
 export async function scorePrompt(args: { prompt: string; file_path?: string }): Promise<ScoreModelResult> {
-  // Flash with responseSchema + thinkingBudget=0 + maxOutputTokens cap is
-  // the fast path the live score-card depends on. The token cap is the
-  // hard ceiling that bounds cost when the model wanders into a repetition
-  // loop on ambiguous prompts. A well-formed response is ~150 tokens; 500
-  // is plenty of headroom while capping worst-case at ~3x normal.
+  // Flash with responseSchema + dynamic thinking + maxOutputTokens cap.
+  //
+  // thinkingBudget=-1 (dynamic) is the single biggest model-side defense
+  // against the repetition-loop class of failures: the planning step gives
+  // the model an explicit exit ("nothing concrete to say in `specificity` —
+  // omit the hint") before it commits tokens to the open string field.
+  // Acceptable now that /score fires only at decision points (submit on
+  // browser, button click in VS Code), not on every keystroke — the
+  // ~1-3s thinking latency lands during a deliberate user beat, not a
+  // 250ms typing debounce.
+  //
+  // maxOutputTokens is still the hard ceiling that bounds cost in the
+  // worst case. A well-formed response is ~150 tokens; 500 is plenty of
+  // headroom while capping worst-case at ~3x normal.
   if (SCORE_MODEL.startsWith('gemini-')) {
     const resp = await withRetry(
       () => ai.models.generateContent({
@@ -135,7 +146,7 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
         config: {
           systemInstruction: SCORE_SYSTEM_PROMPT,
           temperature: 0.2,
-          thinkingConfig: { thinkingBudget: 0 },
+          thinkingConfig: { thinkingBudget: -1 },
           maxOutputTokens: 500,
           responseMimeType: 'application/json',
           responseSchema: {

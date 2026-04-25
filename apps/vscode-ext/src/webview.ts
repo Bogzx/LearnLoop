@@ -63,6 +63,20 @@ export function getWebviewHtml(nonce: string): string {
       outline: 1px solid var(--vscode-focusBorder);
       border-color: var(--vscode-focusBorder);
     }
+    .score-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 6px;
+    }
+    .score-row button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .score-status {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+    }
     .score-overall {
       font-size: 24px;
       font-weight: 600;
@@ -153,7 +167,11 @@ export function getWebviewHtml(nonce: string): string {
 
   <div class="section">
     <h2>Score your prompt</h2>
-    <textarea id="prompt" placeholder="Type a prompt — we score it as you type."></textarea>
+    <textarea id="prompt" placeholder="Type a prompt and press Score (or Ctrl+Enter)."></textarea>
+    <div class="score-row">
+      <button id="score-btn" type="button">Score</button>
+      <span id="score-status" class="score-status"></span>
+    </div>
     <div id="overall" class="score-overall">—</div>
     <div id="dimensions"></div>
   </div>
@@ -170,24 +188,38 @@ export function getWebviewHtml(nonce: string): string {
     const filePathEl   = document.getElementById('file-path');
     const examplesEl   = document.getElementById('examples');
     const promptEl     = document.getElementById('prompt');
+    const scoreBtn     = document.getElementById('score-btn');
+    const scoreStatus  = document.getElementById('score-status');
     const overallEl    = document.getElementById('overall');
     const dimensionsEl = document.getElementById('dimensions');
     const wikiEl       = document.getElementById('wiki');
 
-    let scoreTimer = null;
+    // Scoring fires on demand only (button click or Ctrl/Cmd+Enter in the
+    // textarea). The original 250ms keystroke debounce was removed after
+    // the 2026-04-25 incident — scoring fragments was both expensive and
+    // pedagogically wrong (we coach committed prompts, not typing noise).
     let lastScoreSeq = 0;
+    let inFlight = false;
 
-    promptEl.addEventListener('input', () => {
-      const text = promptEl.value;
-      if (scoreTimer) clearTimeout(scoreTimer);
-      scoreTimer = setTimeout(() => {
-        if (!text.trim()) {
-          renderScore(null);
-          return;
-        }
-        const seq = ++lastScoreSeq;
-        vscode.postMessage({ type: 'score', seq, prompt: text });
-      }, 250);
+    function requestScore() {
+      const text = (promptEl.value || '').trim();
+      if (!text || inFlight) return;
+      inFlight = true;
+      scoreBtn.disabled = true;
+      scoreStatus.textContent = 'Scoring…';
+      const seq = ++lastScoreSeq;
+      vscode.postMessage({ type: 'score', seq, prompt: text });
+    }
+
+    scoreBtn.addEventListener('click', requestScore);
+
+    promptEl.addEventListener('keydown', (e) => {
+      // Ctrl+Enter / Cmd+Enter is the keyboard equivalent of clicking Score.
+      // Plain Enter inserts a newline (we never auto-score on plain Enter).
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        requestScore();
+      }
     });
 
     window.addEventListener('message', (e) => {
@@ -201,6 +233,9 @@ export function getWebviewHtml(nonce: string): string {
           break;
         case 'score':
           if (m.seq !== lastScoreSeq) return; // stale
+          inFlight = false;
+          scoreBtn.disabled = false;
+          scoreStatus.textContent = '';
           renderScore(m.payload, m.error);
           break;
         case 'wiki':
@@ -208,6 +243,9 @@ export function getWebviewHtml(nonce: string): string {
           break;
         case 'reset':
           promptEl.value = '';
+          inFlight = false;
+          scoreBtn.disabled = false;
+          scoreStatus.textContent = '';
           renderScore(null);
           break;
       }
