@@ -51,10 +51,12 @@ interface ChatRefs {
   inputRow: HTMLDivElement;
   input: HTMLTextAreaElement;
   sendBtn: HTMLButtonElement;
+  chatImDoneBtn: HTMLButtonElement;
   // Preview
   preview: HTMLDivElement;
   previewBody: HTMLPreElement;
   useThisBtn: HTMLButtonElement;
+  previewImDoneBtn: HTMLButtonElement;
   // Error
   errorBody: HTMLDivElement;
   errorMsg: HTMLDivElement;
@@ -128,6 +130,16 @@ export function openImproveChat(
     setState({ stage: 'asking', history, pending: true, command });
   };
 
+  // "I'm done" — bail out of the widget and use the user's ORIGINAL
+  // prompt as it stands in the composer. We mark it as approved so the
+  // next Enter sends straight to Claude without re-opening the score
+  // card. Used from the chat (asking) and preview stages.
+  const onImDone = (): void => {
+    markApproved(originalPrompt);
+    sel.textarea.focus();
+    setState({ stage: 'done' });
+  };
+
   // ----- Header X (single cancel for the whole widget)
   refs.closeBtn.addEventListener('click', () => setState({ stage: 'cancelled' }));
 
@@ -140,6 +152,7 @@ export function openImproveChat(
 
   // ----- Chat
   refs.sendBtn.addEventListener('click', sendUserReply);
+  refs.chatImDoneBtn.addEventListener('click', onImDone);
   refs.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -166,6 +179,7 @@ export function openImproveChat(
     }
     setState({ stage: 'done' });
   });
+  refs.previewImDoneBtn.addEventListener('click', onImDone);
 
   // ----- Error
   refs.useTemplateBtn.addEventListener('click', () => {
@@ -223,7 +237,11 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   sendBtn.type = 'button';
   sendBtn.className = 'is-primary';
   sendBtn.textContent = 'Send';
-  inputRow.append(input, sendBtn);
+  const chatImDoneBtn = document.createElement('button');
+  chatImDoneBtn.type = 'button';
+  chatImDoneBtn.title = 'Skip improving — use the prompt I already typed.';
+  chatImDoneBtn.textContent = 'I’m done';
+  inputRow.append(input, sendBtn, chatImDoneBtn);
 
   // Preview
   const preview = document.createElement('div');
@@ -236,8 +254,13 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   const useThisBtn = document.createElement('button');
   useThisBtn.type = 'button';
   useThisBtn.className = 'is-primary';
+  useThisBtn.title = 'Use the AI-polished prompt below.';
   useThisBtn.textContent = 'Use this';
-  previewActions.append(useThisBtn);
+  const previewImDoneBtn = document.createElement('button');
+  previewImDoneBtn.type = 'button';
+  previewImDoneBtn.title = 'Discard the polished version — use the prompt I originally typed.';
+  previewImDoneBtn.textContent = 'I’m done';
+  previewActions.append(useThisBtn, previewImDoneBtn);
   preview.append(previewBody, previewActions);
 
   // Error
@@ -260,8 +283,8 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   return {
     root: card, header, headerTitle, closeBtn,
     choice, startBtn,
-    thread, inputRow, input, sendBtn,
-    preview, previewBody, useThisBtn,
+    thread, inputRow, input, sendBtn, chatImDoneBtn,
+    preview, previewBody, useThisBtn, previewImDoneBtn,
     errorBody, errorMsg, useTemplateBtn,
   };
 }
@@ -302,6 +325,9 @@ function render(refs: ChatRefs, state: ImproveState): void {
     const pending = state.pending;
     refs.input.disabled = pending;
     refs.sendBtn.disabled = pending;
+    // "I'm done" stays enabled even while a request is in flight — the
+    // user is allowed to bail at any moment. Pending API responses are
+    // ignored once we transition to 'done'.
     refs.input.placeholder = pending ? 'Coach is thinking…' : 'Type your answer…';
   }
 

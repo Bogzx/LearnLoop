@@ -7,6 +7,7 @@ const KEY = 'trailhead.coachingEnabled';
 
 const switchEl = document.getElementById('coaching-switch') as HTMLDivElement;
 const addCtxBtn = document.getElementById('add-context-btn') as HTMLButtonElement;
+const selectTeamBtn = document.getElementById('select-team-btn') as HTMLButtonElement;
 const hintEl = document.getElementById('coaching-hint') as HTMLDivElement;
 const toastEl = document.getElementById('toast') as HTMLDivElement;
 
@@ -62,4 +63,10 @@ addCtxBtn.addEventListener('click', () => {
   // Placeholder for the wiki-context flow. Wired so the UX is complete;
   // the actual context selection is the next iteration.
   showToast('Wiki context — coming soon.');
+});
+
+selectTeamBtn.addEventListener('click', () => {
+  // Placeholder for the team-selector flow. Same pattern as Add wiki
+  // context — wired so the popup UI is complete; the picker is later.
+  showToast('Team selection — coming soon.');
 });
