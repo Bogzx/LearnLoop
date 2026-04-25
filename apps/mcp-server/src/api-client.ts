@@ -2,10 +2,13 @@
 // Reads URL + token from env so the same module works in MCP context (env
 // from .mcp.json) and in standalone tests (env from .env).
 import type {
+  OnboardRepoFullRequest,
+  OnboardRepoFullResponse,
   OnboardRepoRequest,
   OnboardRepoResponse,
   ScoreRequest,
   ScoreResponse,
+  WikiJobStatusResponse,
   WikiProposeRequest,
   WikiProposeResponse,
 } from '@trailhead/shared';
@@ -105,6 +108,17 @@ export class ApiClient {
 
   onboardRepo(body: OnboardRepoRequest): Promise<OnboardRepoResponse> {
     return this.req('POST', '/onboard/repo', body);
+  }
+
+  // Rich (LLM-generated) bootstrap. Returns a job_id; caller polls
+  // jobStatus(id) until status is 'done' or 'failed'.
+  // Spec: 2026-04-26-wiki-bootstrap-rich-design.md §9
+  onboardRepoFull(body: OnboardRepoFullRequest): Promise<OnboardRepoFullResponse> {
+    return this.req('POST', '/onboard/repo/full', body);
+  }
+
+  jobStatus(jobId: string): Promise<WikiJobStatusResponse> {
+    return this.req('GET', `/onboard/jobs/${encodeURIComponent(jobId)}`);
   }
 
   resetTeam(): Promise<{
