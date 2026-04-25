@@ -1,10 +1,10 @@
-// Team picker — server component. Fetches /team/list at request time so
+// Team picker — server component. Fetches /teams at request time so
 // every team auto-created via /onboard/repo or wiki_bootstrap shows up
 // without a code change. Each card links into the team-aware detail
 // pages via `?team=<token>`.
 
 import Link from 'next/link';
-import type { TeamListResponse, TeamSummary } from '@trailhead/shared';
+import type { TeamsListResponse, TeamSummary } from '@trailhead/shared';
 import { RESOLVED_API_URL } from '@/lib/api';
 
 export const dynamic = 'force-dynamic';
@@ -24,19 +24,27 @@ function describe(team: TeamSummary): string {
   return 'Custom team token. Wiki, skill arc, and metrics are scoped to this token only.';
 }
 
-async function loadTeams(): Promise<TeamSummary[]> {
+type LoadResult =
+  | { ok: true; teams: TeamSummary[] }
+  | { ok: false; error: string };
+
+async function loadTeams(): Promise<LoadResult> {
   try {
-    const res = await fetch(`${RESOLVED_API_URL}/team/list`, { cache: 'no-store' });
-    if (!res.ok) return [];
-    const json = (await res.json()) as TeamListResponse;
-    return json.teams;
-  } catch {
-    return [];
+    const res = await fetch(`${RESOLVED_API_URL}/teams`, { cache: 'no-store' });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return { ok: false, error: `HTTP ${res.status} ${body.slice(0, 160)}` };
+    }
+    const json = (await res.json()) as TeamsListResponse;
+    return { ok: true, teams: json.teams };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message ?? String(err) };
   }
 }
 
 export default async function HomePage() {
-  const teams = await loadTeams();
+  const result = await loadTeams();
+  const teams = result.ok ? result.teams : [];
 
   return (
     <section className="space-y-6">
@@ -50,8 +58,13 @@ export default async function HomePage() {
 
       {teams.length === 0 ? (
         <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
-          No teams returned by the API. Check that {RESOLVED_API_URL}/team/list
-          is reachable.
+          No teams returned by the API. Check that {RESOLVED_API_URL}/teams is
+          reachable.
+          {!result.ok && (
+            <div className="mt-2 font-mono text-[11px] text-destructive">
+              {result.error}
+            </div>
+          )}
         </div>
       ) : (
         <div className="grid gap-4">
