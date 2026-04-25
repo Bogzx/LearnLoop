@@ -459,10 +459,11 @@ This is doable solo in 24h.
 - 1 Postgres instance (Neon free tier)
 - 1 Railway service (Hono API)
 - 1 Vercel deployment (Next.js dashboard)
-- 1 published browser extension (Plasmo dev build, side-loaded)
-- 1 Cursor extension (sideloaded VSIX)
+- 1 browser extension (Plasmo dev build, side-loaded into Chrome)
+- 1 VS Code extension (sideloaded VSIX)
+- 1 standalone MCP server binary (registered in Claude Code's config)
 
-That's it. Five things. Each one is a single service with no internal complexity.
+Six things. Each one is a single service with no internal complexity. The MCP server and VS Code extension share the same TypeScript codebase but ship as separate artifacts.
 
 ---
 
