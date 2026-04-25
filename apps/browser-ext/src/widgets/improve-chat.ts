@@ -72,8 +72,12 @@ export function openImproveChat(
   originalPrompt: string,
   missing: MissingHints,
 ): void {
+  console.info('[trailhead] openImproveChat: originalPrompt=', originalPrompt.slice(0, 60), 'missing=', Object.keys(missing));
   const cardEl = document.getElementById('trailhead-score-card') as HTMLDivElement | null;
-  if (!cardEl) return;
+  if (!cardEl) {
+    console.warn('[trailhead] openImproveChat: no #trailhead-score-card in DOM');
+    return;
+  }
 
   const refs = buildChatDom(cardEl);
   let state: ImproveState = { stage: 'choice' };
@@ -135,6 +139,7 @@ export function openImproveChat(
   // next Enter sends straight to Claude without re-opening the score
   // card. Used from the chat (asking) and preview stages.
   const onImDone = (): void => {
+    console.info('[trailhead] improve: I\'m done clicked, originalPrompt=', originalPrompt.slice(0, 60));
     markApproved(originalPrompt);
     sel.textarea.focus();
     setState({ stage: 'done' });

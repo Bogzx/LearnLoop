@@ -47,6 +47,11 @@ let lastMissing: MissingHints = {};
 // can use it as the conversation seed instead of re-reading the textarea
 // (which augmentAndSend may have already mutated).
 let lastPrompt = '';
+// Cached selectors so scoreAndShow can lazy-rebuild the card after the
+// Improve widget has called resetCard. Without this, the next send
+// after an "I'm done" click would early-return null (cardEl gone) and
+// fail the user.
+let lastSel: Selectors | null = null;
 
 function ensureCardMounted(sel: Selectors): HTMLDivElement {
   if (cardEl && cardEl.isConnected) return cardEl;
@@ -115,6 +120,7 @@ export function hideCard(): void {
 // stale bodyEl/actionsEl references must be cleared. Next scoreAndShow
 // triggers ensureCardMounted to rebuild a fresh card from scratch.
 export function resetCard(): void {
+  console.info('[trailhead] resetCard: removing cardEl, nulling refs');
   if (cardEl) {
     cardEl.remove();
     cardEl = null;
@@ -170,12 +176,24 @@ function showResult(res: ScoreResponse): void {
  * "Send as-is after a brief Edit-then-resubmit" feel snappy.
  */
 export async function scoreAndShow(prompt: string): Promise<ScoreResponse | null> {
-  if (!cardEl || !bodyEl) return null;
+  // Lazy re-mount: if the Improve widget called resetCard last time
+  // through, cardEl is null. Rebuild it now using the cached selectors
+  // from attachScoreCard so the card surface is always available when a
+  // send is intercepted.
+  if ((!cardEl || !cardEl.isConnected) && lastSel) {
+    console.info('[trailhead] scoreAndShow: rebuilding card (cardEl was null/disconnected)');
+    ensureCardMounted(lastSel);
+  }
+  if (!cardEl || !bodyEl) {
+    console.warn('[trailhead] scoreAndShow: no cardEl/bodyEl after lazy mount — aborting');
+    return null;
+  }
   const text = prompt.trim();
   if (!text) {
     hideCard();
     return null;
   }
+  console.info('[trailhead] scoreAndShow:', text.slice(0, 60));
   const hash = simpleHash(text);
   const cached = store.getScore(hash);
   if (cached) {
@@ -222,6 +240,7 @@ export async function scoreAndShow(prompt: string): Promise<ScoreResponse | null
  * user types a different prompt.
  */
 export function attachScoreCard(sel: Selectors): () => void {
+  lastSel = sel;
   ensureCardMounted(sel);
 
   const onInput = (): void => {
@@ -232,6 +251,7 @@ export function attachScoreCard(sel: Selectors): () => void {
   sel.textarea.addEventListener('input', onInput);
 
   return () => {
+    lastSel = null;
     sel.textarea.removeEventListener('input', onInput);
     if (cardEl && cardEl.isConnected) cardEl.remove();
     cardEl = null;
