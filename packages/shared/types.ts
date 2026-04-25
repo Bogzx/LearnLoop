@@ -46,3 +46,41 @@ export interface WikiProposeResponse {
   current_count: number;
   promoted_to_durable?: boolean;
 }
+
+// GET /context?path= — HCL bundle, ordered shallow → deep (§8)
+export interface ContextLearning { body: string; reinforcement_count: number; }
+export interface ContextNode {
+  path: string;
+  body_md: string;
+  durable_learnings: ContextLearning[];
+}
+export interface ContextResponse { nodes: ContextNode[]; }
+
+// GET /examples?path= — top graduated prompts for an ancestor of `path`
+export interface ExamplesItem {
+  template: string;
+  topic: string | null;
+  reuse_count: number;
+  node_path: string;
+}
+export interface ExamplesResponse { items: ExamplesItem[]; }
+
+// GET /wiki/recent?since=ISO — sidebar polling endpoint (Person C roadmap §3)
+export interface WikiRecentItem {
+  id: string;
+  node_path: string;
+  body: string;
+  status: 'draft' | 'durable';
+  reinforcement_count: number;
+  last_seen_at: string;
+  created_at: string;
+}
+export interface WikiRecentResponse { items: WikiRecentItem[]; }
+
+// POST /diff — Sonnet/Pro-driven Prompt Diff (§10)
+export interface DiffRequest  { user_prompt: string; file_path?: string; user_id: string; }
+export interface DiffResponse {
+  user: { prompt: string; overall: number; dimensions: DimensionScores };
+  team: { prompt: string; overall: number; dimensions: DimensionScores; node_path: string; topic: string | null };
+  narrative: string;
+}
