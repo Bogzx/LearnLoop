@@ -30,40 +30,78 @@ import { hideCard, scoreAndShow } from './score-card.ts';
 let activeSelectors: Selectors | null = null;
 let sentOnce = false;
 let inFlight = false;
+// Set briefly while we dispatch our own synthetic Enter keydown so the
+// capture-phase listener on the textarea lets it through to Claude.ai
+// instead of re-running the intercept.
+let bypassIntercept = false;
 
 export function attachSendIntercept(sel: Selectors): () => void {
   activeSelectors = sel;
 
+  // Listen at window with capture — fires BEFORE any element-level listener
+  // (Tiptap / ProseMirror attach keydown directly on the contenteditable).
+  // Filter to events whose target is inside our textarea so we don't
+  // intercept Enter on unrelated parts of the page.
   const onKeydown = (e: KeyboardEvent): void => {
-    // Only Enter (no Shift, no IME composition) is "send" on Claude.ai.
     if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    const target = e.target as Node | null;
+    // Node.contains() returns true for the node itself plus any descendant,
+    // so a single check covers both "Enter on the textarea root" and "Enter
+    // inside a Tiptap-rendered child element".
+    if (!target || !sel.textarea.contains(target)) return;
+    console.info('[trailhead] enter intercepted on', location.pathname);
     onSendAttempt(e);
   };
 
   const onSendClick = (e: MouseEvent): void => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    // Ignore clicks on our own score-card buttons.
+    if (target.closest('#trailhead-score-card')) return;
+    // Match any send-button-shaped element (re-resolved live since the
+    // cached sel.sendButton is often null at attach time).
+    const btn = target.closest('button');
+    if (!btn) return;
+    const aria = btn.getAttribute('aria-label') || '';
+    const testid = btn.getAttribute('data-testid') || '';
+    const isSend =
+      /send/i.test(aria) ||
+      /send/i.test(testid) ||
+      btn.type === 'submit';
+    if (!isSend) return;
+    console.info('[trailhead] send-button click intercepted');
     onSendAttempt(e);
   };
 
-  sel.textarea.addEventListener('keydown', onKeydown, { capture: true });
-  sel.sendButton?.addEventListener('click', onSendClick, { capture: true });
+  // Use stopImmediatePropagation in onSendAttempt to also stop sibling
+  // listeners on the same element (Tiptap registers multiple keydowns).
+  window.addEventListener('keydown', onKeydown, { capture: true });
+  window.addEventListener('click', onSendClick, { capture: true });
 
   return () => {
-    sel.textarea.removeEventListener('keydown', onKeydown, { capture: true } as AddEventListenerOptions);
-    sel.sendButton?.removeEventListener('click', onSendClick, { capture: true } as AddEventListenerOptions);
+    window.removeEventListener('keydown', onKeydown, { capture: true } as AddEventListenerOptions);
+    window.removeEventListener('click', onSendClick, { capture: true } as AddEventListenerOptions);
     activeSelectors = null;
   };
 }
 
 function onSendAttempt(e: Event): void {
+  // Our own programmatic dispatch (Path 3 in fireSendOnce) — let the event
+  // through untouched so Claude.ai's own handler picks it up.
+  if (bypassIntercept) return;
   if (!activeSelectors) return;
   const text = readPrompt(activeSelectors.textarea).trim();
   if (!text) return; // empty composer → let native handler no-op
 
   // We can't decide whether to send until we have a score. Block the
   // native send unconditionally; we'll re-fire it programmatically if
-  // the score clears the threshold or the user picks Send-as-is.
+  // the user picks Send-as-is or Improve. stopImmediatePropagation also
+  // blocks sibling listeners on the same element (Tiptap registers more
+  // than one keydown, and Claude.ai's send button has its own onClick).
   e.preventDefault();
+  e.stopImmediatePropagation();
   e.stopPropagation();
+  console.info('[trailhead] intercepted send — running /score');
 
   // Re-arm so the same composer state can be sent after this attempt.
   sentOnce = false;
@@ -86,18 +124,12 @@ async function runIntercept(text: string): Promise<void> {
     triggerNativeSend();
     return;
   }
-  if (res.overall >= 7) {
-    // High-quality prompts go through with no friction. The card was
-    // briefly shown by scoreAndShow; hide it before firing the send so
-    // the UI doesn't flash a result the user never had to read.
-    hideCard();
-    triggerNativeSend();
-    return;
-  }
-  // <7: leave the card visible. Action buttons drive the next step:
+  // Always leave the card visible and let the user choose. The three
+  // action buttons drive the next step:
   //   Improve   → augmentAndSend()
   //   Send as-is → triggerNativeSend()
   //   Edit      → hideCard() + focusComposer()
+  // No auto-send on high scores — every send is an explicit user choice.
 }
 
 export function triggerNativeSend(): void {
@@ -121,16 +153,40 @@ export function rememberScoredPrompt(text: string): void {
   lastScoredText = text;
 }
 
+// Re-resolve the send button at fire time. Claude.ai mounts the button
+// lazily (only after the textarea has content), and on chat pages it
+// gets re-rendered after navigation, so the cached `sel.sendButton`
+// from attach time is often null or disconnected by now.
+function findLiveSendButton(): HTMLElement | null {
+  const candidates = [
+    'button[aria-label="Send Message"]',
+    'button[aria-label="Send message"]',
+    'button[aria-label*="Send"]',
+    'button[data-testid*="send"]',
+    'fieldset button[type="submit"]',
+    'button[type="submit"]',
+  ];
+  for (const sel of candidates) {
+    const el = document.querySelector(sel);
+    if (el instanceof HTMLElement && el.isConnected && !(el as HTMLButtonElement).disabled) {
+      return el;
+    }
+  }
+  return null;
+}
+
 function fireSendOnce(sel: Selectors): boolean {
   // Path 1: programmatic click on the actual send button. `.click()` produces
   // an untrusted MouseEvent but Claude.ai's React onClick handler still runs
   // (only browser-action defaults like `<a target=_blank>` need trust).
-  if (sel.sendButton && sel.sendButton.isConnected) {
+  // Re-resolve fresh — the cached one may be stale after SPA navigation.
+  const liveButton = findLiveSendButton() ?? sel.sendButton;
+  if (liveButton && liveButton.isConnected) {
     try {
-      sel.sendButton.click();
+      liveButton.click();
       return true;
     } catch {
-      /* fall through to form.requestSubmit */
+      /* fall through */
     }
   }
   // Path 2: form.requestSubmit() — fires a real submit event the form's
@@ -144,7 +200,29 @@ function fireSendOnce(sel: Selectors): boolean {
       /* fall through */
     }
   }
-  return false;
+  // Path 3: dispatch a synthetic Enter keydown on the textarea. Tiptap /
+  // ProseMirror (claude.ai/chat) has no <form> and the send button can be
+  // unmounted, so this is the last-resort path. The bypassIntercept flag
+  // makes our own capture-phase listener no-op for this single dispatch
+  // so Claude.ai's React handler receives it.
+  try {
+    sel.textarea.focus();
+    bypassIntercept = true;
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+    });
+    const ok = sel.textarea.dispatchEvent(enter);
+    bypassIntercept = false;
+    return ok;
+  } catch {
+    bypassIntercept = false;
+    return false;
+  }
 }
 
 async function doNativeSend(): Promise<void> {
