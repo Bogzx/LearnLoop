@@ -1,0 +1,25 @@
+{
+  "name": "@trailhead/scoring",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./normalize": "./src/normalize.mjs",
+    "./extract-prompt": "./src/extract-prompt.mjs",
+    "./score-prompt": "./src/score-prompt.mjs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/normalize.test.mjs src/extract-prompt.test.mjs src/dedup-invariant.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
