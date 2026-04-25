@@ -152,11 +152,17 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
               missing: {
                 type: Type.OBJECT,
                 properties: Object.fromEntries(
-                  // maxLength is advisory in Gemini structured output (NOT
-                  // a hard generation-time cap). Keep it aligned with the
-                  // system prompt's "ONE sentence, under 60 chars" rule —
-                  // the real backstop is maxOutputTokens above.
-                  DIMENSIONS.map((d) => [d, { type: Type.STRING, maxLength: 60 }]),
+                  // maxLength MUST be passed as a string to match the SDK's
+                  // typed contract (Schema.maxLength is `string` in
+                  // @google/genai's types). Passing a number is silently
+                  // dropped on the wire — the API never sees the
+                  // constraint, the model overshoots freely. This was the
+                  // root cause of the 2026-04-25 repetition incident:
+                  // the comment in the original code claimed maxLength
+                  // would prevent loops, but the wrong type meant the
+                  // constraint was a no-op. The real backstop is still
+                  // maxOutputTokens above; this is belt-and-suspenders.
+                  DIMENSIONS.map((d) => [d, { type: Type.STRING, maxLength: '60' }]),
                 ),
               },
             },
