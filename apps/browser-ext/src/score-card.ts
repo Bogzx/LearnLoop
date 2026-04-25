@@ -110,6 +110,23 @@ export function hideCard(): void {
   if (actionsEl) actionsEl.hidden = true;
 }
 
+// Tears the card all the way down — used when something else has
+// repurposed the card's children (the Improve widget wipes them) so the
+// stale bodyEl/actionsEl references must be cleared. Next scoreAndShow
+// triggers ensureCardMounted to rebuild a fresh card from scratch.
+export function resetCard(): void {
+  if (cardEl) {
+    cardEl.remove();
+    cardEl = null;
+  }
+  bodyEl = null;
+  actionsEl = null;
+  if (activeAbort) {
+    activeAbort.abort();
+    activeAbort = null;
+  }
+}
+
 function bucketFor(overall: number): 'low' | 'med' | 'high' {
   if (overall >= 7) return 'high';
   if (overall >= 4) return 'med';
