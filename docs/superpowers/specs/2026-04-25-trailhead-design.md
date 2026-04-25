@@ -36,7 +36,7 @@
 3. **Backend (Hono on Railway)** that scores prompts on 5 dimensions, retrieves team examples by tree-walk, captures sessions, and writes skill_observations on every score
 4. **MCP server + Claude Code Stop hook** — autonomous wiki update with two paths:
    - The MCP tool `wiki.update_learnings` (Claude Code calls explicitly when it notices a learning the user wants captured)
-   - A `Stop` hook fires after every assistant turn: extracts candidate learnings via Haiku, POSTs to `/wiki/propose`, server-side dedup ensures the hook and the MCP call don't double-count
+   - A `Stop` hook fires after every assistant turn: extracts candidate learnings via Gemma 4 31B (the thinking model gives higher recall than a fast scorer would, and latency doesn't matter for a one-call-per-turn extractor), POSTs to `/wiki/propose`, server-side dedup ensures the hook and the MCP call don't double-count
    - **The hook backstops the model**: even if Claude Code skips the MCP call, the hook fires deterministically. Demo reliability is 100%, not 80%.
    - For the demo, Claude Code runs in VS Code's integrated terminal so both surfaces are visible in one window.
 5. **Web dashboard** with skill arc + L1→L2 metrics view — base layer is seeded data (~50 skill_observations from §11), with real `/score` writes from the demonstrator's prompts during the live demo layered on top so the closing tick is visibly real
@@ -187,7 +187,7 @@ That's six tables. Implementable in ~1 hour by one engineer. The `events` table 
 
 ---
 
-## 5. The five prompt-quality dimensions (the rubric Haiku scores against)
+## 5. The five prompt-quality dimensions (the rubric Gemini Flash scores against)
 
 | Dimension | Lazy → Skilled |
 |-----------|----------------|
@@ -197,9 +197,9 @@ That's six tables. Implementable in ~1 hour by one engineer. The `events` table 
 | **constraint_articulation** | (none) → "must remain idempotent; no public API change" |
 | **output_specification** | (none) → "return only the modified function, no explanation" |
 
-**Why five and not seven.** Earlier drafts listed seven dimensions including `decomposition` (one prompt for many things vs. one per task) and `iteration_mode` (one-shot vs. small steps). Both require **session-level history** to score — Haiku cannot evaluate them from a single prompt. Five teachable dimensions are sharper on a slide, produce a smaller scoring prompt cache key, and never give the user a score for something we can't actually measure.
+**Why five and not seven.** Earlier drafts listed seven dimensions including `decomposition` (one prompt for many things vs. one per task) and `iteration_mode` (one-shot vs. small steps). Both require **session-level history** to score — a single-prompt scorer cannot evaluate them. Five teachable dimensions are sharper on a slide, produce a smaller scoring prompt that fits Gemini's structured-output schema cleanly, and never give the user a score for something we can't actually measure.
 
-**Scoring prompt for Haiku (template):**
+**Scoring prompt for Gemini Flash (template):**
 
 ```
 You are a prompt-quality scorer. Given a developer's draft prompt, return a JSON
@@ -216,7 +216,7 @@ Prompt: <user prompt>
 File context: <file path if known>
 ```
 
-Cost: ~400 input tokens cached + ~120 output. Haiku 4.5 ≈ $0.0003 per scoring. Negligible. With 250ms debounce on typing, ~5–10 scoring calls per real prompt session.
+Cost: ~400 input + ~120 output tokens. Gemini 2.5 Flash on the free tier covers the demo at zero cost; on paid tier ≈ $0.0001 per scoring. With 250ms debounce on typing, ~5–10 scoring calls per real prompt session. We use Gemini's `responseSchema` to enforce the JSON shape — the score-card code parses without defensive try/catches because the schema guarantees the dimensions object exists.
 
 ---
 
@@ -332,8 +332,8 @@ wiki.rules_for(file_path)
 In addition to the MCP tools, we ship a Claude Code Stop hook that fires deterministically after every assistant turn. The hook script (`trailhead-hook.sh`):
 
 1. Reads the latest user prompt + assistant response from stdin (Claude Code passes them via the hook payload)
-2. Calls Haiku with a "extract candidate learnings" prompt
-3. If Haiku returns a learning, POSTs to `/wiki/propose` — the same endpoint the MCP tool uses
+2. Calls Gemma 4 31B with an "extract candidate learnings" prompt — the thinking model's chain-of-thought materially improves recall on subtle conventions, and one call per assistant turn is well within the latency budget
+3. If the model returns a learning, POSTs to `/wiki/propose` — the same endpoint the MCP tool uses
 4. Server-side dedup on `(node_id, body_normalized)` ensures the hook and the MCP tool can both fire without double-counting
 
 Why both paths exist:
@@ -384,7 +384,7 @@ For the 24-hour build this is one query. No Redis, no caching, no recursion. Sub
 
 ## 9. Why we don't need a separate reinforcement worker
 
-Earlier drafts of this spec proposed an optional Postgres NOTIFY/LISTEN worker that would: listen for capture events, call Haiku to extract candidate learnings, post to `/wiki/propose`. The worker has been **replaced by the Claude Code Stop hook** for the IDE path:
+Earlier drafts of this spec proposed an optional Postgres NOTIFY/LISTEN worker that would: listen for capture events, call an LLM to extract candidate learnings, post to `/wiki/propose`. The worker has been **replaced by the Claude Code Stop hook** for the IDE path:
 
 - **Claude Code path**: Stop hook does the extraction inline after each assistant turn. No queue, no worker, no NOTIFY/LISTEN.
 - **Browser extension path**: extension does NOT trigger learning extraction (it just writes captures and skill_observations). The wiki updates happen visibly in Claude Code via the hook + MCP. That's fine for the demo.
@@ -398,11 +398,11 @@ Net effect: one less moving part, one less deployment, no NOTIFY/LISTEN to debug
 After the user gets an answer:
 1. Mark the prompt with outcome (`POST /capture` includes `outcome` field if rated)
 2. On user click "show team comparison":
-   - Backend: fetch the closest matching graduated `prompt` (by topic + path proximity, ranked by Haiku if multiple candidates)
+   - Backend: fetch the closest matching graduated `prompt` (by topic + path proximity, ranked by Gemini Flash if multiple candidates)
    - Run the user's prompt + the graduated prompt through scoring
    - Render side-by-side diff highlighting which dimensions the user missed
 
-For the hackathon, the "closest match" can be deterministic: find prompts in the same `node.path` ancestry with matching `topic` (extracted from user prompt via Haiku in one call).
+For the hackathon, the "closest match" can be deterministic: find prompts in the same `node.path` ancestry with matching `topic` (extracted from the user prompt via Gemini Flash in one call, with `responseSchema` enforcing the topic enum).
 
 The diff renders both the per-dimension scores and the prose differences side by side: e.g., *"yours: 5/10 on context_loading; team-skilled: 9/10 on context_loading — they referenced `utils/retry.ts` and the team's idempotency invariant."* Same rubric as the score-card; same five dimensions.
 
@@ -430,8 +430,8 @@ Hand-craft these to be plausible and to hit the demo flow. Real `/score` writes 
 | Hours | Person A (frontend) | Person B (browser ext) | Person C (VS Code ext + MCP + hook) | Person D (backend) |
 |-------|---------------------|------------------------|--------------------------------------|---------------------|
 | 0–2 | Next.js scaffold, Tailwind, dashboard skeleton | Plasmo scaffold, manifest for Claude.ai | VS Code extension scaffold + sidebar webview; standalone MCP server scaffold | Hono + Postgres schema (six tables, no events) + deploy to Railway |
-| 2–6 | Dashboard pages (skill arc, team metrics, wiki view) — read from skill_observations | DOM hooks: detect input, **smoke-test on the pinned demo browser version**, intercept send, render score-card UI | Pre-prompt sidebar pulling `/examples?path=`; score-card webview identical to browser | `/score` (5 dimensions) writes skill_observation inline; `/capture`, `/context`, `/examples` + Haiku integration |
-| 6–10 | Polish dashboard, add the wiki tree view | Implement live debounced `/score` call (250ms); threshold logic (≥7/<7); "Have Claude clarify" augmentation | MCP server tools (`wiki.update_learnings`, `wiki.context_for`, `wiki.search`); **Stop hook script** with Haiku learning-extraction; test against Claude Code | `/wiki/propose` + normalize+dedup + counter promotion |
+| 2–6 | Dashboard pages (skill arc, team metrics, wiki view) — read from skill_observations | DOM hooks: detect input, **smoke-test on the pinned demo browser version**, intercept send, render score-card UI | Pre-prompt sidebar pulling `/examples?path=`; score-card webview identical to browser | `/score` (5 dimensions) writes skill_observation inline; `/capture`, `/context`, `/examples` + Gemini integration |
+| 6–10 | Polish dashboard, add the wiki tree view | Implement live debounced `/score` call (250ms); threshold logic (≥7/<7); "Have Claude clarify" augmentation | MCP server tools (`wiki.update_learnings`, `wiki.context_for`, `wiki.search`); **Stop hook script** with Gemma 4 31B learning-extraction; test against Claude Code | `/wiki/propose` + normalize+dedup + counter promotion |
 | 10–14 | Wire dashboard to live skill_observations; L1→L2 progression chart | Polish UX, edge cases (multi-line prompts, paste events); **fail-open if /score 500s** | Post-prompt outcome widget + Prompt Diff display; sidebar wiki-update toast (polling `/wiki/propose` results); `npx trailhead-mcp init` install script; *(if time)* articulation scaffold Cmd+Shift+K | Demo seeding scripts; populate Acme Fintech data; per-(user, dimension, prompt-hash) 30s dedup on skill_observation writes |
 | 14–18 | All-hands: demo seeding, polish | Test demo flow end-to-end on Claude.ai (PIN BROWSER, RECORD INITIAL FALLBACK) | Test demo flow in VS Code + Claude Code with MCP + hook; verify hook fires every turn | Validate all data renders correctly |
 | 18–22 | All-hands: bug fixes, fallback recordings refreshed | All-hands: rehearse demo 3+ times | All-hands: prepare slides | All-hands: stress-test |
@@ -473,14 +473,14 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 
 ## 14. Mentor pitch — 7 sentences
 
-> Engineers have been prompting AI for two years and almost none have gotten better at it — because they've literally never seen the rubric for a strong prompt. That's the L1→L2 gap the brief calls the hardest unsolved transition. Trailhead is a coach that develops prompting craft using your team's actual work as the curriculum — not abstract advice from a blog. When you draft a prompt, we live-score it on five measurable dimensions and show you what's missing; when you're done, we show you a Prompt Diff against your team's skilled version so you can see exactly which dimensions you missed. The team's curriculum grows itself from real reuse, maintained by Claude Code mid-conversation through both an MCP tool and a deterministic Stop hook, so it never goes stale like every CLAUDE.md before it. Our KPIs are per-engineer skill progression and team-level reuse rate — behavioral metrics, not engineering ones. The brief literally says we don't even need to use AI to win as long as we drive adoption; our scoring rubric is concrete enough that a human reviewer could apply it — we use Haiku because it's faster, not because it's the product.
+> Engineers have been prompting AI for two years and almost none have gotten better at it — because they've literally never seen the rubric for a strong prompt. That's the L1→L2 gap the brief calls the hardest unsolved transition. Trailhead is a coach that develops prompting craft using your team's actual work as the curriculum — not abstract advice from a blog. When you draft a prompt, we live-score it on five measurable dimensions and show you what's missing; when you're done, we show you a Prompt Diff against your team's skilled version so you can see exactly which dimensions you missed. The team's curriculum grows itself from real reuse, maintained by Claude Code mid-conversation through both an MCP tool and a deterministic Stop hook, so it never goes stale like every CLAUDE.md before it. Our KPIs are per-engineer skill progression and team-level reuse rate — behavioral metrics, not engineering ones. The brief literally says we don't even need to use AI to win as long as we drive adoption; our scoring rubric is concrete enough that a human reviewer could apply it — we use Gemini Flash because it's faster, not because it's the product.
 
 ---
 
 ## 15. Mentor defenses
 
 **"Isn't this AI engineering with adoption framing?"**
-> *"The product is a behavioral coach. KPI is per-engineer skill progression across five measurable dimensions plus team-level reuse rate. Both are behavioral metrics. Swap any LLM out — the loop runs identically. The brief says we don't need to use AI to win as long as we drive adoption; our rubric is concrete enough that a human reviewer could apply it. Haiku is the implementation; the rubric is the product."*
+> *"The product is a behavioral coach. KPI is per-engineer skill progression across five measurable dimensions plus team-level reuse rate. Both are behavioral metrics. Swap any LLM out — the loop runs identically. The brief says we don't need to use AI to win as long as we drive adoption; our rubric is concrete enough that a human reviewer could apply it. Gemini Flash is the implementation; the rubric is the product. We could swap to GPT-4o-mini, Haiku, Llama, or rule out LLMs entirely and the architecture is unchanged."*
 
 **"How is the score-card different from a system prompt that says 'always ask clarifying questions'?"**
 > *"A system prompt makes the AI act differently. We make the engineer think differently. The score-card is a measurement tool the user sees — they leave knowing their prompt scored 4 out of 10 on context_loading. Next time they prompt anywhere — even without our extension — they remember. That is L1→L2."*
@@ -494,8 +494,8 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 **"Why won't engineers ignore the coach?"**
 > *"Coaching surfaces are passive and respect flow. The score-card never highlights when you're already prompting well. The VS Code pre-prompt nudge is a glance, not a form. Skill arc is your private trajectory. We never interrupt and never judge — that's why it survives."*
 
-**"What's your moat against Anthropic shipping this?"**
-> *"Three things they probably won't do. One: portable model-agnostic curriculum — your team's wiki works against any LLM. Two: team consensus via reinforcement counters; their memory is per-user. Three: cross-team transfer is a network-effect product no model vendor will build because it doesn't sell more inference."*
+**"What's your moat against the model vendors (Google / Anthropic / OpenAI) shipping this?"**
+> *"Three things they probably won't do. One: portable model-agnostic curriculum — your team's wiki works against any LLM (we're on Gemini today; the loop runs identically on Haiku or GPT-4o-mini). Two: team consensus via reinforcement counters; their memory is per-user. Three: cross-team transfer is a network-effect product no model vendor will build because it doesn't sell more inference."*
 
 **"Privacy?"**
 > *"Code never leaves the user's repo unless they explicitly attach it. The prompt content does — but we acknowledge prompts often contain code (snippets, stack traces, function bodies). That's why Enterprise tier scores locally with no cloud round-trip and stores the wiki in the customer's VPC. Hackathon is cloud-stored. No conversation logs anywhere — we capture distilled learnings, not transcripts. There's no surveillance vector because there's no log to surveil."*
@@ -515,10 +515,13 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 | Browser extension | Plasmo (TypeScript) | Best-in-class extension framework |
 | VS Code extension | TypeScript + VSCode API + WebView for sidebar | Standard; works alongside any AI chat in VS Code |
 | MCP server | Node + TypeScript, MCP SDK | Standalone binary; user registers in `.mcp.json` for Claude Code / Claude Desktop |
-| Stop hook | Bash + Node (one-file script) | Reads JSON from stdin, calls Haiku, POSTs to `/wiki/propose`. Registered in `.claude/settings.json`. |
+| Stop hook | Bash + Node (one-file script) | Reads JSON from stdin, calls Gemma 4 31B for learning extraction, POSTs to `/wiki/propose`. Registered in `.claude/settings.json`. |
 | Demo AI in VS Code | Claude Code (CLI in integrated terminal) | Best MCP support; hooks fire deterministically; visible alongside our extension in one window |
-| Coach scoring | Claude Haiku 4.5 with prompt caching | Cheap, fast, cached system prompt |
-| Prompt Diff synthesis | Claude Sonnet 4.6 with prompt caching | Quality matters here, cache helps |
+| Coach scoring | Gemini 2.5 Flash with `responseSchema` JSON mode and `thinkingBudget=0` | ~1s, schema-enforced output, free tier covers demo |
+| Topic extraction (`/diff`) | Gemini 2.5 Flash with enum-constrained `responseSchema` | Single round-trip, deterministic shape |
+| Stop-hook learning extraction | Gemma 4 31B (thinking model) | One call per assistant turn — quality > latency. Chain-of-thought boosts recall on subtle conventions. |
+| Prompt Diff narrative | Gemini 2.5 Flash | Originally Gemma 4 31B for richer narrative; flipped to Flash because compounding 4 LLM calls put `/diff` over budget on free-tier quotas. Single-line constant in `packages/scoring/models.ts` to swap back when paid quota lands. |
+| LLM provider | Google AI Studio (Gemini API) | Single env var `GEMINI_API_KEY`. Both providers wired so swapping models is a one-line change in `packages/scoring/models.ts`. |
 | Auth | Hardcoded team token (hackathon) → Clerk (post) | Simplest possible |
 
 **Total infrastructure for the hackathon:**
@@ -539,7 +542,7 @@ For mentors / judges who want technical depth, the impressive elements are:
 
 1. **MCP integration with autonomous tool calls + a deterministic Stop hook backstop** — the AI itself updates the wiki mid-conversation (MCP path), AND a Claude Code Stop hook backstops every turn so the demo never depends on the model choosing to call the tool. Most teams won't ship working MCP, let alone the dual-path reliability layer.
 2. **Browser extension that scores prompts live on Claude.ai with a 5-dimension rubric** — every keystroke gets graded in real time, and the user sees what they're missing in plain English. Few hackathon teams will have built one.
-3. **Real prompt scoring with Haiku at 250ms debounce** — running an LLM on every typed sentence with prompt caching is non-trivial; we make it cheap and never block the user.
+3. **Real prompt scoring with Gemini 2.5 Flash at 250ms debounce** — running an LLM on every typed sentence with `responseSchema` JSON-mode enforcement is non-trivial; we make it cheap (free tier covers the demo) and never block the user.
 4. **Cross-platform reach demonstrated live** — browser + IDE both working in the same demo proves the architecture, not just the slide.
 5. **The Karpathy-flavored file-tree wiki with no vector DB** — the LLM navigates the wiki cognitively, not via vector math. Pitchable as "LLM OS for engineering teams."
 6. **Reinforcement-counter mechanic with normalized exact-match dedup** — patterns earn their place in the durable wiki via consensus, not admin decree. Defensible as research-aligned (matches Zep/Graphiti's evolving-facts model).
@@ -558,9 +561,9 @@ The impressiveness is **what we built and why**, not how many services we deploy
 
 These need a decision before/during the build, not after:
 
-1. **The Haiku scoring prompt template (5 dimensions)** — needs careful crafting and few-shot examples. Lock in hour 4 so backend can use it.
+1. **The Gemini Flash scoring prompt template (5 dimensions)** — needs careful crafting and few-shot examples. Lock in hour 4 so backend can use it. The `responseSchema` carries the shape; the system prompt carries the rubric.
 2. **The Socratic Mode augmentation template** — what exact text to inject when user opts into "Have Claude clarify". Tested with Claude to make sure it complies. Lock by hour 6.
-3. **The Stop hook learning-extraction prompt** — the hook calls Haiku with this prompt to decide whether the assistant's turn contained a teamwide learning. False positives = wiki spam; false negatives = miss the demo moment. Lock by hour 6.
+3. **The Stop hook learning-extraction prompt** — the hook calls Gemma 4 31B with this prompt to decide whether the assistant's turn contained a teamwide learning. False positives = wiki spam; false negatives = miss the demo moment. Lock by hour 6.
 4. **The topic-extraction prompt for Prompt Diff** — used to find the closest matching graduated prompt. Misclassification = empty diff. Lock by hour 8.
 5. **Demo seed data content** — the 30 captures, 15 learnings, 8 prompts need to look genuinely real. One person should own this end-to-end (not the engineers building features).
 6. **Fallback recordings** — for every live beat, have a screen recording ready in case it breaks during the pitch. Record initial pass at hour 18, refresh at hour 22.

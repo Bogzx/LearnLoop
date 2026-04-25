@@ -12,7 +12,11 @@
     },
     "./normalize": "./src/normalize.mjs",
     "./extract-prompt": "./src/extract-prompt.mjs",
-    "./score-prompt": "./src/score-prompt.mjs"
+    "./score-prompt": "./src/score-prompt.mjs",
+    "./topic-prompt": "./src/topic-prompt.mjs",
+    "./score-helpers": "./src/score-helpers.mjs",
+    "./path-helpers": "./src/path-helpers.mjs",
+    "./models": "./src/models.mjs"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
