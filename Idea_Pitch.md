@@ -135,6 +135,98 @@ Iteration mode      ███████░░░  stable
 
 ---
 
+## 4.5. Cross-platform reach — coaching every AI surface
+
+The coach has to reach engineers wherever they prompt. We use a **central brain + thin clients per surface** pattern:
+
+```
+┌─────────────  CENTRAL BRAIN (cloud)  ─────────────┐
+│  Team wiki, learnings, .prompts/                  │
+│  Skill scoring (Haiku 7-dimension)                │
+│  Prompt Diff synthesis (Sonnet)                   │
+│  Outcome attribution + skill arcs                 │
+│  L1→L2 dashboard                                  │
+└────┬──────┬──────┬──────┬──────┬──────────────────┘
+     │      │      │      │      │
+     ▼      ▼      ▼      ▼      ▼
+  Browser  VSCode  MCP   Slack  CLI
+   ext     ext   server  bot   wrap
+     │      │      │      │      │
+     ▼      ▼      ▼      ▼      ▼
+ Claude.ai  Cursor  Claude  Slack  Aider
+ ChatGPT    Copilot  Code   chats  Goose
+ Gemini     Continue  etc.
+```
+
+Each thin client does the same five jobs against its host surface: **detect** the prompt, **score** it via the brain, **augment** with coaching, **capture** the response, **report** outcome.
+
+### Socratic Mode — the universal coaching mechanic
+
+The killer technique that works on every surface, including browser AIs we have no API access to: **prompt augmentation**. The extension intercepts the user's draft prompt, scores it, and augments it with coaching instructions that make the AI itself ask clarifying questions.
+
+User types in Claude.ai:
+```
+fix the retry
+```
+
+Extension augments before send (visibly, the user sees and can edit):
+```
+fix the retry
+
+---
+[Trailhead coaching: This prompt is missing key context. Before answering,
+ask the user 2-3 questions to clarify:
+- Which file/folder is this in?
+- What library or helper is currently used?
+- What constraints apply (max attempts, idempotency)?
+Only then provide your answer.]
+```
+
+The AI receives this, sees a vague prompt with explicit coaching, and responds by asking those questions. The user answers. The AI gives a much better answer. **The user just went through an articulation scaffold without realizing it** — the pedagogy was invisible, conversational, in the AI's own voice.
+
+### Why Socratic Mode beats explicit scaffolds
+
+| Cmd+Shift+K scaffold | Socratic Mode |
+|----------------------|---------------|
+| Requires our UI | Works with any AI surface |
+| Form-feel breaks flow | Conversational, natural |
+| Three abstract questions | Tailored per prompt |
+| Only in IDEs | Browser, IDE, Desktop, anywhere |
+| User sees a form | User sees an AI asking |
+
+Ship both. The scaffold is the deliberate, opt-in version. Socratic Mode is the ambient default that works everywhere.
+
+### Settings
+
+| Mode | When |
+|------|------|
+| **Off** | Senior who wants unmediated prompting |
+| **Auto** (default) | Inject when prompt scores below threshold on articulation dimensions |
+| **Always** | Junior / learning mode |
+| **Just-team-context** | Inject team conventions but not clarifying questions |
+
+Configurable per user, team admins can set defaults.
+
+### Tradeoffs and mitigations
+
+| Concern | Mitigation |
+|---------|-----------|
+| Latency on every prompt | Client-side cache; async scoring (send proceeds while scoring runs in background); 100ms target on brain side |
+| "Prompt injection" optics | Always-visible augmentation; user can edit/strip in one click; we call it *augmentation*, not *injection* |
+| AI doesn't respect coaching equally | Per-provider tuning of injection format; A/B which formats reliably produce clarifying questions |
+| Privacy (prompt leaves machine) | Free/Team tiers acceptable; Enterprise uses local on-device scoring or customer-hosted inference endpoint |
+
+### Privacy tiers (cross-platform)
+
+| Tier | Scoring runs | Cloud sees |
+|------|-------------|-----------|
+| Free | Cloud | Prompts, responses, outcomes |
+| Team | Cloud | Same + team metadata |
+| Business | Cloud | Same + cross-team patterns |
+| Enterprise | **Local model** or customer-hosted endpoint | Metadata only — never prompt/response content |
+
+---
+
 ## 5. Architecture — coach onstage, wiki backstage
 
 ```
@@ -177,11 +269,12 @@ The wiki is the **engine**. The coach is the **surface**.
 - Skill scoring, prompt diffing, outcome attribution
 - Wiki storage (default) or repo-sync mode (Business+)
 
-**Capture surfaces:**
-- VS Code / Cursor extension (primary developer surface)
-- MCP server (power users — deepest integration with Claude Code)
-- Browser extension (Plasmo) for Claude.ai / ChatGPT / Gemini users
-- Direct paste / API
+**Capture surfaces (all do the same 5 jobs against different host AIs):**
+- **Browser extension (Plasmo)** — primary universalizing surface; reaches Claude.ai / ChatGPT / Gemini / Perplexity. Implements Socratic Mode via prompt augmentation.
+- **VS Code / Cursor extension** — primary developer surface; works with Cursor, Copilot Chat, Continue chat panels.
+- **MCP server** — power users; deepest integration with Claude Code, Cursor, Claude Desktop. Enables autonomous wiki updates.
+- **Slack / Discord bot** — captures team-prompt-sharing conversations.
+- **Direct paste / API** — anyone, any tool.
 
 **Privacy tiers:**
 - Default: prompts/learnings cloud-stored, code never sent unless GitHub App connected
@@ -209,7 +302,7 @@ Bottom-up motion: dev signs up free → uses scaffold + diff against generic sta
 
 **0:00 — Hook (30s).** *"Software engineers have been prompting AI for two years and almost none have gotten better at it. The reason: they've never seen anyone else's prompts. We're a coach that turns prompting from invisible solo work into visible team craft — with your team's actual work as the curriculum."*
 
-**0:30 — Articulation moment (40s).** Maria opens Cursor. Cmd+Shift+K. Three-field scaffold. 15 seconds, structured prompt appears. Below: *"Two teammates wrote similar prompts last week. Here's the one that shipped."* Comparison. She adopts a refinement.
+**0:30 — The Socratic moment, in the browser (40s).** Maria is on **Claude.ai** (not an IDE — most engineers prompt here at least sometimes). She types *"fix the retry"*. Browser extension intercepts: *"Your prompt is missing context. Want Trailhead to ask Claude to clarify first?"* She accepts. Augmented prompt sends. Claude responds asking which file, which library, which constraints. She answers. Claude gives a great answer using her team's actual conventions. **No IDE was involved. The coach reached her through the browser.**
 
 **1:10 — The Prompt Diff (50s).** She fires. Gets a great answer. Marks helpful. Clicks "see how this compared." Diff slides in. *"You missed one dimension. Your team includes this one 89% of the time."* **The L1→L2 transition rendered as 30 seconds of pedagogy.**
 
@@ -227,7 +320,8 @@ Bottom-up motion: dev signs up free → uses scaffold + diff against generic sta
 |-------|-------|-------------|----------------|
 | Foundation | 0–4 | Cloud signup + dashboard skeleton + GitHub OAuth | Live |
 | Wiki engine | 4–10 | `.wiki/` schema, HCL, MCP server with `update_learnings` + reinforcement | Live |
-| Capture surface | 10–14 | VS Code/Cursor extension — captures prompts, surfaces team context | Live |
+| Capture surface — IDE | 10–14 (parallel) | VS Code/Cursor extension — captures prompts, surfaces team context | Live |
+| Capture surface — browser | 10–14 (parallel) | Plasmo browser extension for Claude.ai with Socratic Mode prompt augmentation | Live (the universalizing demo) |
 | **Articulation scaffold** | 14–18 | Cmd+Shift+K panel, 3-field form, structured prompt assembly | **Live — demo headline** |
 | **Team-anchored examples** | 18–22 | Pre-prompt panel showing anonymized teammate prompts | **Live — demo headline** |
 | **Prompt Diff** | 22–28 | Post-prompt diff, 7-dimension scoring, team-skilled synthesis | **Live — demo headline** |
@@ -237,9 +331,10 @@ Bottom-up motion: dev signs up free → uses scaffold + diff against generic sta
 | Demo seed + polish | 34–36 | Pre-seed public demo repo with realistic team prompt history; rehearse | Critical |
 
 ### Must work live for the demo
-1. Articulation scaffold (Cmd+Shift+K)
+1. **Socratic Mode in browser** (Claude.ai) — the universalizing moment, AI asks clarifying questions
 2. Team-anchored examples in pre-prompt panel
-3. Prompt Diff (post-prompt)
+3. Prompt Diff (post-prompt) with 7-dimension scoring
+4. Articulation scaffold (Cmd+Shift+K) — opt-in alternative to Socratic Mode
 
 ### Cuts if behind schedule
 - Cross-team transfer → slide only
