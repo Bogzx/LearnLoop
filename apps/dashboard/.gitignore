@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# build
+dist/
+
+# misc
+.DS_Store
+*.log
+
+# env (dashboard inherits from repo root .env via NEXT_PUBLIC_*; no local .env files)
+.env*.local
+
+# vercel
+.vercel
