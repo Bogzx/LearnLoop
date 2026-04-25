@@ -540,10 +540,10 @@ function DetailPanel({
   );
 }
 
-export function WikiTree() {
+export function WikiTree({ token }: { token: string }) {
   const { data, error, isLoading } = useSWR<WikiTreeResponse>(
-    'wiki-tree',
-    () => api.wikiTree(),
+    ['wiki-tree', token],
+    () => api.wikiTree(token),
     { refreshInterval: 30_000, revalidateOnFocus: true },
   );
   const [selected, setSelected] = useState<string | null>(null);
