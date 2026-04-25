@@ -1,4 +1,4 @@
-// Exercise every MCP tool against the live Railway API and report what
+// Exercise every MCP hero tool against the live Railway API and report what
 // behaves correctly vs. what surfaces an upstream 404. Used as a verification
 // harness — not a unit test.
 import { spawn } from 'node:child_process';
@@ -62,15 +62,18 @@ function callTool(name, args) {
 
   const cases = [
     ['ping', {}],
-    ['wiki_update_learnings', { node_path: 'src/api/webhooks/', insight: 'Use exponential backoff with jitter for webhook retries.' }],
-    ['wiki_context_for', { file_path: 'src/api/webhooks/handler.ts' }],
-    ['wiki_rules_for', { file_path: 'src/api/webhooks/handler.ts' }],
-    ['wiki_search', { query: 'webhook retry' }],
+    ['coach', { prompt: 'fix the retry' }],
+    ['coach', { prompt: 'fix the retry', mode: 'augment' }],
+    ['wiki_lookup', { file_path: 'src/api/webhooks/handler.ts' }],
+    ['wiki_lookup', { query: 'webhook retry' }],
+    ['wiki_lookup', { file_path: 'src/api/webhooks/', query: 'idempotency' }],
+    ['wiki_save', { node_path: 'src/api/webhooks/', insight: 'Use exponential backoff with jitter for webhook retries.' }],
+    ['wiki_bootstrap', { paths: ['src/api/', 'src/db/'], seed_from_files: false }],
   ];
 
   const pad = (s, n) => String(s).padEnd(n);
-  console.log('\n' + pad('tool', 24) + pad('result', 8) + 'detail');
-  console.log('─'.repeat(80));
+  console.log('\n' + pad('tool', 14) + pad('args', 50) + pad('result', 8) + 'detail');
+  console.log('─'.repeat(110));
   let ok = 0, errs = 0;
   for (const [name, args] of cases) {
     const res = await callTool(name, args);
@@ -82,11 +85,18 @@ function callTool(name, args) {
       detail = JSON.stringify(r.structuredContent);
     } else if (r.content?.[0]?.text) {
       const t = r.content[0].text;
-      detail = t.length > 70 ? t.slice(0, 70) + '…' : t;
+      detail = t.length > 60 ? t.slice(0, 60) + '…' : t;
     }
-    console.log(pad(name, 24) + pad(status, 8) + detail);
+    if (detail.length > 60) detail = detail.slice(0, 60) + '…';
+    const argsStr = JSON.stringify(args);
+    console.log(
+      pad(name, 14) +
+        pad(argsStr.length > 48 ? argsStr.slice(0, 48) + '…' : argsStr, 50) +
+        pad(status, 8) +
+        detail,
+    );
   }
-  console.log('─'.repeat(80));
+  console.log('─'.repeat(110));
   console.log(`${ok} ok, ${errs} error${errs === 1 ? '' : 's'}`);
   child.kill();
   process.exit(0);

@@ -1,68 +1,43 @@
-// `trailhead-mcp init` — idempotent installer.
+// `trailhead-mcp init` — idempotent installer for Claude Code AND Copilot.
 //
-// Writes up to two locations (creating dirs as needed):
-// 1. ~/.claude.json (Claude Code) — adds `mcpServers.trailhead` entry
-//    pointing at our server with TRAILHEAD_API_URL + TRAILHEAD_TEAM_TOKEN env.
-// 2. ./CLAUDE.md (project-scoped, default) and/or ~/.claude/CLAUDE.md
-//    (user-scoped, opt-in) — appends the always-on coaching directive
-//    that drives spec §4 (B.2). Skipped entirely when autoCoach=false.
+// One command, autodetects targets:
+//   - Claude Code: writes ~/.claude.json mcpServers.trailhead entry +
+//                  appends the directive to ./CLAUDE.md.
+//   - Copilot:    writes .vscode/mcp.json (workspace-scoped) +
+//                  appends the directive to .github/copilot-instructions.md.
 //
-// Idempotency rules:
-// - If `mcpServers.trailhead` already exists, it's overwritten with our
-//   current paths (so re-running after `git pull` updates them).
-// - If a CLAUDE.md already contains a `## Trailhead coaching` heading, we
-//   leave it alone (the user may have customized the directive).
-// - All other keys / file content preserved exactly.
+// The directive itself is canonical at apps/mcp-server/src/coaching-directive.md
+// (also exposed as the MCP resource trailhead://coaching-directive). Init
+// reads that file and writes it verbatim into both *.md files. Re-running
+// init replaces the directive section in place.
 //
-// Logic is split out from cli.mjs so we can unit-test it on temp dirs.
-import { mkdirSync, readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs';
+// Spec ref: docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md §5
+import {
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// Always-on coaching directive — appended to CLAUDE.md so the host LLM
-// runs the coach loop on every code task. The exact wording is locked
-// here so re-running init produces byte-identical output (idempotency).
-// Spec ref: docs/superpowers/specs/2026-04-25-demo-completion-design.md §4.2
-//
-// IMPORTANT: any change here must keep the heading exactly
-// `## Trailhead coaching` because the idempotency check matches on it.
-export const COACH_DIRECTIVE = `## Trailhead coaching — always on, never block
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
-For every code-related request the user makes:
+// Canonical directive — same file the MCP server exposes as a resource. Read
+// once at module load. Tests can override by passing opts.directiveText.
+const DEFAULT_DIRECTIVE_PATH = resolve(__dirname, '..', 'src', 'coaching-directive.md');
+export const COACH_DIRECTIVE = existsSync(DEFAULT_DIRECTIVE_PATH)
+  ? readFileSync(DEFAULT_DIRECTIVE_PATH, 'utf8')
+  : '';
 
-1. Call \`coach_score\` (from the trailhead MCP server) on the user's
-   request first. The tool returns per-dimension scores 0-10 plus a
-   \`next_question\` field.
-2. If overall ≥ 7, proceed normally. Do not mention coaching.
-3. If overall < 7:
-   a. Ask ONE focused clarifying question targeting the lowest-scoring
-      dimension. Use the \`next_question\` value verbatim, or rephrase
-      it lightly to fit the conversation.
-   b. Wait for the user's reply, then re-score the merged prompt
-      (original + answer) via \`coach_score\` again.
-   c. Repeat up to 3 rounds OR until score ≥ 7, whichever comes first.
-4. STOP coaching immediately if the user says "skip", "as-is", "just do
-   it", "no questions", or similar — proceed with the current prompt.
-5. After coaching, prefix your answer with "(coached: X→Y)" where X is
-   the original overall score and Y is the final score, then answer.
-
-Never block: dismissed coaching = proceed with the original prompt.
-`;
-
+// The heading anchor used for idempotent section replacement. Any change to
+// coaching-directive.md must keep `## Trailhead coaching` as its first
+// non-empty line.
 const COACH_DIRECTIVE_HEADING = '## Trailhead coaching';
 
-// InitOptions = { serverEntry, apiUrl, teamToken,
-//                 home?, cwd?, preservePaths?,
-//                 autoCoach?: boolean (default true),
-//                 userScope?: boolean (default false) }
-// InitResult  = { claudeJsonPath,
-//                 serverInstalled: 'created' | 'updated' | 'unchanged',
-//                 projectClaudeMdPath: string | null,
-//                 userClaudeMdPath:    string | null,
-//                 projectCoachInstalled: 'created' | 'appended' | 'unchanged' | 'skipped',
-//                 userCoachInstalled:    'created' | 'appended' | 'unchanged' | 'skipped' }
+// ---------- helpers ---------------------------------------------------------
 
-// Read JSON safely; return {} on missing file or parse failure.
 function readJsonOr(path, fallback) {
   if (!existsSync(path)) return fallback;
   try {
@@ -83,81 +58,138 @@ function normalize(p) {
   return resolve(p).replace(/\\/g, '/');
 }
 
-// Append the coach directive to a CLAUDE.md file if not already present.
-// Returns 'created' (new file), 'appended' (existing file, directive added),
-// or 'unchanged' (heading already exists).
-function applyCoachDirective(claudeMdPath) {
-  const existed = existsSync(claudeMdPath);
-  if (existed) {
-    const current = readFileSync(claudeMdPath, 'utf8');
-    if (current.includes(COACH_DIRECTIVE_HEADING)) return 'unchanged';
-    // Append. Ensure exactly one blank line between existing content and
-    // our directive — readers don't care, but it keeps diffs clean.
-    const sep = current.endsWith('\n\n') ? '' : current.endsWith('\n') ? '\n' : '\n\n';
-    appendFileSync(claudeMdPath, `${sep}${COACH_DIRECTIVE}`, 'utf8');
+// Idempotent section write/replace.
+//
+// - If the file doesn't exist: create it with just the directive.
+// - If the file exists but doesn't contain the heading: append.
+// - If the file exists and contains the heading: replace from the heading
+//   to the next H2 (or end of file) with the new directive.
+//
+// Returns 'created' | 'appended' | 'replaced' | 'unchanged'.
+function applyDirective(filePath, directiveText) {
+  if (!existsSync(filePath)) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, directiveText, 'utf8');
+    return 'created';
+  }
+  const current = readFileSync(filePath, 'utf8');
+  const headingIdx = current.indexOf(COACH_DIRECTIVE_HEADING);
+  if (headingIdx === -1) {
+    const sep = current.endsWith('\n\n')
+      ? ''
+      : current.endsWith('\n')
+        ? '\n'
+        : '\n\n';
+    writeFileSync(filePath, `${current}${sep}${directiveText}`, 'utf8');
     return 'appended';
   }
-  mkdirSync(dirname(claudeMdPath), { recursive: true });
-  writeFileSync(claudeMdPath, COACH_DIRECTIVE, 'utf8');
-  return 'created';
+  // Find the start of the heading line.
+  const headingLineStart = current.lastIndexOf('\n', headingIdx) + 1;
+  // Find the next H2 (`\n## `) after the heading. The directive itself starts
+  // with `## ` — search starts AFTER the heading text so we don't match
+  // ourselves.
+  const searchFrom = headingLineStart + COACH_DIRECTIVE_HEADING.length;
+  const nextH2Match = current.slice(searchFrom).match(/\n## /);
+  const sectionEnd = nextH2Match
+    ? searchFrom + nextH2Match.index + 1   // +1 to keep the trailing \n before the next H2
+    : current.length;
+
+  const before = current.slice(0, headingLineStart);
+  const after = current.slice(sectionEnd);
+  // Ensure the directive ends with a newline so the next section starts cleanly.
+  const directive = directiveText.endsWith('\n') ? directiveText : `${directiveText}\n`;
+  const updated = `${before}${directive}${after}`;
+  if (updated === current) return 'unchanged';
+  writeFileSync(filePath, updated, 'utf8');
+  return 'replaced';
 }
 
-export async function runInit(opts) {
-  const result = await applyInit(opts);
-  // CLI reporting — kept here so tests can call applyInit silently.
-  console.log(`✓ MCP server registered (${result.serverInstalled}): ${result.claudeJsonPath}`);
-  if (result.projectClaudeMdPath) {
-    console.log(`✓ Coach directive (${result.projectCoachInstalled}): ${result.projectClaudeMdPath}`);
-  } else if (result.projectCoachInstalled === 'skipped') {
-    console.log('· Coach directive skipped (--no-auto-coach).');
+// Backwards-compat shim — older code paths and tests may rely on the
+// 'unchanged' behavior of the old file (which never replaced). Wrap
+// applyDirective and downgrade 'replaced' to 'unchanged' when the new
+// content is byte-identical.
+function applyDirectiveCompat(filePath, directiveText) {
+  const before = existsSync(filePath) ? readFileSync(filePath, 'utf8') : null;
+  const result = applyDirective(filePath, directiveText);
+  if (result === 'replaced') {
+    const after = readFileSync(filePath, 'utf8');
+    if (before === after) return 'unchanged';
   }
-  if (result.userClaudeMdPath) {
-    console.log(`✓ Coach directive (${result.userCoachInstalled}): ${result.userClaudeMdPath}`);
-  }
-  console.log('\nTrailhead is registered. Restart Claude Code to pick up the changes.');
   return result;
 }
 
-export async function applyInit(opts) {
-  const home = opts.home ?? homedir();
-  const claudeJsonPath = join(home, '.claude.json');
-  const serverEntry = opts.preservePaths ? opts.serverEntry : normalize(opts.serverEntry);
+// ---------- detection -------------------------------------------------------
 
-  // 1) MCP server entry in ~/.claude.json
+function detectClaudeCode(home) {
+  // Wire if ~/.claude.json is writable (already exists or its parent is
+  // writable) OR ~/.claude/ exists.
+  if (existsSync(join(home, '.claude.json'))) return true;
+  if (existsSync(join(home, '.claude'))) return true;
+  // Fresh machine — `home` always exists, so attempt the write speculatively.
+  return true;
+}
+
+function detectCopilot(cwd) {
+  if (existsSync(join(cwd, '.vscode'))) return true;
+  // Running inside the VS Code integrated terminal exposes these.
+  if (process.env.VSCODE_PID || process.env.TERM_PROGRAM === 'vscode') return true;
+  // Walk PATH for the `code` binary. Cheap — small handful of stat calls.
+  const pathDirs = (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':');
+  for (const d of pathDirs) {
+    if (!d) continue;
+    if (process.platform === 'win32') {
+      if (existsSync(join(d, 'code.exe')) || existsSync(join(d, 'code.cmd'))) return true;
+    } else if (existsSync(join(d, 'code'))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Cwd safety — Copilot's .vscode/mcp.json is workspace-scoped, so writing it
+// to ~ would silently misconfigure the wrong directory. Warn if the cwd
+// doesn't look like a project root.
+function looksLikeProjectRoot(cwd) {
+  return existsSync(join(cwd, 'package.json')) || existsSync(join(cwd, '.git'));
+}
+
+// ---------- Claude Code wiring ---------------------------------------------
+
+function wireClaudeCode({ home, apiUrl, teamToken, serverEntry, autoCoach, cwd, userScope, directiveText, preservePaths }) {
+  const claudeJsonPath = join(home, '.claude.json');
+  const entryServer = preservePaths ? serverEntry : normalize(serverEntry);
+
   const claudeJson = readJsonOr(claudeJsonPath, {});
   if (!claudeJson || typeof claudeJson !== 'object' || Array.isArray(claudeJson)) {
-    throw new Error(`~/.claude.json is not a JSON object`);
+    throw new Error('~/.claude.json is not a JSON object');
   }
-  const mcpServers = claudeJson.mcpServers && typeof claudeJson.mcpServers === 'object'
-    ? claudeJson.mcpServers
-    : {};
+  const mcpServers =
+    claudeJson.mcpServers && typeof claudeJson.mcpServers === 'object'
+      ? claudeJson.mcpServers
+      : {};
   const existed = Boolean(mcpServers.trailhead);
-  const env = {
-    TRAILHEAD_API_URL: opts.apiUrl,
-    TRAILHEAD_TEAM_TOKEN: opts.teamToken,
-  };
 
+  const env = {
+    TRAILHEAD_API_URL: apiUrl,
+    TRAILHEAD_TEAM_TOKEN: teamToken,
+  };
   const entry = {
     command: 'npx',
-    args: ['--yes', 'tsx', serverEntry],
+    args: ['--yes', 'tsx', entryServer],
     env,
   };
-  // Only count as "unchanged" if the entire entry deep-equals the existing one.
+
   const before = mcpServers.trailhead;
-  const newClaudeJson = { ...claudeJson, mcpServers: { ...mcpServers, trailhead: entry } };
+  const newClaudeJson = {
+    ...claudeJson,
+    mcpServers: { ...mcpServers, trailhead: entry },
+  };
   const serverInstalled = !existed
     ? 'created'
     : JSON.stringify(before) === JSON.stringify(entry)
       ? 'unchanged'
       : 'updated';
   if (serverInstalled !== 'unchanged') writeJson(claudeJsonPath, newClaudeJson);
-
-  // 2) Coach directive — appends to project-scoped CLAUDE.md (default) and
-  // optionally also to ~/.claude/CLAUDE.md (user-scope opt-in). Skipped
-  // entirely when autoCoach=false (the --no-auto-coach flag).
-  const autoCoach = opts.autoCoach !== false;          // default: true
-  const userScope = opts.userScope === true;           // default: false
-  const cwd = opts.cwd ?? process.cwd();
 
   let projectClaudeMdPath = null;
   let projectCoachInstalled = 'skipped';
@@ -166,11 +198,11 @@ export async function applyInit(opts) {
 
   if (autoCoach) {
     projectClaudeMdPath = join(cwd, 'CLAUDE.md');
-    projectCoachInstalled = applyCoachDirective(projectClaudeMdPath);
+    projectCoachInstalled = applyDirectiveCompat(projectClaudeMdPath, directiveText);
 
     if (userScope) {
       userClaudeMdPath = join(home, '.claude', 'CLAUDE.md');
-      userCoachInstalled = applyCoachDirective(userClaudeMdPath);
+      userCoachInstalled = applyDirectiveCompat(userClaudeMdPath, directiveText);
     }
   }
 
@@ -178,8 +210,212 @@ export async function applyInit(opts) {
     claudeJsonPath,
     serverInstalled,
     projectClaudeMdPath,
-    userClaudeMdPath,
     projectCoachInstalled,
+    userClaudeMdPath,
     userCoachInstalled,
   };
+}
+
+// ---------- Copilot wiring -------------------------------------------------
+
+function wireCopilot({ cwd, apiUrl, teamToken, serverEntry, autoCoach, directiveText, preservePaths }) {
+  const entryServer = preservePaths ? serverEntry : normalize(serverEntry);
+  const mcpJsonPath = join(cwd, '.vscode', 'mcp.json');
+
+  // VS Code's MCP config shape uses `servers` with the same command/args/env
+  // structure as Claude Code's. Reference:
+  // https://code.visualstudio.com/docs/copilot/copilot-mcp
+  const existing = readJsonOr(mcpJsonPath, null);
+  const existingServers =
+    existing && typeof existing === 'object' && !Array.isArray(existing) && existing.servers && typeof existing.servers === 'object'
+      ? existing.servers
+      : {};
+
+  const entry = {
+    type: 'stdio',
+    command: 'npx',
+    args: ['--yes', 'tsx', entryServer],
+    env: {
+      TRAILHEAD_API_URL: apiUrl,
+      TRAILHEAD_TEAM_TOKEN: teamToken,
+    },
+  };
+
+  const before = existingServers.trailhead;
+  const newMcpJson = {
+    ...(existing && typeof existing === 'object' ? existing : {}),
+    servers: { ...existingServers, trailhead: entry },
+  };
+  const mcpJsonInstalled = !before
+    ? 'created'
+    : JSON.stringify(before) === JSON.stringify(entry)
+      ? 'unchanged'
+      : 'updated';
+  if (mcpJsonInstalled !== 'unchanged') writeJson(mcpJsonPath, newMcpJson);
+
+  let instructionsPath = null;
+  let instructionsInstalled = 'skipped';
+  if (autoCoach) {
+    instructionsPath = join(cwd, '.github', 'copilot-instructions.md');
+    instructionsInstalled = applyDirectiveCompat(instructionsPath, directiveText);
+  }
+
+  return {
+    mcpJsonPath,
+    mcpJsonInstalled,
+    instructionsPath,
+    instructionsInstalled,
+  };
+}
+
+// ---------- public surface --------------------------------------------------
+
+// InitOptions:
+//   serverEntry       absolute path to apps/mcp-server/src/index.ts
+//   apiUrl            TRAILHEAD_API_URL value
+//   teamToken         TRAILHEAD_TEAM_TOKEN value
+//   home?             override homedir() (test hook)
+//   cwd?              override process.cwd() (test hook)
+//   autoCoach?        default true (false = skip directive writes)
+//   userScope?        default false (true = also write ~/.claude/CLAUDE.md)
+//   wireClaudeCode?   default true  — set false to skip Claude Code wiring entirely
+//   wireCopilot?      default true  — set false to skip Copilot wiring entirely
+//   directiveText?    default: contents of src/coaching-directive.md
+//   preservePaths?    test hook: keep serverEntry verbatim instead of normalizing
+//
+// Returns:
+//   { claudeCode: { wired, ... } | null,
+//     copilot:    { wired, ... } | null,
+//     // backwards-compat top-level fields mirroring claudeCode.* :
+//     claudeJsonPath, serverInstalled,
+//     projectClaudeMdPath, projectCoachInstalled,
+//     userClaudeMdPath,    userCoachInstalled }
+export async function applyInit(opts) {
+  const home = opts.home ?? homedir();
+  const cwd = opts.cwd ?? process.cwd();
+  const autoCoach = opts.autoCoach !== false;
+  const userScope = opts.userScope === true;
+  const wantClaudeCode = opts.wireClaudeCode !== false;
+  const wantCopilot = opts.wireCopilot !== false;
+  const directiveText = opts.directiveText ?? COACH_DIRECTIVE;
+
+  if (!directiveText && autoCoach) {
+    throw new Error(
+      'coaching-directive.md is missing or empty. Run from the repo or pass opts.directiveText.',
+    );
+  }
+
+  const claudeWired = wantClaudeCode && detectClaudeCode(home);
+  const copilotWired = wantCopilot && detectCopilot(cwd);
+
+  let claudeCode = null;
+  if (claudeWired) {
+    claudeCode = wireClaudeCode({
+      home,
+      apiUrl: opts.apiUrl,
+      teamToken: opts.teamToken,
+      serverEntry: opts.serverEntry,
+      autoCoach,
+      cwd,
+      userScope,
+      directiveText,
+      preservePaths: opts.preservePaths,
+    });
+  }
+
+  let copilot = null;
+  if (copilotWired) {
+    copilot = wireCopilot({
+      cwd,
+      apiUrl: opts.apiUrl,
+      teamToken: opts.teamToken,
+      serverEntry: opts.serverEntry,
+      autoCoach,
+      directiveText,
+      preservePaths: opts.preservePaths,
+    });
+  }
+
+  return {
+    claudeCode: claudeCode ? { wired: true, ...claudeCode } : { wired: false },
+    copilot: copilot ? { wired: true, ...copilot } : { wired: false },
+    // Backwards-compat: existing tests look at these top-level keys.
+    claudeJsonPath: claudeCode?.claudeJsonPath ?? null,
+    serverInstalled: claudeCode?.serverInstalled ?? 'skipped',
+    projectClaudeMdPath: claudeCode?.projectClaudeMdPath ?? null,
+    projectCoachInstalled: claudeCode?.projectCoachInstalled ?? 'skipped',
+    userClaudeMdPath: claudeCode?.userClaudeMdPath ?? null,
+    userCoachInstalled: claudeCode?.userCoachInstalled ?? 'skipped',
+  };
+}
+
+export async function runInit(opts) {
+  const cwd = opts.cwd ?? process.cwd();
+
+  // Cwd-safety pre-check (Copilot only — Claude Code's CLAUDE.md is also
+  // project-scoped, so the same check applies).
+  if (opts.wireCopilot !== false && !looksLikeProjectRoot(cwd)) {
+    console.warn(
+      `! cwd "${cwd}" doesn't look like a project root (no package.json or .git/).\n` +
+        `  Copilot's .vscode/mcp.json is workspace-scoped — running init from the wrong\n` +
+        `  directory will silently misconfigure the wrong project. Continuing anyway.\n`,
+    );
+  }
+
+  const result = await applyInit(opts);
+
+  if (result.claudeCode.wired) {
+    console.log(
+      `✓ Claude Code: MCP server registered (${result.claudeCode.serverInstalled}): ${result.claudeCode.claudeJsonPath}`,
+    );
+    if (result.claudeCode.projectClaudeMdPath) {
+      console.log(
+        `  ↳ Coach directive (${result.claudeCode.projectCoachInstalled}): ${result.claudeCode.projectClaudeMdPath}`,
+      );
+    } else if (result.claudeCode.projectCoachInstalled === 'skipped') {
+      console.log('  ↳ Coach directive skipped (--no-auto-coach).');
+    }
+    if (result.claudeCode.userClaudeMdPath) {
+      console.log(
+        `  ↳ User-scope directive (${result.claudeCode.userCoachInstalled}): ${result.claudeCode.userClaudeMdPath}`,
+      );
+    }
+  } else if (opts.wireClaudeCode === false) {
+    console.log('· Claude Code skipped (--no-claude-code).');
+  } else {
+    console.log('· Claude Code not detected.');
+  }
+
+  if (result.copilot.wired) {
+    console.log(
+      `✓ Copilot: MCP server registered (${result.copilot.mcpJsonInstalled}): ${result.copilot.mcpJsonPath}`,
+    );
+    if (result.copilot.instructionsPath) {
+      console.log(
+        `  ↳ Coach directive (${result.copilot.instructionsInstalled}): ${result.copilot.instructionsPath}`,
+      );
+    } else if (result.copilot.instructionsInstalled === 'skipped') {
+      console.log('  ↳ Coach directive skipped (--no-auto-coach).');
+    }
+  } else if (opts.wireCopilot === false) {
+    console.log('· Copilot skipped (--no-copilot).');
+  } else {
+    console.log('· Copilot not detected.');
+  }
+
+  if (!result.claudeCode.wired && !result.copilot.wired) {
+    console.log('');
+    console.log(
+      'Neither Claude Code nor Copilot detected. To wire manually, see\n' +
+        'apps/mcp-server/README.md.',
+    );
+  } else {
+    console.log('');
+    console.log(
+      'Coaching directive resource: trailhead://coaching-directive (auto-loaded by clients that support it).',
+    );
+    console.log('Restart Claude Code / VS Code to pick up the changes.');
+  }
+
+  return result;
 }

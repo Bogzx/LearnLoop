@@ -1,6 +1,6 @@
 {
   "name": "@trailhead/mcp-server",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
@@ -11,9 +11,14 @@
     "dev": "tsx src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test bin/init.test.mjs bin/cli-smoke.test.mjs"
+    "test": "node --test bin/init.test.mjs bin/cli-smoke.test.mjs",
+    "smoke": "tsx src/smoke-test.mjs",
+    "verify": "tsx src/verify-all-tools.mjs",
+    "try": "tsx src/harness/try.ts",
+    "try:matrix": "tsx src/harness/matrix.ts"
   },
   "dependencies": {
+    "@google/genai": "^1.50.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@trailhead/shared": "*",
     "@trailhead/scoring": "*",

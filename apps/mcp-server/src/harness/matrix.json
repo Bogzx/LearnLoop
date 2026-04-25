@@ -1,0 +1,42 @@
+[
+  {
+    "prompt": "fix the retry",
+    "expected": "coach",
+    "why": "vague code task — should trigger coaching first"
+  },
+  {
+    "prompt": "fix the webhook handler",
+    "expected": "coach",
+    "why": "code task without enough specifics — coach should score and clarify"
+  },
+  {
+    "prompt": "how do we handle webhook idempotency?",
+    "expected": "wiki_lookup",
+    "why": "team-convention question — should look up the wiki"
+  },
+  {
+    "prompt": "what's our convention for retries in src/api/webhooks/?",
+    "expected": "wiki_lookup",
+    "why": "explicit convention question with a path scope"
+  },
+  {
+    "prompt": "we always use exponential backoff with jitter for webhook retries here",
+    "expected": "wiki_save",
+    "why": "user states a teamwide convention — should save it"
+  },
+  {
+    "prompt": "team rule: never log raw request bodies in src/api/",
+    "expected": "wiki_save",
+    "why": "explicit teamwide rule — should save it"
+  },
+  {
+    "prompt": "set up Trailhead for this repo",
+    "expected": "wiki_bootstrap",
+    "why": "explicit bootstrap request — should walk cwd and create wiki nodes"
+  },
+  {
+    "prompt": "bootstrap the team wiki for this codebase",
+    "expected": "wiki_bootstrap",
+    "why": "phrasing variant of the bootstrap request"
+  }
+]

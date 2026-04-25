@@ -1,15 +1,24 @@
 #!/usr/bin/env node
-// trailhead-mcp CLI. Two modes:
-//   `trailhead-mcp init`     — wires this MCP server + coach directive
-//                              into Claude Code
-//   `trailhead-mcp run`      — starts the MCP server (used by the registered command)
-// `init` is idempotent: re-running won't duplicate entries.
+// trailhead-mcp CLI. Three modes:
+//   `trailhead-mcp init`        — wire MCP server into Claude Code AND/OR Copilot
+//   `trailhead-mcp bootstrap`   — bootstrap a Trailhead wiki for the cwd
+//   `trailhead-mcp run`         — start the MCP server (stdio transport)
 //
-// init flags:
-//   --no-auto-coach   skip writing the coach directive to CLAUDE.md
-//                     (coach.* tools still register, just not always-on)
-//   --user-scope      additionally append the directive to ~/.claude/CLAUDE.md
-//                     (default is project-scoped only — ./CLAUDE.md in cwd)
+// `init` is idempotent: re-running won't duplicate entries; if a directive
+// section already exists in CLAUDE.md or .github/copilot-instructions.md, it
+// is replaced with the latest content from src/coaching-directive.md.
+//
+// `bootstrap` walks cwd for source folders and POSTs them to /onboard/repo,
+// creating one wiki node per folder. Idempotent.
+//
+// Flags (init):
+//   --no-claude-code  skip Claude Code wiring even if detected
+//   --no-copilot      skip Copilot wiring even if detected
+//   --no-auto-coach   skip writing the directive to *.md (tools still register)
+//   --user-scope      also append the directive to ~/.claude/CLAUDE.md (global)
+//
+// Flags (bootstrap): see `trailhead-mcp bootstrap --help`.
+import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInit } from './init.mjs';
@@ -24,9 +33,24 @@ if (cmd === 'init') {
     apiUrl: process.env.TRAILHEAD_API_URL ?? 'https://trailheadapi-production.up.railway.app',
     teamToken: process.env.TRAILHEAD_TEAM_TOKEN ?? 'trailhead_demo_acme_2026',
     autoCoach: !flags.includes('--no-auto-coach'),
-    userScope:  flags.includes('--user-scope'),
+    userScope: flags.includes('--user-scope'),
+    wireClaudeCode: !flags.includes('--no-claude-code'),
+    wireCopilot: !flags.includes('--no-copilot'),
   });
   process.exit(0);
+}
+
+if (cmd === 'bootstrap') {
+  // Spawn tsx on the bootstrap CLI module so the user's repo is the cwd
+  // (process.cwd() inside bootstrap-cli.ts == where they ran `trailhead-mcp
+  // bootstrap`). Pass through all remaining args (--paths, --no-seed, etc.).
+  const target = resolve(__dirname, '../src/bootstrap-cli.ts');
+  const result = spawnSync(
+    'npx',
+    ['--yes', 'tsx', target, ...flags],
+    { stdio: 'inherit', shell: process.platform === 'win32' },
+  );
+  process.exit(result.status ?? 1);
 }
 
 if (cmd === 'run') {
@@ -37,15 +61,21 @@ if (cmd === 'run') {
 }
 
 console.log(`trailhead-mcp — usage:
-  trailhead-mcp init [--no-auto-coach] [--user-scope]
-        register this MCP server with Claude Code and append the always-on
-        coach directive to ./CLAUDE.md.
+  trailhead-mcp init [--no-claude-code] [--no-copilot]
+                     [--no-auto-coach] [--user-scope]
+        Autodetects Claude Code and Copilot in the current environment and
+        wires both. Writes:
+          ~/.claude.json                     (Claude Code MCP server entry)
+          ./CLAUDE.md                        (Claude Code coaching directive)
+          .vscode/mcp.json                   (Copilot MCP server entry)
+          .github/copilot-instructions.md    (Copilot coaching directive)
+        Idempotent — replaces the directive section if it already exists.
 
-        --no-auto-coach   skip the CLAUDE.md write (tools still register,
-                          but the coach loop won't run automatically)
-        --user-scope      also append to ~/.claude/CLAUDE.md (global)
+  trailhead-mcp bootstrap [--paths ...] [--no-seed] [--dry-run] [--max-depth N]
+        Walk cwd for source folders and create one wiki node per folder.
+        Run --help for full flag list. Idempotent.
 
   trailhead-mcp run
-        start the MCP server (stdio)
+        Start the MCP server (stdio transport).
 `);
 process.exit(cmd === 'help' ? 0 : 2);

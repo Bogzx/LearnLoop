@@ -107,7 +107,7 @@ export function WikiTree() {
     return (
       <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
         No wiki nodes yet. Run the seed script or have Claude Code call
-        wiki_update_learnings to populate the tree.
+        wiki_save to populate the tree.
       </div>
     );
   }
