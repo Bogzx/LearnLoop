@@ -12,7 +12,7 @@ export default function WikiPage() {
         <p className="mt-2 max-w-prose text-muted-foreground">
           The team's growing curriculum. Path-organized rules and durable
           learnings — promoted from drafts after 3+ reinforcements via the
-          MCP tool or the autonomous Stop hook.
+          MCP tool.
         </p>
       </header>
 

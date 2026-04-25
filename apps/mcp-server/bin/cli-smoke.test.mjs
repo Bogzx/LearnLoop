@@ -1,5 +1,5 @@
 // Spawns `node bin/cli.mjs init` against a temporary $HOME and asserts that
-// both config files are written. End-to-end verification that the CLI shim
+// the config files are written. End-to-end verification that the CLI shim
 // in cli.mjs correctly delegates to applyInit.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cli = resolve(__dirname, 'cli.mjs');
 
-test('`cli.mjs init` writes ~/.claude.json, settings.json, and ./CLAUDE.md', () => {
+test('`cli.mjs init` writes ~/.claude.json and ./CLAUDE.md', () => {
   const home = mkdtempSync(join(tmpdir(), 'trailhead-cli-smoke-'));
   try {
     const env = {
@@ -21,22 +21,17 @@ test('`cli.mjs init` writes ~/.claude.json, settings.json, and ./CLAUDE.md', () 
       USERPROFILE: home,    // Windows
       TRAILHEAD_API_URL: 'https://test.example',
       TRAILHEAD_TEAM_TOKEN: 'tok-cli',
-      ANTHROPIC_API_KEY: '',
     };
     // cwd MUST be the temp home — autoCoach defaults to true, so init writes
     // ./CLAUDE.md in cwd. Without this, tests would pollute the repo root.
     const out = spawnSync(process.execPath, [cli, 'init'], { env, cwd: home, encoding: 'utf8' });
     assert.equal(out.status, 0, `cli exit ${out.status}\nstdout:\n${out.stdout}\nstderr:\n${out.stderr}`);
     assert.match(out.stdout, /MCP server registered/);
-    assert.match(out.stdout, /Stop hook registered/);
     assert.match(out.stdout, /Coach directive/);
     const claudeJson = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
     assert.equal(claudeJson.mcpServers.trailhead.env.TRAILHEAD_API_URL, 'https://test.example');
     assert.equal(claudeJson.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-cli');
     assert.ok(claudeJson.mcpServers.trailhead.args.some((a) => a.endsWith('index.ts')));
-    const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
-    const cmd = settings.hooks.Stop[0].hooks[0].command;
-    assert.match(cmd, /trailhead-hook\.mjs/);
     // Project-scoped coach directive landed in cwd's CLAUDE.md.
     const claudeMd = readFileSync(join(home, 'CLAUDE.md'), 'utf8');
     assert.match(claudeMd, /## Trailhead coaching/);
@@ -55,7 +50,6 @@ test('`cli.mjs init --no-auto-coach` skips CLAUDE.md', () => {
       USERPROFILE: home,
       TRAILHEAD_API_URL: 'https://test.example',
       TRAILHEAD_TEAM_TOKEN: 'tok-cli',
-      ANTHROPIC_API_KEY: '',
     };
     const out = spawnSync(
       process.execPath,
@@ -79,7 +73,6 @@ test('`cli.mjs init --user-scope` writes user CLAUDE.md too', () => {
       USERPROFILE: home,
       TRAILHEAD_API_URL: 'https://test.example',
       TRAILHEAD_TEAM_TOKEN: 'tok-cli',
-      ANTHROPIC_API_KEY: '',
     };
     const out = spawnSync(
       process.execPath,

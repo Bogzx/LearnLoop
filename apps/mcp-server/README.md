@@ -12,9 +12,9 @@ update the wiki mid-conversation. The dramatic demo moment.
 - `wiki.search(query, scope)`         — SQL ILIKE (no vector search)
 - `wiki.rules_for(file_path)`         — active rules from ancestor nodes
 
-**Install CLI:** `bin/init.ts` writes the user's `.mcp.json` and the
-`.claude/settings.json` Stop hook entry. One command for the demo machine:
-`npx trailhead-mcp init`.
+**Install CLI:** `bin/init.mjs` writes the user's `.claude.json` MCP entry
+and (by default) appends the coach directive to `./CLAUDE.md`. One command
+for the demo machine: `npx trailhead-mcp init`.
 
 **Talks to:** `apps/api` (POST /wiki/propose, GET /context, etc.).
 

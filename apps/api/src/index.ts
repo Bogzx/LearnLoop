@@ -172,7 +172,8 @@ app.post('/capture', async (c) => {
 
 // ----- POST /wiki/propose ----------------------------------------------------
 // Normalize → dedup on (node_id, body_normalized) → increment count → promote
-// to durable at >= 3. Idempotent: hook + MCP can both fire for the same insight.
+// to durable at >= 3. Idempotent: repeated calls for the same insight only
+// reinforce the existing draft.
 
 app.post('/wiki/propose', async (c) => {
   const body = await c.req.json<WikiProposeRequest>().catch(() => null);
