@@ -17,6 +17,7 @@ import { injectStyles } from './styles.ts';
 import { attachScoreCard } from './score-card.ts';
 import { attachSendIntercept } from './send-intercept.ts';
 import { startWikiToastLoop } from './widgets/wiki-toast.ts';
+import { initCoachingState } from './coaching-state.ts';
 import { mountScoreBadge } from './widgets/score-badge.ts';
 import { mountPromptDiff } from './widgets/prompt-diff.ts';
 import {
@@ -173,6 +174,9 @@ async function main(): Promise<void> {
     console.info(`${TRAILHEAD_ERROR_TAG} disabled via storage flag`);
     return;
   }
+  // Subscribe to the coaching toggle so the popup switch takes effect
+  // live — no page reload needed.
+  initCoachingState();
   attachGlobalGuard();
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', tryStart);

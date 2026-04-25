@@ -26,6 +26,7 @@ import { simpleHash } from './hash.ts';
 import { readPrompt, writePrompt, type Selectors } from './selectors.ts';
 import { store } from './store.ts';
 import { hideCard, scoreAndShow } from './score-card.ts';
+import { isCoachingEnabled } from './coaching-state.ts';
 
 let activeSelectors: Selectors | null = null;
 let sentOnce = false;
@@ -34,6 +35,19 @@ let inFlight = false;
 // capture-phase listener on the textarea lets it through to Claude.ai
 // instead of re-running the intercept.
 let bypassIntercept = false;
+// The most recent prompt the user explicitly approved via the Improve
+// chat widget's "Use this" button. When the next send-attempt's textarea
+// content matches this verbatim, we skip the intercept so the polished
+// prompt flows straight to Claude without re-scoring or re-opening the
+// score-card. User edits invalidate the match (and re-trigger the
+// intercept), which is the correct behavior — they asked for coaching
+// on the new wording.
+let approvedPrompt: string | null = null;
+
+export function markApproved(prompt: string): void {
+  approvedPrompt = prompt;
+  console.info('[trailhead] markApproved:', prompt.slice(0, 60));
+}
 
 export function attachSendIntercept(sel: Selectors): () => void {
   activeSelectors = sel;
@@ -85,48 +99,111 @@ export function attachSendIntercept(sel: Selectors): () => void {
   };
 }
 
+// Re-resolves the live composer text instead of trusting the cached
+// activeSelectors.textarea. On claude.ai/chat/<id> the composer can be
+// re-rendered between sends — the cached element ends up disconnected
+// and either returns empty or stale text, which would either block the
+// send (mismatch with approvedPrompt → preventDefault) or open a card
+// for the wrong prompt. Reading live keeps the bypass honest.
+function readLiveCompactText(): string {
+  const candidates = [
+    'div[contenteditable="true"][role="textbox"]',
+    '[contenteditable="true"]',
+    'textarea[data-testid="composer"]',
+    'textarea',
+  ];
+  for (const sel of candidates) {
+    const el = document.querySelector(sel) as HTMLElement | null;
+    if (el && el.isConnected) return readPrompt(el).trim();
+  }
+  return '';
+}
+
 function onSendAttempt(e: Event): void {
-  // Our own programmatic dispatch (Path 3 in fireSendOnce) — let the event
-  // through untouched so Claude.ai's own handler picks it up.
-  if (bypassIntercept) return;
-  if (!activeSelectors) return;
-  const text = readPrompt(activeSelectors.textarea).trim();
-  if (!text) return; // empty composer → let native handler no-op
+  console.group('[trailhead] onSendAttempt');
+  try {
+    // Our own programmatic dispatch (Path 3 in fireSendOnce) — let the event
+    // through untouched so Claude.ai's own handler picks it up.
+    if (bypassIntercept) {
+      console.info('  → bypassIntercept set, letting event through');
+      return;
+    }
+    // Popup-controlled coaching toggle: when the user has flipped Coaching
+    // off, the chat behaves as if Trailhead weren't installed for sends.
+    if (!isCoachingEnabled()) {
+      console.info('  → coaching disabled, letting event through');
+      return;
+    }
+    if (!activeSelectors) {
+      console.warn('  → activeSelectors null, letting event through');
+      return;
+    }
+    // Read live, not from the (possibly stale) cached selector.
+    const text = readLiveCompactText();
+    console.info('  text:', text.slice(0, 60), '(len', text.length, ')');
+    console.info('  approvedPrompt:', approvedPrompt ? approvedPrompt.slice(0, 60) : 'null');
+    if (!text) {
+      console.info('  → empty text, letting event through');
+      return;
+    }
+
+    // Approved-prompt bypass: the user just clicked "Use this" or "I'm done"
+    // in the Improve widget; the textarea content was approved by them.
+    // The next native send should go straight through. We clear after one
+    // hit so a later edit-and-resend resumes normal coaching.
+    if (approvedPrompt && text === approvedPrompt.trim()) {
+      console.info('  → text matches approved prompt — bypassing, sending native');
+      approvedPrompt = null;
+      return;
+    }
+    if (approvedPrompt) {
+      console.warn('  → approved present but text MISMATCH; will intercept');
+    }
+    console.info('  → intercepting (preventDefault + runIntercept)');
 
   // We can't decide whether to send until we have a score. Block the
   // native send unconditionally; we'll re-fire it programmatically if
   // the user picks Send-as-is or Improve. stopImmediatePropagation also
   // blocks sibling listeners on the same element (Tiptap registers more
   // than one keydown, and Claude.ai's send button has its own onClick).
-  e.preventDefault();
-  e.stopImmediatePropagation();
-  e.stopPropagation();
-  console.info('[trailhead] intercepted send — running /score');
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    e.stopPropagation();
 
-  // Re-arm so the same composer state can be sent after this attempt.
-  sentOnce = false;
+    // Re-arm so the same composer state can be sent after this attempt.
+    sentOnce = false;
 
-  // Concurrent submits collapse: if a /score is already in flight for
-  // an earlier Enter on the same prompt, the latest scoreAndShow will
-  // abort the prior request via its own AbortController and supersede.
-  if (inFlight) return;
-  inFlight = true;
-  void runIntercept(text).finally(() => {
-    inFlight = false;
-  });
+    // Concurrent submits collapse: if a /score is already in flight for
+    // an earlier Enter on the same prompt, the latest scoreAndShow will
+    // abort the prior request via its own AbortController and supersede.
+    if (inFlight) {
+      console.info('  → another /score already in flight; collapsing');
+      return;
+    }
+    inFlight = true;
+    void runIntercept(text).finally(() => {
+      inFlight = false;
+    });
+  } finally {
+    console.groupEnd();
+  }
 }
 
 async function runIntercept(text: string): Promise<void> {
+  console.info('[trailhead] runIntercept: scoreAndShow', text.slice(0, 60));
   const res = await scoreAndShow(text);
   if (!res) {
-    // /score failed (timeout, network, parse). Fail-open: send the
-    // prompt unchanged. We never block the user on infrastructure.
+    // scoreAndShow returned null — either the API call failed OR the
+    // card couldn't even be mounted. Fail-open: try a programmatic send
+    // so the user isn't stranded.
+    console.warn('[trailhead] runIntercept: scoreAndShow null → triggerNativeSend (fail-open)');
     triggerNativeSend();
     return;
   }
+  console.info('[trailhead] runIntercept: score', res.overall, '— card visible, awaiting user');
   // Always leave the card visible and let the user choose. The three
   // action buttons drive the next step:
-  //   Improve   → augmentAndSend()
+  //   Improve   → openImproveChat()
   //   Send as-is → triggerNativeSend()
   //   Edit      → hideCard() + focusComposer()
   // No auto-send on high scores — every send is an explicit user choice.

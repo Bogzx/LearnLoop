@@ -9,6 +9,10 @@
     "https://claude.ai/*",
     "https://trailheadapi-production.up.railway.app/*"
   ],
+  "action": {
+    "default_title": "Trailhead",
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": ["https://claude.ai/*"],
