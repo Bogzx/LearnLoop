@@ -26,6 +26,8 @@ import type {
   SkillArcObservation,
   SkillArcResponse,
   TeamMetricsResponse,
+  TeamSummary,
+  TeamsListResponse,
   WikiJobPathKind,
   WikiJobPathStatus,
   WikiJobStatusResponse,
@@ -76,6 +78,9 @@ app.use(
 // existing clients carrying the old token continue to land on the demo team.
 app.use('*', async (c, next) => {
   if (c.req.method === 'OPTIONS' || c.req.path === '/') return next();
+  // /teams is unauthenticated so the popup can populate a Select-team
+  // dropdown before any token is configured.
+  if (c.req.path === '/teams') return next();
   const token = c.req.header('x-team-token');
   if (!token) return c.json({ error: 'unauthorized', detail: 'missing X-Team-Token' }, 401);
   const teamId = await teamIdForToken(token, { autoCreate: AUTO_CREATE_TEAMS });
@@ -104,6 +109,7 @@ app.get('/', (c) =>
       'GET  /wiki/recent?since=ISO',
       'POST /diff',
       'POST /improve',
+      'GET  /teams (unauthenticated)',
       'GET  /skill-arc?user_id=&since=ISO',
       'GET  /team/metrics',
       'GET  /wiki/tree',
@@ -624,6 +630,23 @@ app.get('/wiki/tree', async (c) => {
   }
 
   const res: WikiTreeResponse = { nodes: Array.from(byPath.values()) };
+  return c.json(res);
+});
+
+// ----- GET /teams ------------------------------------------------------------
+// Lists every team with a usable token. Unauthenticated (the popup needs to
+// populate a Select-team dropdown before any token is configured). Demo
+// simplicity: no per-user permission filter.
+app.get('/teams', async (c) => {
+  const rows = await q<{ id: string; name: string; token: string | null }>(
+    'SELECT id, name, token FROM teams WHERE token IS NOT NULL ORDER BY name ASC',
+  );
+  const teams: TeamSummary[] = rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    token: r.token as string,
+  }));
+  const res: TeamsListResponse = { teams };
   return c.json(res);
 });
 

@@ -93,6 +93,49 @@
       transition: opacity 0.2s;
     }
     .toast.is-shown { opacity: 1; }
+
+    .current-team {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-left: auto;
+      max-width: 130px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .team-dropdown {
+      margin-top: 6px;
+      max-height: 220px;
+      overflow-y: auto;
+      background: rgba(0,0,0,0.18);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 6px;
+      padding: 4px;
+    }
+    .team-dropdown[hidden] { display: none; }
+    .team-dropdown ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .team-dropdown li {
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .team-dropdown li:hover { background: rgba(255,255,255,0.08); }
+    .team-dropdown li.is-current { background: rgba(74,107,255,0.18); }
+    .team-dropdown li .check { color: #4a6bff; font-weight: 700; }
+    .team-dropdown .status {
+      font-size: 11.5px;
+      padding: 6px 8px;
+      opacity: 0.7;
+    }
+    .team-dropdown .status.is-error { color: rgba(255,140,140,0.92); opacity: 1; }
   </style>
 </head>
 <body>
@@ -111,10 +154,14 @@
   </div>
 
   <div class="row">
-    <button id="select-team-btn" type="button">
+    <button id="select-team-btn" type="button" aria-expanded="false" aria-controls="team-dropdown">
       <span>Select team</span>
-      <span class="soon">soon</span>
+      <span id="current-team-name" class="current-team"></span>
     </button>
+  </div>
+  <div id="team-dropdown" class="team-dropdown" hidden>
+    <div id="team-status" class="status">Loading…</div>
+    <ul id="team-list" hidden></ul>
   </div>
 
   <div class="hint" id="coaching-hint">When off, the extension stops intercepting sends.</div>
