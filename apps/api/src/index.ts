@@ -17,6 +17,8 @@ import type {
   ImproveRequest,
   ImproveResponse,
   ImproveTurn,
+  OnboardRepoFullRequest,
+  OnboardRepoFullResponse,
   OnboardRepoRequest,
   OnboardRepoResponse,
   ScoreRequest,
@@ -24,6 +26,9 @@ import type {
   SkillArcObservation,
   SkillArcResponse,
   TeamMetricsResponse,
+  WikiJobPathKind,
+  WikiJobPathStatus,
+  WikiJobStatusResponse,
   WikiProposeRequest,
   WikiProposeResponse,
   WikiRecentItem,
@@ -36,6 +41,7 @@ import { DIMENSIONS } from '@trailhead/shared';
 import { ancestorPaths, normalize, normalizePath } from '@trailhead/scoring';
 import { DEMO_TEAM_TOKEN, q, teamIdForToken, upsertNode, wipeTeamData } from './db.ts';
 import { extractTopic, improveCoach, overallScore, scorePrompt, synthesizeDiff } from './gemini.ts';
+import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
 
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
 if (!process.env.GEMINI_API_KEY) { console.error('GEMINI_API_KEY not set'); process.exit(1); }
@@ -102,6 +108,8 @@ app.get('/', (c) =>
       'GET  /team/metrics',
       'GET  /wiki/tree',
       'POST /onboard/repo',
+      'POST /onboard/repo/full',
+      'GET  /onboard/jobs/:id',
       'DELETE /team/data',
     ],
   }),
@@ -801,6 +809,176 @@ app.post('/onboard/repo', async (c) => {
   }
 
   const res: OnboardRepoResponse = { nodes_created, nodes };
+  return c.json(res);
+});
+
+// ----- POST /onboard/repo/full -----------------------------------------------
+// Rich (LLM-generated) bootstrap. Accepts the discovered folder paths plus
+// the file contents (already capped client-side) plus optional manifest
+// snippets and CLAUDE.md seed text. Creates a wiki_jobs row + one
+// wiki_job_paths row per node and kicks off the worker via setImmediate.
+// Returns the job_id immediately; the worker fills body_md asynchronously.
+//
+// Spec: docs/superpowers/specs/2026-04-26-wiki-bootstrap-rich-design.md §9
+
+// Server-side hard ceilings. Independent of the client's CLI flags so a
+// rogue client can't blow the API host's RAM. Conservative — these are
+// "abuse cap" not "expected size".
+const ONBOARD_FULL_MAX_FOLDERS = 1_000;
+const ONBOARD_FULL_MAX_FILES = 2_000;
+const ONBOARD_FULL_MAX_FILE_CHARS = 32_000;   // per file
+const ONBOARD_FULL_MAX_BUNDLE_BYTES = 16 * 1024 * 1024;  // 16 MB
+
+app.post('/onboard/repo/full', async (c) => {
+  const body = await c.req.json<OnboardRepoFullRequest>().catch(() => null);
+  if (!body || !Array.isArray(body.folders) || !Array.isArray(body.files)) {
+    return c.json(
+      { error: 'bad_request', detail: 'folders: string[] and files: {path,content}[] required' },
+      400,
+    );
+  }
+  if (body.folders.length > ONBOARD_FULL_MAX_FOLDERS) {
+    return c.json({ error: 'too_many_folders', detail: `max ${ONBOARD_FULL_MAX_FOLDERS}` }, 400);
+  }
+  if (body.files.length > ONBOARD_FULL_MAX_FILES) {
+    return c.json({ error: 'too_many_files', detail: `max ${ONBOARD_FULL_MAX_FILES}` }, 400);
+  }
+  let bundleBytes = 0;
+  for (const f of body.files) {
+    if (typeof f?.path !== 'string' || typeof f?.content !== 'string') {
+      return c.json({ error: 'bad_request', detail: 'each file requires path:string and content:string' }, 400);
+    }
+    if (f.content.length > ONBOARD_FULL_MAX_FILE_CHARS) {
+      return c.json(
+        { error: 'file_too_large', detail: `${f.path}: max ${ONBOARD_FULL_MAX_FILE_CHARS} chars per file` },
+        400,
+      );
+    }
+    bundleBytes += Buffer.byteLength(f.content, 'utf8');
+    if (bundleBytes > ONBOARD_FULL_MAX_BUNDLE_BYTES) {
+      return c.json(
+        { error: 'bundle_too_large', detail: `max ${ONBOARD_FULL_MAX_BUNDLE_BYTES / (1024 * 1024)} MB` },
+        400,
+      );
+    }
+  }
+
+  const teamId = c.get('team_id');
+
+  // Normalize folder paths (trailing slash) and dedupe.
+  const folderSet = new Set<string>();
+  for (const raw of body.folders) {
+    const p = normalizePath(raw);
+    if (p) folderSet.add(p);
+  }
+  const folders = [...folderSet];
+  // De-dupe files on path; preserve first occurrence.
+  const seenFiles = new Set<string>();
+  const files = body.files.filter((f) => {
+    const p = String(f.path).trim();
+    if (!p || p.endsWith('/') || seenFiles.has(p)) return false;
+    seenFiles.add(p);
+    return true;
+  });
+
+  // paths_total = folders + files + 1 root pass.
+  const pathsTotal = folders.length + files.length + 1;
+
+  // Insert job header and per-path rows in one transaction so a partial
+  // failure doesn't leave a job with no work items.
+  const jobRows = await q<{ id: string }>(
+    `INSERT INTO wiki_jobs (team_id, paths_total) VALUES ($1, $2) RETURNING id`,
+    [teamId, pathsTotal],
+  );
+  const jobId = jobRows[0]!.id;
+
+  // Build wiki_job_paths rows. Use a single multi-row insert for speed.
+  const pathRows: Array<[string, string, WikiJobPathKind]> = [
+    [jobId, '', 'root'],
+    ...folders.map((p): [string, string, WikiJobPathKind] => [jobId, p, 'folder']),
+    ...files.map((f): [string, string, WikiJobPathKind] => [jobId, f.path, 'file']),
+  ];
+  // Pg parameter array unrolling — keep it simple with one INSERT per row;
+  // the volume is low enough (typically 100-700 rows) that batching isn't
+  // critical, and the simpler code is harder to get wrong.
+  for (const [job, p, kind] of pathRows) {
+    await q(
+      `INSERT INTO wiki_job_paths (job_id, path, kind) VALUES ($1, $2, $3)
+       ON CONFLICT (job_id, path) DO NOTHING`,
+      [job, p, kind],
+    );
+  }
+
+  // Kick off the worker. setImmediate keeps it strictly fire-and-forget —
+  // the response returns now; runJob handles its own errors and never
+  // throws to here.
+  const bundle = bundleFromRequest({ ...body, folders, files });
+  setImmediate(() => {
+    runJob(jobId, teamId, bundle).catch((e) => {
+      console.error(`[wiki-job ${jobId}] uncaught:`, e);
+    });
+  });
+
+  const res: OnboardRepoFullResponse = { job_id: jobId, paths_total: pathsTotal };
+  return c.json(res);
+});
+
+// ----- GET /onboard/jobs/:id -------------------------------------------------
+// Status snapshot for a rich-bootstrap job. Clients (CLI, MCP tool) poll
+// this every 2s. Returns the job header counters plus per-path rows so the
+// UI can render which path is processing / which failed.
+//
+// Cross-team safety: the auth middleware sets team_id from the X-Team-Token
+// header; the WHERE clause filters on it. A team can only see its own jobs
+// (otherwise a leaked job_id would be a tenancy break).
+
+app.get('/onboard/jobs/:id', async (c) => {
+  const id = c.req.param('id');
+  if (!id || !/^[0-9a-f-]{8,}$/i.test(id)) {
+    return c.json({ error: 'bad_request', detail: 'invalid job id' }, 400);
+  }
+  const teamId = c.get('team_id');
+
+  const headers = await q<{
+    id: string;
+    status: 'pending' | 'running' | 'done' | 'failed';
+    paths_total: number;
+    paths_done: number;
+    paths_failed: number;
+    started_at: Date | null;
+    finished_at: Date | null;
+    error: string | null;
+  }>(
+    `SELECT id, status, paths_total, paths_done, paths_failed, started_at, finished_at, error
+       FROM wiki_jobs WHERE team_id = $1 AND id = $2`,
+    [teamId, id],
+  );
+  if (headers.length === 0) return c.json({ error: 'not_found' }, 404);
+  const h = headers[0]!;
+
+  const pathRows = await q<{
+    path: string; kind: WikiJobPathKind; status: WikiJobPathStatus['status']; error: string | null;
+  }>(
+    `SELECT path, kind, status, error FROM wiki_job_paths WHERE job_id = $1 ORDER BY kind, path`,
+    [id],
+  );
+
+  const res: WikiJobStatusResponse = {
+    job_id: h.id,
+    status: h.status,
+    paths_total: h.paths_total,
+    paths_done: h.paths_done,
+    paths_failed: h.paths_failed,
+    started_at: h.started_at ? h.started_at.toISOString() : null,
+    finished_at: h.finished_at ? h.finished_at.toISOString() : null,
+    error: h.error,
+    paths: pathRows.map((r) => ({
+      path: r.path,
+      kind: r.kind,
+      status: r.status,
+      ...(r.error ? { error: r.error } : {}),
+    })),
+  };
   return c.json(res);
 });
 
