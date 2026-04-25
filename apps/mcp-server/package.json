@@ -1,0 +1,27 @@
+{
+  "name": "@trailhead/mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "trailhead-mcp": "bin/cli.mjs"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test bin/init.test.mjs bin/cli-smoke.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@trailhead/shared": "*",
+    "@trailhead/scoring": "*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
