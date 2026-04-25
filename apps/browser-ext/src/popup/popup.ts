@@ -40,6 +40,18 @@ async function getStoredToken(): Promise<string> {
   });
 }
 
+// True only if the user has explicitly picked a team in the popup. The
+// fallback (DEFAULT_TEAM_TOKEN from config.ts) doesn't count — a team
+// must have been actively selected.
+async function hasSelectedTeam(): Promise<boolean> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.get(TEAM_TOKEN_KEY, (v: Record<string, unknown>) => {
+      const stored = v[TEAM_TOKEN_KEY];
+      resolve(typeof stored === 'string' && stored.length > 0);
+    });
+  });
+}
+
 async function setStoredToken(token: string): Promise<void> {
   return new Promise((resolve) => {
     (chrome as any).storage.local.set({ [TEAM_TOKEN_KEY]: token }, () => resolve());
@@ -168,7 +180,15 @@ switchEl.addEventListener('keydown', (e) => {
   }
 });
 
-addCtxBtn.addEventListener('click', () => {
+addCtxBtn.addEventListener('click', async () => {
+  // Wiki context is scoped to a team — require an explicit team
+  // selection before letting the user proceed. If none is picked yet,
+  // warn and pop the team dropdown so the next click can land.
+  if (!(await hasSelectedTeam())) {
+    showToast('Pick a team first — choose one below.', 2400);
+    void openDropdown();
+    return;
+  }
   // Placeholder for the wiki-context flow. Wired so the UX is complete;
   // the actual context selection is the next iteration.
   showToast('Wiki context — coming soon.');
