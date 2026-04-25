@@ -26,7 +26,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Node 22.6+ — the .mts test files in apps/browser-ext, apps/vscode-ext,
+          # and packages/score-card use `--experimental-strip-types`, which was
+          # introduced in 22.6.0. (Node 23.6.0 makes stripping default.)
+          node-version: '22'
           cache: npm
 
       # `npm ci` is faster + stricter than `npm install` and respects
