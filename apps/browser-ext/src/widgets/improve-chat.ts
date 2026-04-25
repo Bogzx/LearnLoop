@@ -51,11 +51,14 @@ interface ChatRefs {
   inputRow: HTMLDivElement;
   input: HTMLTextAreaElement;
   sendBtn: HTMLButtonElement;
-  chatImDoneBtn: HTMLButtonElement;
-  // Preview
-  preview: HTMLDivElement;
+  // Preview body (the polished prompt — preview stage only)
   previewBody: HTMLPreElement;
+  // Universal "Use AI prompt" row: visible in asking + preview, disabled
+  // until a polished prompt arrives.
+  useThisRow: HTMLDivElement;
   useThisBtn: HTMLButtonElement;
+  // I'm done lives in its own row, visible in preview only.
+  previewActionsRow: HTMLDivElement;
   previewImDoneBtn: HTMLButtonElement;
   // Error
   errorBody: HTMLDivElement;
@@ -157,7 +160,6 @@ export function openImproveChat(
 
   // ----- Chat
   refs.sendBtn.addEventListener('click', sendUserReply);
-  refs.chatImDoneBtn.addEventListener('click', onImDone);
   refs.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -242,31 +244,35 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   sendBtn.type = 'button';
   sendBtn.className = 'is-primary';
   sendBtn.textContent = 'Send';
-  const chatImDoneBtn = document.createElement('button');
-  chatImDoneBtn.type = 'button';
-  chatImDoneBtn.title = 'Skip improving — use the prompt I already typed.';
-  chatImDoneBtn.textContent = 'I’m done';
-  inputRow.append(input, sendBtn, chatImDoneBtn);
+  inputRow.append(input, sendBtn);
 
-  // Preview
-  const preview = document.createElement('div');
-  preview.className = 'trailhead-improve-preview';
-  preview.hidden = true;
+  // Preview body (the polished prompt) — preview stage only.
   const previewBody = document.createElement('pre');
   previewBody.className = 'trailhead-improve-preview-body';
-  const previewActions = document.createElement('div');
-  previewActions.className = 'trailhead-improve-preview-actions';
+  previewBody.hidden = true;
+
+  // Universal "Use AI prompt" row — visible across asking + preview so
+  // the action is always discoverable. Stays disabled until polished
+  // arrives, then lights up.
+  const useThisRow = document.createElement('div');
+  useThisRow.className = 'trailhead-improve-preview-actions';
   const useThisBtn = document.createElement('button');
   useThisBtn.type = 'button';
   useThisBtn.className = 'is-primary';
-  useThisBtn.title = 'Use the AI-polished prompt below.';
-  useThisBtn.textContent = 'Use this';
+  useThisBtn.disabled = true;
+  useThisBtn.title = 'Available once the coach has polished your prompt.';
+  useThisBtn.textContent = 'Use AI prompt';
+  useThisRow.append(useThisBtn);
+
+  // Preview-only actions row (currently just I'm done).
+  const previewActionsRow = document.createElement('div');
+  previewActionsRow.className = 'trailhead-improve-preview-actions';
+  previewActionsRow.hidden = true;
   const previewImDoneBtn = document.createElement('button');
   previewImDoneBtn.type = 'button';
   previewImDoneBtn.title = 'Discard the polished version — use the prompt I originally typed.';
   previewImDoneBtn.textContent = 'I’m done';
-  previewActions.append(useThisBtn, previewImDoneBtn);
-  preview.append(previewBody, previewActions);
+  previewActionsRow.append(previewImDoneBtn);
 
   // Error
   const errorBody = document.createElement('div');
@@ -283,13 +289,22 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   errActions.append(useTemplateBtn);
   errorBody.append(errorMsg, errActions);
 
-  card.append(header, choice, thread, inputRow, preview, errorBody);
+  card.append(
+    header,
+    choice,
+    thread,
+    inputRow,
+    previewBody,
+    useThisRow,
+    previewActionsRow,
+    errorBody,
+  );
 
   return {
     root: card, header, headerTitle, closeBtn,
     choice, startBtn,
-    thread, inputRow, input, sendBtn, chatImDoneBtn,
-    preview, previewBody, useThisBtn, previewImDoneBtn,
+    thread, inputRow, input, sendBtn,
+    previewBody, useThisRow, useThisBtn, previewActionsRow, previewImDoneBtn,
     errorBody, errorMsg, useTemplateBtn,
   };
 }
@@ -298,7 +313,11 @@ function render(refs: ChatRefs, state: ImproveState): void {
   refs.choice.hidden = state.stage !== 'choice';
   refs.thread.hidden = state.stage !== 'asking';
   refs.inputRow.hidden = state.stage !== 'asking';
-  refs.preview.hidden = state.stage !== 'preview';
+  refs.previewBody.hidden = state.stage !== 'preview';
+  // Use AI prompt row is visible across asking + preview.
+  refs.useThisRow.hidden = state.stage !== 'asking' && state.stage !== 'preview';
+  // I'm done row stays preview-only.
+  refs.previewActionsRow.hidden = state.stage !== 'preview';
   refs.errorBody.hidden = state.stage !== 'error';
 
   if (state.stage === 'choice') {
@@ -338,6 +357,15 @@ function render(refs: ChatRefs, state: ImproveState): void {
 
   if (state.stage === 'preview') {
     refs.previewBody.textContent = state.polished;
+    // Enable Use AI prompt now that we have a polished prompt to use.
+    // Defensive empty-check stays in case the API ever returns "".
+    refs.useThisBtn.disabled = !state.polished?.trim();
+    refs.useThisBtn.title = 'Drop the AI-polished prompt into Claude’s composer.';
+  } else {
+    // Asking (and any pre-preview state) — keep the button disabled
+    // until the coach finalizes.
+    refs.useThisBtn.disabled = true;
+    refs.useThisBtn.title = 'Available once the coach has polished your prompt.';
   }
   if (state.stage === 'error') {
     refs.errorMsg.textContent = state.message;
