@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import useSWR from 'swr';
 import type { WikiTreeNode, WikiTreeResponse } from '@trailhead/shared';
 import { api } from '@/lib/api';
@@ -104,6 +104,38 @@ const LAYER_COLORS = [
   'hsl(142 76% 56%)', // 4 — green
   'hsl(20 90% 65%)',  // 5+ — orange
 ];
+
+// Depth = number of slash-separated segments. Root ('') is 0.
+function pathDepth(path: string): number {
+  if (!path) return 0;
+  return path.split('/').filter(Boolean).length;
+}
+
+function layerColorFor(path: string): string {
+  return LAYER_COLORS[Math.min(pathDepth(path), LAYER_COLORS.length - 1)]!;
+}
+
+// 'hsl(348 83% 65%)' → 'hsl(348 83% 65% / 0.22)'.
+function withAlpha(hslColor: string, alpha: number): string {
+  return hslColor.replace(/\)$/, ` / ${alpha})`);
+}
+
+// Breadcrumb segments for a path. Each segment carries its display label and
+// the cumulative path used to compute its layer color (so 'src' is depth 1,
+// 'src/api' is depth 2, etc.). The root chip is always present.
+function pathSegments(path: string): Array<{ label: string; cumulative: string }> {
+  const segs: Array<{ label: string; cumulative: string }> = [
+    { label: '/', cumulative: '' },
+  ];
+  if (!path) return segs;
+  const parts = path.split('/').filter(Boolean);
+  let acc = '';
+  for (const p of parts) {
+    acc = acc ? `${acc}/${p}` : p;
+    segs.push({ label: p, cumulative: acc });
+  }
+  return segs;
+}
 
 const STEP_MS = 320;
 
@@ -427,11 +459,8 @@ function DetailPanel({
   if (!selected) return null;
 
   const chain = ancestorChain(tree, selectedPath);
-
-  const mergedBody = chain
-    .filter((n) => !!n.body_md)
-    .map((n) => n.body_md)
-    .join('\n\n');
+  const breadcrumb = pathSegments(selected.path);
+  const bodyChain = chain.filter((n) => !!n.body_md);
 
   type Tagged = {
     id: string;
@@ -450,7 +479,27 @@ function DetailPanel({
     <div className="space-y-6 rounded-lg border border-border bg-card p-6">
       <div>
         <div className="text-xs uppercase tracking-wider text-muted-foreground">Path</div>
-        <div className="mt-1 font-mono text-lg">{selected.path || '/'}</div>
+        <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-lg">
+          {breadcrumb.map((seg, i) => {
+            const color = layerColorFor(seg.cumulative);
+            return (
+              <Fragment key={`${i}-${seg.cumulative}`}>
+                {i > 0 && (
+                  <span className="text-muted-foreground/50">/</span>
+                )}
+                <span
+                  className="rounded px-1.5 py-0.5"
+                  style={{
+                    background: withAlpha(color, 0.22),
+                    color,
+                  }}
+                >
+                  {seg.label}
+                </span>
+              </Fragment>
+            );
+          })}
+        </div>
         <div className="mt-3 flex flex-wrap gap-2">
           {durables.length > 0 && (
             <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-400">
@@ -470,17 +519,35 @@ function DetailPanel({
         </div>
       </div>
 
-      {mergedBody && (
+      {bodyChain.length > 0 && (
         <div>
           <div className="mb-3 text-xs uppercase tracking-wider text-muted-foreground">
             General info
           </div>
-          <pre
-            className="whitespace-pre-wrap rounded border border-border p-3 text-xs text-muted-foreground"
-            style={{ background: 'hsl(222.2 84% 4.9% / 0.4)' }}
-          >
-            {mergedBody}
-          </pre>
+          <div className="space-y-3">
+            {bodyChain.map((n) => {
+              const color = layerColorFor(n.path);
+              return (
+                <div key={n.path} className="space-y-1.5">
+                  <span
+                    className="inline-block rounded px-1.5 py-0.5 font-mono text-[11px]"
+                    style={{ background: withAlpha(color, 0.22), color }}
+                  >
+                    {n.path || '/'}
+                  </span>
+                  <pre
+                    className="whitespace-pre-wrap rounded border p-3 text-xs text-muted-foreground"
+                    style={{
+                      background: withAlpha(color, 0.06),
+                      borderColor: withAlpha(color, 0.35),
+                    }}
+                  >
+                    {n.body_md}
+                  </pre>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -490,23 +557,29 @@ function DetailPanel({
             Durable learnings
           </div>
           <ul className="space-y-2">
-            {durables.map((l) => (
-              <li
-                key={`${l.path}-${l.id}`}
-                className="flex items-start gap-2 text-sm text-foreground"
-              >
-                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
-                <span>
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {l.path || '/'}
-                  </span>{' '}
-                  <span className="font-mono text-xs text-muted-foreground">
-                    ({l.reinforcement_count}×)
-                  </span>{' '}
-                  {l.body}
-                </span>
-              </li>
-            ))}
+            {durables.map((l) => {
+              const color = layerColorFor(l.path);
+              return (
+                <li
+                  key={`${l.path}-${l.id}`}
+                  className="flex items-start gap-2 text-sm text-foreground"
+                >
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
+                  <span>
+                    <span
+                      className="rounded px-1 py-0 font-mono text-[10px]"
+                      style={{ background: withAlpha(color, 0.22), color }}
+                    >
+                      {l.path || '/'}
+                    </span>{' '}
+                    <span className="font-mono text-xs text-muted-foreground">
+                      ({l.reinforcement_count}×)
+                    </span>{' '}
+                    {l.body}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -517,22 +590,30 @@ function DetailPanel({
             Draft learnings
           </div>
           <ul className="space-y-1.5">
-            {drafts.map((l) => (
-              <li
-                key={`${l.path}-${l.id}`}
-                className="flex items-start gap-2 text-xs italic text-muted-foreground"
-              >
-                <span
-                  className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: 'hsl(215 20% 65% / 0.4)' }}
-                />
-                <span>
-                  <span className="font-mono text-[11px]">{l.path || '/'}</span>{' '}
-                  <span className="font-mono">({l.reinforcement_count}×)</span>{' '}
-                  {l.body}
-                </span>
-              </li>
-            ))}
+            {drafts.map((l) => {
+              const color = layerColorFor(l.path);
+              return (
+                <li
+                  key={`${l.path}-${l.id}`}
+                  className="flex items-start gap-2 text-xs italic text-muted-foreground"
+                >
+                  <span
+                    className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{ background: 'hsl(215 20% 65% / 0.4)' }}
+                  />
+                  <span>
+                    <span
+                      className="rounded px-1 py-0 font-mono text-[10px] not-italic"
+                      style={{ background: withAlpha(color, 0.22), color }}
+                    >
+                      {l.path || '/'}
+                    </span>{' '}
+                    <span className="font-mono">({l.reinforcement_count}×)</span>{' '}
+                    {l.body}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
