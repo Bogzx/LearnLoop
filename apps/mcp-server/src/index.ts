@@ -11,7 +11,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { clientFromEnv, type ApiClient } from './api-client.ts';
-import { registerWikiTools } from './tools.ts';
+import { registerCoachTools, registerWikiTools } from './tools.ts';
 
 function log(msg: string): void {
   process.stderr.write(`[trailhead-mcp] ${msg}\n`);
@@ -32,6 +32,7 @@ async function main(): Promise<void> {
   });
 
   registerWikiTools(server, client);
+  registerCoachTools(server, client);
 
   // Pings let the demo machine confirm the server is alive even when the model
   // isn't calling any tools.
