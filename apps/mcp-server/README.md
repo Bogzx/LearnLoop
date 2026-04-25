@@ -78,20 +78,35 @@ Plus `ping` for health checks.
 ## Bootstrap
 
 ```sh
-npx trailhead-mcp bootstrap            # auto-walks cwd, prompts before posting
+npx trailhead-mcp bootstrap            # default: rich mode (LLM-populated)
 npx trailhead-mcp bootstrap --yes      # skip the prompt
 npx trailhead-mcp bootstrap --dry-run  # preview without POSTing
+npx trailhead-mcp bootstrap --minimal  # skeleton only (no LLM, fast, free)
 npx trailhead-mcp bootstrap --paths "src/api/,src/db/"   # explicit paths
 ```
 
-Walks the cwd up to 3 levels deep, surfaces every folder containing at
-least one source file, and POSTs them to `/onboard/repo`. Folders like
-`node_modules`, `.git`, `dist`, `build`, hidden dirs are auto-excluded. If
-`./CLAUDE.md` or `./.github/copilot-instructions.md` exists, its contents
-seed the wiki's root node (override with `--no-seed`).
+**Default is rich mode** (Karpathy-style auto-generated wiki). The CLI
+walks the cwd, bundles source files, POSTs to `/onboard/repo/full`, and
+the API runs three Gemini passes (per-folder, per-file, root) to fill
+every `body_md` with a narrative summary and extract conventions into
+draft `learnings`. Async — the CLI shows a live progress bar (~30-90s).
+Re-runs are safe: already-populated nodes are left alone. Pass `--force`
+to refresh bootstrap-generated body_md (manual edits via `wiki_save` are
+always preserved).
 
-The same logic is exposed as the `wiki_bootstrap` MCP tool, so the LLM can
-call it when the user asks "set up Trailhead for this repo" mid-conversation.
+**`--minimal`** is the explicit opt-out for the path-skeleton-only
+behavior. Walks the cwd, upserts one node per source folder, leaves
+`body_md` empty per folder; the root node is seeded from `./CLAUDE.md`
+or `./.github/copilot-instructions.md` if present. Fast, free, but the
+wiki has no narrative or extracted conventions until somebody calls
+`wiki_save` manually.
+
+Folders like `node_modules`, `.git`, `dist`, `build`, hidden dirs are
+auto-excluded in both modes.
+
+The same logic is exposed as the `wiki_bootstrap` MCP tool, so the LLM
+can call it (defaults to rich) when the user asks "set up Trailhead for
+this repo" mid-conversation.
 
 Bootstrap targets the team identified by the cwd's token — the same one
 init wrote — so two repos never share a wiki tree.
