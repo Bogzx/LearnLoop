@@ -1,19 +1,15 @@
 // `trailhead-mcp init` — idempotent installer.
 //
-// Writes up to three locations (creating dirs as needed):
+// Writes up to two locations (creating dirs as needed):
 // 1. ~/.claude.json (Claude Code) — adds `mcpServers.trailhead` entry
 //    pointing at our server with TRAILHEAD_API_URL + TRAILHEAD_TEAM_TOKEN env.
-// 2. ~/.claude/settings.json — adds a `Stop` hook command pointing at
-//    apps/stop-hook/trailhead-hook.mjs.
-// 3. ./CLAUDE.md (project-scoped, default) and/or ~/.claude/CLAUDE.md
+// 2. ./CLAUDE.md (project-scoped, default) and/or ~/.claude/CLAUDE.md
 //    (user-scoped, opt-in) — appends the always-on coaching directive
 //    that drives spec §4 (B.2). Skipped entirely when autoCoach=false.
 //
 // Idempotency rules:
 // - If `mcpServers.trailhead` already exists, it's overwritten with our
 //   current paths (so re-running after `git pull` updates them).
-// - If a Stop hook entry containing "trailhead-hook.mjs" already exists, we
-//   leave the Stop section alone (the user may have customized it).
 // - If a CLAUDE.md already contains a `## Trailhead coaching` heading, we
 //   leave it alone (the user may have customized the directive).
 // - All other keys / file content preserved exactly.
@@ -55,13 +51,12 @@ Never block: dismissed coaching = proceed with the original prompt.
 
 const COACH_DIRECTIVE_HEADING = '## Trailhead coaching';
 
-// InitOptions = { serverEntry, hookEntry, apiUrl, teamToken, anthropicKey,
+// InitOptions = { serverEntry, apiUrl, teamToken,
 //                 home?, cwd?, preservePaths?,
 //                 autoCoach?: boolean (default true),
 //                 userScope?: boolean (default false) }
-// InitResult  = { claudeJsonPath, settingsJsonPath,
+// InitResult  = { claudeJsonPath,
 //                 serverInstalled: 'created' | 'updated' | 'unchanged',
-//                 hookInstalled:  'created' | 'unchanged',
 //                 projectClaudeMdPath: string | null,
 //                 userClaudeMdPath:    string | null,
 //                 projectCoachInstalled: 'created' | 'appended' | 'unchanged' | 'skipped',
@@ -111,7 +106,6 @@ export async function runInit(opts) {
   const result = await applyInit(opts);
   // CLI reporting — kept here so tests can call applyInit silently.
   console.log(`✓ MCP server registered (${result.serverInstalled}): ${result.claudeJsonPath}`);
-  console.log(`✓ Stop hook registered (${result.hookInstalled}):    ${result.settingsJsonPath}`);
   if (result.projectClaudeMdPath) {
     console.log(`✓ Coach directive (${result.projectCoachInstalled}): ${result.projectClaudeMdPath}`);
   } else if (result.projectCoachInstalled === 'skipped') {
@@ -127,9 +121,7 @@ export async function runInit(opts) {
 export async function applyInit(opts) {
   const home = opts.home ?? homedir();
   const claudeJsonPath = join(home, '.claude.json');
-  const settingsJsonPath = join(home, '.claude', 'settings.json');
   const serverEntry = opts.preservePaths ? opts.serverEntry : normalize(opts.serverEntry);
-  const hookEntry = opts.preservePaths ? opts.hookEntry : normalize(opts.hookEntry);
 
   // 1) MCP server entry in ~/.claude.json
   const claudeJson = readJsonOr(claudeJsonPath, {});
@@ -144,7 +136,6 @@ export async function applyInit(opts) {
     TRAILHEAD_API_URL: opts.apiUrl,
     TRAILHEAD_TEAM_TOKEN: opts.teamToken,
   };
-  if (opts.anthropicKey) env.ANTHROPIC_API_KEY = opts.anthropicKey;
 
   const entry = {
     command: 'npx',
@@ -161,47 +152,7 @@ export async function applyInit(opts) {
       : 'updated';
   if (serverInstalled !== 'unchanged') writeJson(claudeJsonPath, newClaudeJson);
 
-  // 2) Stop hook in ~/.claude/settings.json
-  const settings = readJsonOr(settingsJsonPath, {});
-  if (settings && typeof settings !== 'object') {
-    throw new Error('~/.claude/settings.json is not a JSON object');
-  }
-  const hooks = (settings.hooks && typeof settings.hooks === 'object') ? settings.hooks : {};
-  const stopBlocks = Array.isArray(hooks.Stop) ? hooks.Stop : [];
-
-  const ourCommand = `node "${hookEntry}"`;
-  // We consider the hook "already installed" if any registered Stop command
-  // references our hook entry (by exact path or by its basename — the latter
-  // catches the case where the user installed via a relative path or symlink).
-  const hookBasename = hookEntry.split(/[/\\]/).filter(Boolean).pop() ?? '';
-  const alreadyHasOurHook = stopBlocks.some((block) => {
-    if (!block?.hooks) return false;
-    return block.hooks.some((h) => {
-      if (typeof h?.command !== 'string') return false;
-      if (h.command.includes(hookEntry)) return true;
-      // Only match by basename if it's a recognizable hook script (not generic
-      // names like "hook.mjs" — must contain "trailhead" to be considered ours).
-      if (hookBasename && hookBasename.includes('trailhead')) {
-        return h.command.includes(hookBasename);
-      }
-      return false;
-    });
-  });
-
-  let hookInstalled = 'unchanged';
-  if (!alreadyHasOurHook) {
-    const newBlock = {
-      hooks: [{ type: 'command', command: ourCommand }],
-    };
-    const newSettings = {
-      ...settings,
-      hooks: { ...hooks, Stop: [...stopBlocks, newBlock] },
-    };
-    writeJson(settingsJsonPath, newSettings);
-    hookInstalled = 'created';
-  }
-
-  // 3) Coach directive — appends to project-scoped CLAUDE.md (default) and
+  // 2) Coach directive — appends to project-scoped CLAUDE.md (default) and
   // optionally also to ~/.claude/CLAUDE.md (user-scope opt-in). Skipped
   // entirely when autoCoach=false (the --no-auto-coach flag).
   const autoCoach = opts.autoCoach !== false;          // default: true
@@ -225,9 +176,7 @@ export async function applyInit(opts) {
 
   return {
     claudeJsonPath,
-    settingsJsonPath,
     serverInstalled,
-    hookInstalled,
     projectClaudeMdPath,
     userClaudeMdPath,
     projectCoachInstalled,

@@ -7,7 +7,7 @@ import './env.ts';
 // gemma-4-31b-it is a thinking model with no schema enforcement and no
 // thinking-budget control. It returns chain-of-thought as `thought:true`
 // parts followed by the answer in plain `text`. We use it for /diff and
-// the stop-hook learning extractor where latency is tolerable.
+// the learning-extractor helper below, where latency is tolerable.
 
 import { GoogleGenAI, Type } from '@google/genai';
 import type { Dimension, DimensionScores, MissingHints } from '@trailhead/shared';
@@ -304,7 +304,9 @@ export async function synthesizeDiff(args: {
   return extractAnswer(resp);
 }
 
-// ----- stop-hook learning extractor (Gemma 4 31B) ----------------------------
+// ----- learning extractor (Gemma 4 31B) -------------------------------------
+// Helper kept available for a future server-side learning-extraction path.
+// Not currently wired to any endpoint.
 export interface ExtractResult { node_path: string | null; insight: string | null; }
 
 export async function extractLearning(args: {
