@@ -24,7 +24,19 @@ export type DimensionScores = Record<Dimension, number>;          // 0-10 per di
 export type MissingHints    = Partial<Record<Dimension, string>>; // hint when dim < 5
 
 // POST /score — live 5-dim Haiku score; writes skill_observation inline (§5)
-export interface ScoreRequest  { prompt: string; file_path?: string; user_id: string; }
+//
+// `context_path` (optional): a wiki node path (e.g. 'src/api/'). If set,
+// the server fetches that subtree's body_md + durable learnings and
+// prepends it to the Gemini system prompt so the score is calibrated
+// against the team's conventions (and Gemini's coaching can reference
+// the team's own docs). The user's bare `prompt` is still what gets
+// scored — the context just colors the rubric.
+export interface ScoreRequest  {
+  prompt: string;
+  file_path?: string;
+  user_id: string;
+  context_path?: string;
+}
 export interface ScoreResponse { overall: number; dimensions: DimensionScores; missing: MissingHints; }
 
 // POST /capture — store conversation + outcome (§3)
@@ -193,6 +205,10 @@ export interface ImproveRequest {
   history: ImproveTurn[];
   command: 'next' | 'finalize';
   user_id: string;
+  // Same semantics as ScoreRequest.context_path — when set, the server
+  // prepends the team's wiki subtree to Gemini's system prompt so the
+  // coach's questions and the polished prompt land in the team's idiom.
+  context_path?: string;
 }
 
 export type ImproveResponse =
