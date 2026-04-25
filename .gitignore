@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Env files (NEVER commit secrets — only .env.example is tracked)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+
+# Coverage / caches
+coverage/
+.cache/
+.next/
+.turbo/
+.parcel-cache/
+
+# Plasmo (browser ext)
+apps/browser-ext/.plasmo/
+apps/browser-ext/build/
+
+# VS Code extension build artifacts
+apps/vscode-ext/*.vsix
