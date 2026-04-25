@@ -1,0 +1,51 @@
+name: ci
+
+# Runs on every PR and on every push to main. Pure quality gate — does NOT
+# deploy. Railway auto-deploys main from its own GitHub integration; Vercel
+# does the same for apps/dashboard. CI's job is to fail the merge button
+# before bad code reaches either deploy target.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-progress runs for the same PR/branch when a new commit lands —
+# saves CI minutes and gives faster feedback.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck + tests + dashboard build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # `npm ci` is faster + stricter than `npm install` and respects
+      # package-lock.json exactly. Required for reproducible CI.
+      - name: install
+        run: npm ci
+
+      # Fans out to every workspace's `typecheck` script. Skips workspaces
+      # that don't define one (--if-present is set in the root scripts).
+      - name: typecheck
+        run: npm run typecheck
+
+      # Runs every workspace's `test` script. None of these tests hit the
+      # live API — they're unit + bundle-load + CLI smoke tests. Total
+      # runtime is ~10s, so we don't bother splitting the matrix.
+      - name: test
+        run: npm test
+
+      # Production-build the dashboard so PRs can't break the Vercel deploy
+      # without showing red here first. Builds the same way Vercel does.
+      - name: build dashboard
+        run: npm --workspace=apps/dashboard run build
