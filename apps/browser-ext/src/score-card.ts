@@ -29,8 +29,8 @@ import { readPrompt, type Selectors } from './selectors.ts';
 import { store } from './store.ts';
 import {
   focusComposer,
+  markApproved,
   rememberScoredPrompt,
-  triggerNativeSend,
 } from './send-intercept.ts';
 import { openImproveChat } from './widgets/improve-chat.ts';
 
@@ -79,9 +79,20 @@ function ensureCardMounted(sel: Selectors): HTMLDivElement {
 
   const asIs = document.createElement('button');
   asIs.type = 'button';
-  asIs.textContent = 'Send as-is';
-  asIs.dataset.role = 'send-as-is';
-  asIs.addEventListener('click', () => triggerNativeSend());
+  asIs.textContent = 'Keep as-is';
+  asIs.dataset.role = 'keep-as-is';
+  asIs.title = 'Close the card and use the prompt I already typed. Hit Enter to send.';
+  asIs.addEventListener('click', () => {
+    const prompt = lastPrompt || readPrompt(sel.textarea).trim();
+    if (!prompt) {
+      hideCard();
+      return;
+    }
+    console.info('[trailhead] Keep as-is clicked — marking approved, hiding card');
+    markApproved(prompt);
+    hideCard();
+    focusComposer();
+  });
 
   const edit = document.createElement('button');
   edit.type = 'button';
