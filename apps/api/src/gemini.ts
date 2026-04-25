@@ -108,7 +108,7 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
         contents: buildScoreUserPrompt(args),
         config: {
           systemInstruction: SCORE_SYSTEM_PROMPT,
-          temperature: 0,
+          temperature: 0.2,
           thinkingConfig: { thinkingBudget: 0 },
           responseMimeType: 'application/json',
           responseSchema: {
@@ -125,7 +125,9 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
               missing: {
                 type: Type.OBJECT,
                 properties: Object.fromEntries(
-                  DIMENSIONS.map((d) => [d, { type: Type.STRING }]),
+                  // maxLength guards against Flash repetition loops on
+                  // ambiguous prompts (see "fix the retry" incident).
+                  DIMENSIONS.map((d) => [d, { type: Type.STRING, maxLength: 80 }]),
                 ),
               },
             },
