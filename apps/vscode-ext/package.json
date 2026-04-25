@@ -1,0 +1,76 @@
+{
+  "name": "trailhead-vscode",
+  "displayName": "Trailhead",
+  "description": "Prompt-skill coach in your sidebar — score-card, team-anchored examples, autonomous wiki updates.",
+  "version": "0.0.1",
+  "private": true,
+  "publisher": "trailhead",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onView:trailhead.coach"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "trailhead",
+          "title": "Trailhead",
+          "icon": "$(rocket)"
+        }
+      ]
+    },
+    "views": {
+      "trailhead": [
+        {
+          "type": "webview",
+          "id": "trailhead.coach",
+          "name": "Coach"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "trailhead.refresh",
+        "title": "Trailhead: Refresh sidebar"
+      }
+    ],
+    "configuration": {
+      "title": "Trailhead",
+      "properties": {
+        "trailhead.apiUrl": {
+          "type": "string",
+          "default": "https://trailheadapi-production.up.railway.app",
+          "description": "Trailhead API base URL."
+        },
+        "trailhead.teamToken": {
+          "type": "string",
+          "default": "trailhead_demo_acme_2026",
+          "description": "Team token sent in the X-Team-Token header."
+        },
+        "trailhead.userId": {
+          "type": "string",
+          "default": "demo",
+          "description": "User ID stamped on score / capture writes."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test --experimental-strip-types src/paths.test.mts src/wiki-diff.test.mts test/bundle-load.test.mjs",
+    "vscode:prepublish": "node esbuild.config.mjs --production"
+  },
+  "dependencies": {
+    "@trailhead/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2"
+  }
+}

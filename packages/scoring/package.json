@@ -3,11 +3,27 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "./index.ts",
-  "types": "./index.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": "./index.ts",
-    "./normalize": "./normalize.ts",
-    "./prompts": "./prompts.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./normalize": "./src/normalize.mjs",
+    "./extract-prompt": "./src/extract-prompt.mjs",
+    "./score-prompt": "./src/score-prompt.mjs",
+    "./topic-prompt": "./src/topic-prompt.mjs",
+    "./score-helpers": "./src/score-helpers.mjs",
+    "./path-helpers": "./src/path-helpers.mjs",
+    "./models": "./src/models.mjs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/normalize.test.mjs src/extract-prompt.test.mjs src/dedup-invariant.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
   }
 }
