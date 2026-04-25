@@ -1,5 +1,5 @@
 // Source of truth for request/response shapes. Every artifact (api, browser-ext,
-// vscode-ext, mcp-server, stop-hook, dashboard) imports from here. Tracks spec
+// vscode-ext, mcp-server, dashboard) imports from here. Tracks spec
 // §3 (endpoint list) and §5 (the 5 dimensions). Update both together.
 
 export type Dimension =

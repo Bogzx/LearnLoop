@@ -1,12 +1,13 @@
-// The dedup invariant: the MCP path and the Stop hook path must produce the
-// same body_normalized for the same insight, otherwise the reinforcement
-// counter never increments. Both paths import normalize() from this package,
-// so this test catches future regressions if anyone forks the function.
+// The dedup invariant: every caller (MCP `wiki_update_learnings`, the API's
+// own /wiki/propose) must produce the same body_normalized for the same
+// insight, otherwise the reinforcement counter never increments. All callers
+// import normalize() from this package, so this test catches future
+// regressions if anyone forks the function.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalize } from './normalize.mjs';
 
-const MCP_INSIGHTS = [
+const INSIGHTS = [
   'We always use exponential backoff with jitter.',
   'WE always USE exponential BACKOFF with JITTER.',
   '"We always use exponential backoff with jitter."',
@@ -15,7 +16,7 @@ const MCP_INSIGHTS = [
 ];
 
 test('all paraphrasings of the same insight collapse to one normalized form', () => {
-  const normalized = MCP_INSIGHTS.map(normalize);
+  const normalized = INSIGHTS.map(normalize);
   for (const n of normalized) {
     assert.equal(n, normalized[0], `mismatch in normalization: ${n} vs ${normalized[0]}`);
   }

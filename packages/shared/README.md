@@ -1,7 +1,7 @@
 # shared — TypeScript types for API contracts
 
 Single source of truth for request/response shapes. Every artifact (api,
-browser-ext, vscode-ext, mcp-server, stop-hook, dashboard) imports from
+browser-ext, vscode-ext, mcp-server, dashboard) imports from
 here. Prevents shape drift across parallel work — the most common 24h
 hackathon integration disaster.
 

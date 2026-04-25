@@ -13,7 +13,7 @@ autonomous demo loop.
 - Post-prompt outcome rating widget (one keystroke)
 - Polls `/wiki/propose` results → toast + wiki view refresh
   (this is what makes the autonomous demo moment audience-visible
-  whether the update came from the MCP tool OR the Stop hook)
+  when Claude Code calls the MCP tool)
 
 **Talks to:** `apps/api` only (HTTP + polling).
 
