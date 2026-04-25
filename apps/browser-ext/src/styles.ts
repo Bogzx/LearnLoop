@@ -248,11 +248,34 @@ export const TRAILHEAD_CSS = `
   border-color: rgba(177, 185, 249, 0.4);
 }
 .trailhead-improve-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.trailhead-improve-header-title {
+  flex: 1;
   font-weight: 600;
   font-size: 13px;
-  margin-bottom: 8px;
   color: rgba(255,255,255,0.85);
 }
+.trailhead-improve-close {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.85);
+  font: inherit;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  font-size: 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.trailhead-improve-close:hover { background: rgba(255,255,255,0.14); }
 .trailhead-improve-thread {
   display: flex;
   flex-direction: column;
@@ -358,6 +381,57 @@ export const TRAILHEAD_CSS = `
 .trailhead-improve-error-msg {
   color: rgba(255,140,140,0.92);
   font-size: 12.5px;
+}
+
+/* Improve-chat choice screen (initial state) */
+.trailhead-improve-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.trailhead-improve-choice-intro {
+  font-size: 12.5px;
+  opacity: 0.85;
+}
+.trailhead-improve-choice-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.trailhead-improve-choice-actions button {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  padding: 6px 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.trailhead-improve-choice-actions button:hover { background: rgba(255,255,255,0.10); }
+.trailhead-improve-choice-actions button.is-primary {
+  background: #4a6bff;
+  border-color: #4a6bff;
+  color: #fff;
+}
+.trailhead-improve-choice-actions button.is-primary:hover { background: #3a5be0; }
+.trailhead-improve-soon {
+  font-size: 10px;
+  opacity: 0.7;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.10);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.trailhead-improve-choice-note {
+  font-size: 11.5px;
+  opacity: 0.75;
+  padding: 6px 8px;
+  background: rgba(0,0,0,0.18);
+  border-radius: 4px;
 }
 `;
 

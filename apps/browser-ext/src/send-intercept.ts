@@ -26,6 +26,7 @@ import { simpleHash } from './hash.ts';
 import { readPrompt, writePrompt, type Selectors } from './selectors.ts';
 import { store } from './store.ts';
 import { hideCard, scoreAndShow } from './score-card.ts';
+import { isCoachingEnabled } from './coaching-state.ts';
 
 let activeSelectors: Selectors | null = null;
 let sentOnce = false;
@@ -34,6 +35,18 @@ let inFlight = false;
 // capture-phase listener on the textarea lets it through to Claude.ai
 // instead of re-running the intercept.
 let bypassIntercept = false;
+// The most recent prompt the user explicitly approved via the Improve
+// chat widget's "Use this" button. When the next send-attempt's textarea
+// content matches this verbatim, we skip the intercept so the polished
+// prompt flows straight to Claude without re-scoring or re-opening the
+// score-card. User edits invalidate the match (and re-trigger the
+// intercept), which is the correct behavior — they asked for coaching
+// on the new wording.
+let approvedPrompt: string | null = null;
+
+export function markApproved(prompt: string): void {
+  approvedPrompt = prompt;
+}
 
 export function attachSendIntercept(sel: Selectors): () => void {
   activeSelectors = sel;
@@ -89,9 +102,22 @@ function onSendAttempt(e: Event): void {
   // Our own programmatic dispatch (Path 3 in fireSendOnce) — let the event
   // through untouched so Claude.ai's own handler picks it up.
   if (bypassIntercept) return;
+  // Popup-controlled coaching toggle: when the user has flipped Coaching
+  // off, the chat behaves as if Trailhead weren't installed for sends.
+  if (!isCoachingEnabled()) return;
   if (!activeSelectors) return;
   const text = readPrompt(activeSelectors.textarea).trim();
   if (!text) return; // empty composer → let native handler no-op
+
+  // Approved-prompt bypass: the user just clicked "Use this" in the
+  // Improve widget and we wrote the polished prompt into the composer.
+  // The next native send should go straight through. We clear after one
+  // hit so a later edit-and-resend resumes normal coaching.
+  if (approvedPrompt && text === approvedPrompt.trim()) {
+    console.info('[trailhead] send approved (post-Improve) — skipping intercept');
+    approvedPrompt = null;
+    return;
+  }
 
   // We can't decide whether to send until we have a score. Block the
   // native send unconditionally; we'll re-fire it programmatically if

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Trailhead</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: 13px;
+      color: #ddd;
+      background: #1a1d29;
+      margin: 0;
+      padding: 14px 16px;
+      min-width: 240px;
+    }
+    h1 {
+      font-size: 14px;
+      margin: 0 0 12px;
+      letter-spacing: 0.02em;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 0;
+    }
+    .row label {
+      flex: 1;
+    }
+    button {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+      color: inherit;
+      font: inherit;
+      padding: 7px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      width: 100%;
+      text-align: left;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    button:hover { background: rgba(255,255,255,0.10); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .soon {
+      font-size: 10px;
+      opacity: 0.7;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.10);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .switch {
+      position: relative;
+      width: 36px;
+      height: 20px;
+      background: rgba(255,255,255,0.18);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.2s;
+      flex: 0 0 auto;
+    }
+    .switch.is-on { background: #4a6bff; }
+    .switch::after {
+      content: '';
+      position: absolute;
+      left: 2px;
+      top: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      transition: left 0.2s;
+    }
+    .switch.is-on::after { left: 18px; }
+    .hint {
+      font-size: 11.5px;
+      opacity: 0.7;
+      margin-top: 8px;
+      padding: 0 2px;
+    }
+    .toast {
+      margin-top: 10px;
+      padding: 6px 8px;
+      background: rgba(74,107,255,0.14);
+      border: 1px solid rgba(74,107,255,0.35);
+      border-radius: 6px;
+      font-size: 11.5px;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .toast.is-shown { opacity: 1; }
+  </style>
+</head>
+<body>
+  <h1>Trailhead</h1>
+
+  <div class="row">
+    <label for="coaching-switch">Coaching</label>
+    <div id="coaching-switch" class="switch" role="switch" aria-checked="true" tabindex="0"></div>
+  </div>
+
+  <div class="row">
+    <button id="add-context-btn" type="button">
+      <span>Add wiki context</span>
+      <span class="soon">soon</span>
+    </button>
+  </div>
+
+  <div class="hint" id="coaching-hint">When off, the extension stops intercepting sends.</div>
+  <div class="toast" id="toast"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
