@@ -20,6 +20,7 @@ import type {
 } from '@trailhead/shared';
 import { API_URL, FETCH_TIMEOUT_MS, TRAILHEAD_ERROR_TAG } from './config.ts';
 import { getTeamToken } from './team-state.ts';
+import { getContextPath } from './context-state.ts';
 
 type EndpointKey = 'score' | 'capture' | 'diff' | 'wiki' | 'improve';
 const inflight = new Map<EndpointKey, AbortController>();
@@ -78,7 +79,12 @@ async function call<T>(
 }
 
 export async function score(body: ScoreRequest): Promise<ScoreResponse | null> {
-  return call<ScoreResponse>('score', '/score', { method: 'POST', body });
+  // Inject the popup-selected wiki context path so the server can pull the
+  // team's subtree and feed it to Gemini's system prompt. Caller-provided
+  // context_path wins (none today, but keeps the contract honest).
+  const contextPath = body.context_path ?? getContextPath() ?? undefined;
+  const enriched: ScoreRequest = contextPath ? { ...body, context_path: contextPath } : body;
+  return call<ScoreResponse>('score', '/score', { method: 'POST', body: enriched });
 }
 
 export async function capture(body: CaptureRequest): Promise<CaptureResponse | null> {
@@ -98,13 +104,15 @@ export async function wikiRecent(sinceIso: string): Promise<WikiRecentResponse |
 // per turn). Bypass the 4s default timeout — we manage our own through the
 // widget's UX (the user sees the … placeholder while it pends).
 export async function improve(body: ImproveRequest): Promise<ImproveResponse | null> {
+  const contextPath = body.context_path ?? getContextPath() ?? undefined;
+  const enriched: ImproveRequest = contextPath ? { ...body, context_path: contextPath } : body;
   const ac = new AbortController();
   const stop = setTimeout(() => ac.abort(), 25_000);
   try {
     const res = await fetch(`${API_URL}/improve`, {
       method: 'POST',
       headers: headers(),
-      body: JSON.stringify(body),
+      body: JSON.stringify(enriched),
       signal: ac.signal,
     });
     if (!res.ok) return null;
