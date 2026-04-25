@@ -38,6 +38,9 @@ coverage/
 .turbo/
 .parcel-cache/
 
+# Superpowers brainstorming companion
+.superpowers/
+
 # Plasmo (browser ext)
 apps/browser-ext/.plasmo/
 apps/browser-ext/build/
