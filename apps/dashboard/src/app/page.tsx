@@ -1,44 +1,61 @@
 import Link from 'next/link';
 
-// Demo team selector — the §13 storyboard's 0:30 beat. One card,
-// click-through to /skill-arc which is the visual centerpiece.
-//
-// In a real product this would list every team the user belongs to.
-// For the hackathon there's exactly one (Acme Fintech), and the click
-// just navigates to the hero page — no state, no auth, no team
-// switching needed.
+type Team = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+const teams: Team[] = [
+  {
+    id: 'acme-fintech',
+    name: 'Acme Fintech',
+    description:
+      "Backend services in Postgres + Hono, webhooks via signed callbacks, PCI-scoped audit logging. Coaching seeded from the team's actual repo conventions.",
+  },
+];
+
 export default function HomePage() {
   return (
     <section className="space-y-6">
       <header>
-        <h1 className="text-3xl font-semibold tracking-tight">Pick a team</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">Teams</h1>
         <p className="mt-2 text-muted-foreground">
-          Live skill arcs and L1→L2 progression metrics, driven by every
-          prompt your team writes.
+          Pick a team to view its skill arc or wiki.
         </p>
       </header>
 
-      <Link
-        href="/skill-arc"
-        className="group block rounded-lg border border-border bg-card p-6 shadow-sm transition-colors hover:border-foreground/30"
-      >
-        <div className="flex items-start justify-between gap-6">
-          <div>
+      <div className="grid gap-4">
+        {teams.map((team) => (
+          <article
+            key={team.id}
+            className="rounded-lg border border-border bg-card p-6 shadow-sm"
+          >
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
-              demo team
+              team
             </div>
-            <div className="mt-1 text-xl font-semibold">Acme Fintech</div>
+            <div className="mt-1 text-xl font-semibold">{team.name}</div>
             <p className="mt-2 max-w-prose text-sm text-muted-foreground">
-              Backend services in Postgres + Hono, webhooks via signed
-              callbacks, PCI-scoped audit logging. Coaching seeded from the
-              team's actual repo conventions.
+              {team.description}
             </p>
-          </div>
-          <div className="text-sm text-muted-foreground transition-colors group-hover:text-foreground">
-            View skill arc →
-          </div>
-        </div>
-      </Link>
+
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link
+                href="/skill-arc"
+                className="inline-flex items-center rounded-md border border-border bg-background px-4 py-2 text-sm font-medium transition-colors hover:border-foreground/40 hover:bg-accent"
+              >
+                Skill improvement statistics
+              </Link>
+              <Link
+                href="/wiki"
+                className="inline-flex items-center rounded-md border border-border bg-background px-4 py-2 text-sm font-medium transition-colors hover:border-foreground/40 hover:bg-accent"
+              >
+                Team's knowledge
+              </Link>
+            </div>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }

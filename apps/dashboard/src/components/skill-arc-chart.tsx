@@ -161,7 +161,7 @@ export function SkillArcChart({
     <div className="space-y-3 rounded-lg border border-border bg-card p-4">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-medium">5-dimension team skill arc</h2>
+          <h2 className="text-sm font-medium">Skill improvements</h2>
           <p className="text-xs text-muted-foreground">
             {totalObs} observation{totalObs === 1 ? '' : 's'} across{' '}
             {rows.length} hour-bucket{rows.length === 1 ? '' : 's'}
