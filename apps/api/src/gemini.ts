@@ -29,13 +29,23 @@ if (!process.env.GEMINI_API_KEY) {
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Free tier on Gemini Flash periodically returns 429/503 under load. The
-// browser ext fails open, but adding small retry-with-jitter here keeps
-// most live demo calls green without bothering the client.
+// Retry policy:
+//
+//   - 429 / 503 / 500 → retry. These are transient (free-tier rate limit,
+//     overloaded backend). A few hundred ms of backoff usually clears them.
+//
+//   - timeout → DO NOT retry. Timeouts on Gemini are most often caused by
+//     model repetition loops on ambiguous prompts (the "what is the X
+//     impact of the bug" failure mode that burned ~32K tokens on
+//     "fix the retry" — 2026-04-25 incident). Retrying just runs the same
+//     loop again. Better to fail fast and let callers fail-open.
+//
+// Per-call timeout is 15s — `/score` should complete in 1-2s; 15s is a
+// generous ceiling that catches stalls without burning much LLM budget.
 async function withRetry<T>(
   fn: () => Promise<T>,
   label: string,
-  perCallTimeoutMs = 60_000,
+  perCallTimeoutMs = 15_000,
 ): Promise<T> {
   const sleeps = [200, 600, 1500];
   for (let i = 0; i <= sleeps.length; i++) {
@@ -52,12 +62,17 @@ async function withRetry<T>(
       const status =
         (err as { status?: number; code?: number }).status ??
         (err as { code?: number }).code;
-      const retryable = isTimeout || status === 429 || status === 503 || status === 500;
+      // Timeouts are NOT retryable — see comment above. Only true rate-limit
+      // and overload codes get the backoff treatment.
+      const retryable = status === 429 || status === 503 || status === 500;
+      if (isTimeout) {
+        console.warn(`[gemini] ${label} timed out at ${perCallTimeoutMs}ms — not retrying`);
+        throw err;
+      }
       if (!retryable || i === sleeps.length) throw err;
       const base = sleeps[i] ?? 1500;
       const jitter = Math.floor(Math.random() * 250);
-      const reason = isTimeout ? 'timeout' : String(status);
-      console.warn(`[gemini] ${label} ${reason} — retrying in ${base + jitter}ms`);
+      console.warn(`[gemini] ${label} ${status} — retrying in ${base + jitter}ms`);
       await new Promise((r) => setTimeout(r, base + jitter));
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -70,13 +85,21 @@ async function withRetry<T>(
 // that thinking models emit. Works for both Flash and Gemma.
 type GenResp = { candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[] };
 
+// 4000 chars is ~1000 tokens — well above any well-formed response in this
+// codebase, but a hard ceiling against truncated repetition garbage being
+// fed to JSON.parse (which scales O(n) on input length).
+const MAX_EXTRACT_CHARS = 4000;
+
 function extractAnswer(resp: GenResp): string {
   const parts = resp.candidates?.[0]?.content?.parts ?? [];
-  return parts
+  const joined = parts
     .filter((p) => p.thought !== true && typeof p.text === 'string')
     .map((p) => p.text)
     .join('')
     .trim();
+  return joined.length > MAX_EXTRACT_CHARS
+    ? joined.slice(0, MAX_EXTRACT_CHARS)
+    : joined;
 }
 
 // Strip ``` fences if a model wrapped its JSON in markdown despite being
@@ -99,8 +122,11 @@ export interface ScoreModelResult {
 }
 
 export async function scorePrompt(args: { prompt: string; file_path?: string }): Promise<ScoreModelResult> {
-  // Flash supports responseSchema enforcement and thinkingBudget=0 — the
-  // fast path the live score-card depends on.
+  // Flash with responseSchema + thinkingBudget=0 + maxOutputTokens cap is
+  // the fast path the live score-card depends on. The token cap is the
+  // hard ceiling that bounds cost when the model wanders into a repetition
+  // loop on ambiguous prompts. A well-formed response is ~150 tokens; 500
+  // is plenty of headroom while capping worst-case at ~3x normal.
   if (SCORE_MODEL.startsWith('gemini-')) {
     const resp = await withRetry(
       () => ai.models.generateContent({
@@ -110,6 +136,7 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
           systemInstruction: SCORE_SYSTEM_PROMPT,
           temperature: 0.2,
           thinkingConfig: { thinkingBudget: 0 },
+          maxOutputTokens: 500,
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -125,9 +152,11 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
               missing: {
                 type: Type.OBJECT,
                 properties: Object.fromEntries(
-                  // maxLength guards against Flash repetition loops on
-                  // ambiguous prompts (see "fix the retry" incident).
-                  DIMENSIONS.map((d) => [d, { type: Type.STRING, maxLength: 80 }]),
+                  // maxLength is advisory in Gemini structured output (NOT
+                  // a hard generation-time cap). Keep it aligned with the
+                  // system prompt's "ONE sentence, under 60 chars" rule —
+                  // the real backstop is maxOutputTokens above.
+                  DIMENSIONS.map((d) => [d, { type: Type.STRING, maxLength: 60 }]),
                 ),
               },
             },
@@ -138,19 +167,24 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
     );
     const text = extractAnswer(resp);
     const parsed = tryParseJson<ScoreModelResult>(text);
-    if (parsed) return coerceScore(parsed);
+    // Parse failure → return zeros and let the caller fail-open. NEVER
+    // fall through to a second LLM call (the previous fallthrough doubled
+    // cost on every bad response, see 2026-04-25 incident).
+    return coerceScore(parsed ?? { dimensions: zeroDims(), missing: {} });
   }
 
-  // Gemma path (and fallback) — prompt-only JSON, no schema enforcement.
+  // Non-Flash model path — used only if SCORE_MODEL is changed in
+  // packages/scoring/src/models.mjs to a Gemma-family model that has no
+  // schema enforcement. Single attempt; same fail-closed posture.
   const resp = await withRetry(
     () => ai.models.generateContent({
       model: SCORE_MODEL,
       contents:
         `${SCORE_SYSTEM_PROMPT}\n\n${buildScoreUserPrompt(args)}\n\n` +
         `Return ONLY the JSON object, nothing else.`,
-      config: { temperature: 0 },
+      config: { temperature: 0, maxOutputTokens: 500 },
     }),
-    'score(gemma)',
+    'score(non-flash)',
   );
   const text = extractAnswer(resp);
   const parsed = tryParseJson<ScoreModelResult>(text);
