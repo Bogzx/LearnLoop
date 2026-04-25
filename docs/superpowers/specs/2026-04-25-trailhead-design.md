@@ -34,11 +34,7 @@
    - This is the visceral cross-platform "wow" moment
 2. **VS Code extension** with the same score-card in a sidebar webview, plus the team-anchored example prompts and the Cmd+Shift+K articulation scaffold
 3. **Backend (Hono on Railway)** that scores prompts on 5 dimensions, retrieves team examples by tree-walk, captures sessions, and writes skill_observations on every score
-4. **MCP server + Claude Code Stop hook** — autonomous wiki update with two paths:
-   - The MCP tool `wiki.update_learnings` (Claude Code calls explicitly when it notices a learning the user wants captured)
-   - A `Stop` hook fires after every assistant turn: extracts candidate learnings via Gemma 4 31B (the thinking model gives higher recall than a fast scorer would, and latency doesn't matter for a one-call-per-turn extractor), POSTs to `/wiki/propose`, server-side dedup ensures the hook and the MCP call don't double-count
-   - **The hook backstops the model**: even if Claude Code skips the MCP call, the hook fires deterministically. Demo reliability is 100%, not 80%.
-   - For the demo, Claude Code runs in VS Code's integrated terminal so both surfaces are visible in one window.
+4. **MCP server** — autonomous wiki update via the MCP tool `wiki.update_learnings`. Claude Code calls it explicitly when it notices a learning the user wants captured. Server-side dedup on `(node_id, body_normalized)` makes repeated calls for the same insight reinforce one draft instead of duplicating it. For the demo, Claude Code runs in VS Code's integrated terminal so both surfaces are visible in one window.
 5. **Web dashboard** with skill arc + L1→L2 metrics view — base layer is seeded data (~50 skill_observations from §11), with real `/score` writes from the demonstrator's prompts during the live demo layered on top so the closing tick is visibly real
 
 ### Cuts in priority order (cut first if behind)
@@ -71,7 +67,6 @@
 │   Browser ext (Plasmo, Claude.ai)                  │
 │   VS Code extension (TypeScript)                   │
 │   MCP server (standalone, for Claude Code/Desktop) │
-│   Claude Code Stop hook (shell script)             │
 │   Web dashboard (Next.js)                          │
 └────────────────────┬───────────────────────────────┘
                      │ HTTPS, single hardcoded team token
@@ -84,7 +79,7 @@
 │   GET  /context?path=  — HCL bundle (path-walked)  │
 │   GET  /examples?path= — team-anchored prompts     │
 │   POST /diff           — generate Prompt Diff      │
-│   POST /wiki/propose   — MCP / hook autonomous     │
+│   POST /wiki/propose   — MCP-driven autonomous     │
 │                          wiki update (with dedup)  │
 └────────────────────┬───────────────────────────────┘
                      │
@@ -106,7 +101,7 @@
 | Versioning | `revisions` table (append-only) | If we have time; otherwise skip |
 | Vector search | None — drop pgvector entirely | Path-walk + LLM ranking covers all retrieval needs at hackathon scale |
 | Reinforcement dedup | Exact-match after normalization (lowercase, strip punctuation) | Embedding similarity is overkill for demo |
-| Async worker | None — Claude Code Stop hook plays this role | Hook is deterministic, no NOTIFY/LISTEN required |
+| Async worker | None — wiki updates ride the MCP tool's request path | No NOTIFY/LISTEN, no queue; one HTTP POST per learning |
 | Concurrency | Optimistic on `nodes.updated_at` | Real production concern, simple to add |
 | Auth | Hardcoded team token in extension manifest | Demo only; sketches real Clerk integration in slides |
 
@@ -183,7 +178,7 @@ CREATE TABLE skill_observations (
 CREATE INDEX idx_skill_obs_team_dim_ts ON skill_observations(team_id, dimension, ts);
 ```
 
-That's six tables. Implementable in ~1 hour by one engineer. The `events` table from the previous draft is dropped — the Claude Code Stop hook makes the NOTIFY/LISTEN worker unnecessary.
+That's six tables. Implementable in ~1 hour by one engineer. The `events` table from an earlier draft is dropped — wiki updates ride the MCP tool's request path, so no NOTIFY/LISTEN worker is needed.
 
 ---
 
@@ -283,9 +278,9 @@ Hackathon ships **Claude.ai only**. Other browsers (ChatGPT, Gemini) become a sl
 
 ---
 
-## 7. VS Code extension + MCP server + Stop hook
+## 7. VS Code extension + MCP server
 
-### Three components, three jobs
+### Two components, two jobs
 
 The IDE-side coaching is split because VS Code's built-in chat APIs are limited and we don't want to fight them:
 
@@ -294,7 +289,7 @@ The IDE-side coaching is split because VS Code's built-in chat APIs are limited 
 - **Pre-prompt panel** showing 2-3 team-anchored example prompts when the user opens a file. Source: tree-walk on `prompts.node_id` matching ancestor paths.
 - **Articulation scaffold** (Cmd+Shift+K) — the 3-field thinking helper that produces a structured prompt; results land in the score-card webview.
 - **Post-prompt outcome rating** widget (one keystroke).
-- **Wiki update notifications** — the sidebar polls (or subscribes via SSE to) `/wiki/propose` results and shows a toast + updates its wiki view when a learning is reinforced or promoted. **This notification fires regardless of whether the update came from the MCP tool or the Stop hook**, which is what makes the autonomous demo moment audience-visible even when Claude Code didn't surface a tool call in its response.
+- **Wiki update notifications** — the sidebar polls `/wiki/recent` and shows a toast + updates its wiki view when a learning is created, reinforced, or promoted. This is what makes the autonomous demo moment audience-visible.
 
 **(B) MCP server (standalone Node binary)** — the autonomous-write path that any MCP client can connect to:
 - **Claude Code** (running in VS Code's integrated terminal — primary demo target)
@@ -302,8 +297,6 @@ The IDE-side coaching is split because VS Code's built-in chat APIs are limited 
 - **Continue / Cline** (if user has them — bonus reach)
 
 Configuration: user adds the MCP server to their `.mcp.json` or Claude Code config. Once registered, the AI in any of those clients sees and can call our tools.
-
-**(C) Claude Code Stop hook** — the autonomy backstop, deterministic.
 
 ### MCP tools (minimal surface for demo)
 
@@ -327,40 +320,21 @@ wiki.rules_for(file_path)
   → returns active rules from ancestor nodes
 ```
 
-### The Claude Code Stop hook (the autonomy backstop)
-
-In addition to the MCP tools, we ship a Claude Code Stop hook that fires deterministically after every assistant turn. The hook script (`trailhead-hook.sh`):
-
-1. Reads the latest user prompt + assistant response from stdin (Claude Code passes them via the hook payload)
-2. Calls Gemma 4 31B with an "extract candidate learnings" prompt — the thinking model's chain-of-thought materially improves recall on subtle conventions, and one call per assistant turn is well within the latency budget
-3. If the model returns a learning, POSTs to `/wiki/propose` — the same endpoint the MCP tool uses
-4. Server-side dedup on `(node_id, body_normalized)` ensures the hook and the MCP tool can both fire without double-counting
-
-Why both paths exist:
-- **MCP tool** lets Claude Code call `wiki.update_learnings` deliberately when it notices something explicit ("we always use exponential backoff with jitter"). The dramatic moment.
-- **Stop hook** backstops by extracting on every turn. If the model misses, the hook catches it. The reliability moment.
-
-In the demo: the MCP call is the visible drama. The Stop hook is the silent reliability layer. The pitch story stays "the AI updates the wiki mid-conversation"; the hook ensures it actually fires.
-
-Hook installation: shipped as `trailhead-hook.sh`, registered in `.claude/settings.json` under `hooks.Stop`. One install line: `npx trailhead-mcp init` writes both the MCP server registration and the hook config.
+Installation: `npx trailhead-mcp init` writes the MCP server registration to `~/.claude.json` and (by default) appends the always-on coach directive to `./CLAUDE.md`.
 
 ### The autonomous demo moment
 
-VS Code is open. Integrated terminal at the bottom runs Claude Code with our MCP server registered AND the Stop hook installed. User says to Claude Code:
+VS Code is open. Integrated terminal at the bottom runs Claude Code with our MCP server registered. User says to Claude Code:
 
 > *"actually we always use exponential backoff with jitter here, that's our convention."*
 
-Two things can happen, indistinguishable from the audience:
-- Claude Code calls `wiki.update_learnings` directly (the dramatic path), OR
-- Claude Code answers normally and the Stop hook fires after the response, extracts the same learning, and POSTs to `/wiki/propose` (the backstop path)
-
-Either way, `/wiki/propose` returns:
+Claude Code calls `wiki.update_learnings`, and `/wiki/propose` returns:
 
 ```
 { action: "reinforced", current_count: 3, promoted_to_durable: true }
 ```
 
-**The visible artifact for the audience is our VS Code sidebar**, which polls `/wiki/propose` results and surfaces a toast: *"Wiki updated: exponential backoff with jitter — reinforced 3/3, promoted to durable."* The wiki view in the sidebar refreshes and the new durable learning appears in the list. If Claude Code took the MCP path it will additionally show the tool call in its terminal response — bonus drama, not required. The audience sees both the IDE (with our extension's sidebar) and the terminal (with Claude Code) in one VS Code window.
+**The visible artifact for the audience is our VS Code sidebar**, which polls `/wiki/recent` and surfaces a toast: *"Wiki updated: exponential backoff with jitter — reinforced 3/3, promoted to durable."* The wiki view in the sidebar refreshes and the new durable learning appears in the list. Claude Code additionally shows the tool call in its terminal response — bonus drama. The audience sees both the IDE (with our extension's sidebar) and the terminal (with Claude Code) in one VS Code window.
 
 ---
 
@@ -384,12 +358,12 @@ For the 24-hour build this is one query. No Redis, no caching, no recursion. Sub
 
 ## 9. Why we don't need a separate reinforcement worker
 
-Earlier drafts of this spec proposed an optional Postgres NOTIFY/LISTEN worker that would: listen for capture events, call an LLM to extract candidate learnings, post to `/wiki/propose`. The worker has been **replaced by the Claude Code Stop hook** for the IDE path:
+Earlier drafts of this spec proposed an optional Postgres NOTIFY/LISTEN worker that would: listen for capture events, call an LLM to extract candidate learnings, post to `/wiki/propose`. That worker is **not built** for the hackathon:
 
-- **Claude Code path**: Stop hook does the extraction inline after each assistant turn. No queue, no worker, no NOTIFY/LISTEN.
-- **Browser extension path**: extension does NOT trigger learning extraction (it just writes captures and skill_observations). The wiki updates happen visibly in Claude Code via the hook + MCP. That's fine for the demo.
+- **Claude Code path**: the MCP tool `wiki.update_learnings` fires inline when the model decides to capture a learning. No queue, no worker, no NOTIFY/LISTEN.
+- **Browser extension path**: extension does NOT trigger learning extraction (it just writes captures and skill_observations). The wiki updates happen visibly in Claude Code via the MCP tool. That's fine for the demo.
 
-Net effect: one less moving part, one less deployment, no NOTIFY/LISTEN to debug, and the demo's autonomy story is more defensible (a hook fires deterministically; an async worker can have lag).
+Net effect: one less moving part, one less deployment, and the demo's autonomy story is straightforward — Claude Code makes the call, the user sees it.
 
 ---
 
@@ -427,13 +401,13 @@ Hand-craft these to be plausible and to hit the demo flow. Real `/score` writes 
 
 ## 12. Build sequencing for a 4-person team
 
-| Hours | Person A (frontend) | Person B (browser ext) | Person C (VS Code ext + MCP + hook) | Person D (backend) |
-|-------|---------------------|------------------------|--------------------------------------|---------------------|
+| Hours | Person A (frontend) | Person B (browser ext) | Person C (VS Code ext + MCP) | Person D (backend) |
+|-------|---------------------|------------------------|--------------------------------|---------------------|
 | 0–2 | Next.js scaffold, Tailwind, dashboard skeleton | Plasmo scaffold, manifest for Claude.ai | VS Code extension scaffold + sidebar webview; standalone MCP server scaffold | Hono + Postgres schema (six tables, no events) + deploy to Railway |
 | 2–6 | Dashboard pages (skill arc, team metrics, wiki view) — read from skill_observations | DOM hooks: detect input, **smoke-test on the pinned demo browser version**, intercept send, render score-card UI | Pre-prompt sidebar pulling `/examples?path=`; score-card webview identical to browser | `/score` (5 dimensions) writes skill_observation inline; `/capture`, `/context`, `/examples` + Gemini integration |
-| 6–10 | Polish dashboard, add the wiki tree view | Implement live debounced `/score` call (250ms); threshold logic (≥7/<7); "Have Claude clarify" augmentation | MCP server tools (`wiki.update_learnings`, `wiki.context_for`, `wiki.search`); **Stop hook script** with Gemma 4 31B learning-extraction; test against Claude Code | `/wiki/propose` + normalize+dedup + counter promotion |
-| 10–14 | Wire dashboard to live skill_observations; L1→L2 progression chart | Polish UX, edge cases (multi-line prompts, paste events); **fail-open if /score 500s** | Post-prompt outcome widget + Prompt Diff display; sidebar wiki-update toast (polling `/wiki/propose` results); `npx trailhead-mcp init` install script; *(if time)* articulation scaffold Cmd+Shift+K | Demo seeding scripts; populate Acme Fintech data; per-(user, dimension, prompt-hash) 30s dedup on skill_observation writes |
-| 14–18 | All-hands: demo seeding, polish | Test demo flow end-to-end on Claude.ai (PIN BROWSER, RECORD INITIAL FALLBACK) | Test demo flow in VS Code + Claude Code with MCP + hook; verify hook fires every turn | Validate all data renders correctly |
+| 6–10 | Polish dashboard, add the wiki tree view | Implement live debounced `/score` call (250ms); threshold logic (≥7/<7); "Have Claude clarify" augmentation | MCP server tools (`wiki.update_learnings`, `wiki.context_for`, `wiki.search`); test against Claude Code | `/wiki/propose` + normalize+dedup + counter promotion |
+| 10–14 | Wire dashboard to live skill_observations; L1→L2 progression chart | Polish UX, edge cases (multi-line prompts, paste events); **fail-open if /score 500s** | Post-prompt outcome widget + Prompt Diff display; sidebar wiki-update toast (polling `/wiki/recent`); `npx trailhead-mcp init` install script; *(if time)* articulation scaffold Cmd+Shift+K | Demo seeding scripts; populate Acme Fintech data; per-(user, dimension, prompt-hash) 30s dedup on skill_observation writes |
+| 14–18 | All-hands: demo seeding, polish | Test demo flow end-to-end on Claude.ai (PIN BROWSER, RECORD INITIAL FALLBACK) | Test demo flow in VS Code + Claude Code with MCP registered; rehearse the trigger phrase | Validate all data renders correctly |
 | 18–22 | All-hands: bug fixes, fallback recordings refreshed | All-hands: rehearse demo 3+ times | All-hands: prepare slides | All-hands: stress-test |
 | 22–24 | Final polish, last bug fixes, final rehearsal | | | |
 
@@ -442,7 +416,7 @@ Hand-craft these to be plausible and to hit the demo flow. Real `/score` writes 
 Cut to:
 - Browser ext only (the headline) + minimal backend with `/score`
 - Skip VS Code extension entirely
-- Skip MCP server + Stop hook entirely (mention as "v2")
+- Skip MCP server entirely (mention as "v2")
 - Dashboard is a single static page with seeded data
 - Demo is browser-only — still very compelling because the score-card alone tells the L1→L2 story
 
@@ -465,7 +439,7 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 
 **1:40 — VS Code with team-anchored examples (40s)** — Open VS Code on the pre-seeded Acme Fintech repo. Click into `src/api/webhooks/handler.ts`. Trailhead sidebar shows: *"Your team has 3 graduated prompts for webhook patterns. Most-reinforced: idempotent retry with backoff."* Demonstrator opens the integrated terminal, runs Claude Code, asks for a fix using the team's pattern, gets a team-aware answer.
 
-**2:20 — The autonomous wiki update (30s)** — Still in VS Code, with Claude Code in the integrated terminal. Demonstrator says: *"actually we always use exponential backoff with jitter here, that's our convention."* Two things may happen, indistinguishable to the audience: (a) Claude Code calls `wiki.update_learnings` directly, or (b) the Stop hook fires after the response and extracts the learning. Either way, the MCP server reports: *"This insight matches a draft from yesterday — reinforcing. Counter: 3/3 → promoted to durable."* Cut to the sidebar — the new durable learning appears. *"This is how the team brain grows itself. No one had to remember to write it down."*
+**2:20 — The autonomous wiki update (30s)** — Still in VS Code, with Claude Code in the integrated terminal. Demonstrator says: *"actually we always use exponential backoff with jitter here, that's our convention."* Claude Code calls `wiki.update_learnings`, and the MCP server reports: *"This insight matches a draft from yesterday — reinforcing. Counter: 3/3 → promoted to durable."* Cut to the sidebar — the new durable learning appears. *"This is how the team brain grows itself. No one had to remember to write it down."*
 
 **2:50 — Close (10s)** — Cut back to dashboard. Skill arc visibly ticks up — driven by the real `/score` writes from the demonstrator's prompts in the last 2 minutes. *"We didn't build another AI tool. We built the coach that turns your team's work into a curriculum, makes prompting visible without surveillance, and proves L1→L2 progression with real metrics."*
 
@@ -473,7 +447,7 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 
 ## 14. Mentor pitch — 7 sentences
 
-> Engineers have been prompting AI for two years and almost none have gotten better at it — because they've literally never seen the rubric for a strong prompt. That's the L1→L2 gap the brief calls the hardest unsolved transition. Trailhead is a coach that develops prompting craft using your team's actual work as the curriculum — not abstract advice from a blog. When you draft a prompt, we live-score it on five measurable dimensions and show you what's missing; when you're done, we show you a Prompt Diff against your team's skilled version so you can see exactly which dimensions you missed. The team's curriculum grows itself from real reuse, maintained by Claude Code mid-conversation through both an MCP tool and a deterministic Stop hook, so it never goes stale like every CLAUDE.md before it. Our KPIs are per-engineer skill progression and team-level reuse rate — behavioral metrics, not engineering ones. The brief literally says we don't even need to use AI to win as long as we drive adoption; our scoring rubric is concrete enough that a human reviewer could apply it — we use Gemini Flash because it's faster, not because it's the product.
+> Engineers have been prompting AI for two years and almost none have gotten better at it — because they've literally never seen the rubric for a strong prompt. That's the L1→L2 gap the brief calls the hardest unsolved transition. Trailhead is a coach that develops prompting craft using your team's actual work as the curriculum — not abstract advice from a blog. When you draft a prompt, we live-score it on five measurable dimensions and show you what's missing; when you're done, we show you a Prompt Diff against your team's skilled version so you can see exactly which dimensions you missed. The team's curriculum grows itself from real reuse, maintained by Claude Code mid-conversation through an MCP tool, so it never goes stale like every CLAUDE.md before it. Our KPIs are per-engineer skill progression and team-level reuse rate — behavioral metrics, not engineering ones. The brief literally says we don't even need to use AI to win as long as we drive adoption; our scoring rubric is concrete enough that a human reviewer could apply it — we use Gemini Flash because it's faster, not because it's the product.
 
 ---
 
@@ -489,7 +463,7 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 > *"Score-card never blocks send. Score ≥ 7 → it doesn't even highlight. Power users see zero friction. We earn the right to coach by being passive about it, and the user controls the threshold. The default mode is invisible to anyone who is already prompting well."*
 
 **"Copilot does this configured well."**
-> *"Copilot's instructions file is static reference and dies in 8 weeks because someone has to maintain it. We're a coach that develops the engineer, not just the AI. The configuration-decay problem that kills every `copilot-instructions.md` and `.cursorrules` — we own that loop structurally through the reinforcement counter and the Stop hook."*
+> *"Copilot's instructions file is static reference and dies in 8 weeks because someone has to maintain it. We're a coach that develops the engineer, not just the AI. The configuration-decay problem that kills every `copilot-instructions.md` and `.cursorrules` — we own that loop structurally through the reinforcement counter and the MCP tool that updates the wiki mid-conversation."*
 
 **"Why won't engineers ignore the coach?"**
 > *"Coaching surfaces are passive and respect flow. The score-card never highlights when you're already prompting well. The VS Code pre-prompt nudge is a glance, not a form. Skill arc is your private trajectory. We never interrupt and never judge — that's why it survives."*
@@ -501,7 +475,7 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 > *"Code never leaves the user's repo unless they explicitly attach it. The prompt content does — but we acknowledge prompts often contain code (snippets, stack traces, function bodies). That's why Enterprise tier scores locally with no cloud round-trip and stores the wiki in the customer's VPC. Hackathon is cloud-stored. No conversation logs anywhere — we capture distilled learnings, not transcripts. There's no surveillance vector because there's no log to surveil."*
 
 **"How does an enterprise install this — does every dev edit a JSON file?"**
-> *"For the hackathon, yes — `npx trailhead-mcp init` writes the `.claude/settings.json` and `.mcp.json` entries. For production we ship a one-click installer for VS Code and a CLI for headless environments. The install path is engineering-friendly, not user-hostile."*
+> *"For the hackathon, yes — `npx trailhead-mcp init` writes the `~/.claude.json` MCP entry and (by default) the always-on coach directive in `./CLAUDE.md`. For production we ship a one-click installer for VS Code and a CLI for headless environments. The install path is engineering-friendly, not user-hostile."*
 
 ---
 
@@ -515,11 +489,9 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 | Browser extension | Plasmo (TypeScript) | Best-in-class extension framework |
 | VS Code extension | TypeScript + VSCode API + WebView for sidebar | Standard; works alongside any AI chat in VS Code |
 | MCP server | Node + TypeScript, MCP SDK | Standalone binary; user registers in `.mcp.json` for Claude Code / Claude Desktop |
-| Stop hook | Bash + Node (one-file script) | Reads JSON from stdin, calls Gemma 4 31B for learning extraction, POSTs to `/wiki/propose`. Registered in `.claude/settings.json`. |
-| Demo AI in VS Code | Claude Code (CLI in integrated terminal) | Best MCP support; hooks fire deterministically; visible alongside our extension in one window |
+| Demo AI in VS Code | Claude Code (CLI in integrated terminal) | Best MCP support; visible alongside our extension in one window |
 | Coach scoring | Gemini 2.5 Flash with `responseSchema` JSON mode and `thinkingBudget=0` | ~1s, schema-enforced output, free tier covers demo |
 | Topic extraction (`/diff`) | Gemini 2.5 Flash with enum-constrained `responseSchema` | Single round-trip, deterministic shape |
-| Stop-hook learning extraction | Gemma 4 31B (thinking model) | One call per assistant turn — quality > latency. Chain-of-thought boosts recall on subtle conventions. |
 | Prompt Diff narrative | Gemini 2.5 Flash | Originally Gemma 4 31B for richer narrative; flipped to Flash because compounding 4 LLM calls put `/diff` over budget on free-tier quotas. Single-line constant in `packages/scoring/models.ts` to swap back when paid quota lands. |
 | LLM provider | Google AI Studio (Gemini API) | Single env var `GEMINI_API_KEY`. Both providers wired so swapping models is a one-line change in `packages/scoring/models.ts`. |
 | Auth | Hardcoded team token (hackathon) → Clerk (post) | Simplest possible |
@@ -530,9 +502,9 @@ Click "Have Claude clarify." Augmented prompt sends. Claude responds asking 2 cl
 - 1 Vercel deployment (Next.js dashboard)
 - 1 browser extension (Plasmo dev build, side-loaded into Chrome)
 - 1 VS Code extension (sideloaded VSIX)
-- 1 standalone MCP server binary + Stop hook script (registered via `npx trailhead-mcp init`)
+- 1 standalone MCP server binary (registered via `npx trailhead-mcp init`)
 
-Six artifacts. Each is a single service or single file with no internal complexity. The MCP server, Stop hook, and VS Code extension share a TypeScript codebase but ship as separate artifacts.
+Five artifacts. Each is a single service or single file with no internal complexity. The MCP server and VS Code extension share a TypeScript codebase but ship as separate artifacts.
 
 ---
 
@@ -540,7 +512,7 @@ Six artifacts. Each is a single service or single file with no internal complexi
 
 For mentors / judges who want technical depth, the impressive elements are:
 
-1. **MCP integration with autonomous tool calls + a deterministic Stop hook backstop** — the AI itself updates the wiki mid-conversation (MCP path), AND a Claude Code Stop hook backstops every turn so the demo never depends on the model choosing to call the tool. Most teams won't ship working MCP, let alone the dual-path reliability layer.
+1. **MCP integration with autonomous tool calls** — the AI itself updates the wiki mid-conversation by calling `wiki.update_learnings`. Most hackathon teams won't ship working MCP at all.
 2. **Browser extension that scores prompts live on Claude.ai with a 5-dimension rubric** — every keystroke gets graded in real time, and the user sees what they're missing in plain English. Few hackathon teams will have built one.
 3. **Real prompt scoring with Gemini 2.5 Flash at 250ms debounce** — running an LLM on every typed sentence with `responseSchema` JSON-mode enforcement is non-trivial; we make it cheap (free tier covers the demo) and never block the user.
 4. **Cross-platform reach demonstrated live** — browser + IDE both working in the same demo proves the architecture, not just the slide.
@@ -563,7 +535,7 @@ These need a decision before/during the build, not after:
 
 1. **The Gemini Flash scoring prompt template (5 dimensions)** — needs careful crafting and few-shot examples. Lock in hour 4 so backend can use it. The `responseSchema` carries the shape; the system prompt carries the rubric.
 2. **The Socratic Mode augmentation template** — what exact text to inject when user opts into "Have Claude clarify". Tested with Claude to make sure it complies. Lock by hour 6.
-3. **The Stop hook learning-extraction prompt** — the hook calls Gemma 4 31B with this prompt to decide whether the assistant's turn contained a teamwide learning. False positives = wiki spam; false negatives = miss the demo moment. Lock by hour 6.
+3. **The MCP `wiki.update_learnings` tool description** — Claude Code reads it to decide when to fire. Too eager = wiki spam; too cautious = miss the demo moment. Lock by hour 6.
 4. **The topic-extraction prompt for Prompt Diff** — used to find the closest matching graduated prompt. Misclassification = empty diff. Lock by hour 8.
 5. **Demo seed data content** — the 30 captures, 15 learnings, 8 prompts need to look genuinely real. One person should own this end-to-end (not the engineers building features).
 6. **Fallback recordings** — for every live beat, have a screen recording ready in case it breaks during the pitch. Record initial pass at hour 18, refresh at hour 22.
@@ -579,8 +551,7 @@ These need a decision before/during the build, not after:
 | `/score` latency makes the textarea feel laggy | 250ms debounce; cache system prompt; same-prompt-hash dedup on client; show stale score with a spinner if a new score is in flight. |
 | `/score` rate-limits or 500s | Browser ext fails open: no card, send proceeds unchanged. **Never block the user.** |
 | Empty wiki on demo | Pre-seed; allocate 3 dedicated hours. |
-| MCP autonomous call doesn't fire reliably | **Stop hook backstops every turn**, fires deterministically. Even if Claude Code skips the MCP call, the hook extracts and POSTs to `/wiki/propose`. Server-side dedup ensures no double-counting. |
-| Stop hook script crashes or has a bug | Hook script wrapped in try/catch; failures log to stderr (Claude Code doesn't surface them as user-visible errors, so a crash is silent). Test extensively against Claude Code by hour 14. |
+| MCP autonomous call doesn't fire reliably | Tune the `wiki.update_learnings` tool description so Claude Code knows when to call it. Rehearse the demo trigger phrase. If it still misses on stage, the demonstrator can tell Claude Code to call it explicitly — the dramatic moment lands either way. |
 | Skill_observation writes spam the dashboard during demo | Cap to one observation per (user, dimension, prompt-hash) within a 30s window. |
 | Time blowout in last 4 hours | Clear cut order in §2; ship the headline first, then add layers. |
 
@@ -595,8 +566,7 @@ The hackathon is "won" if these all hold during the live pitch:
 - [ ] At score ≥ 7, no friction — the user sees no card highlight on send
 - [ ] Each prompt sent writes a real `skill_observation` row visible on the dashboard
 - [ ] VS Code extension shows team-anchored example prompts in the sidebar for a real file, plus the score-card webview
-- [ ] An MCP-driven OR hook-driven autonomous wiki update fires during the demo with a visible counter increment + durable promotion
-- [ ] Claude Code Stop hook fires reliably and extracts learnings on every assistant turn (verified by manual testing before demo)
+- [ ] An MCP-driven autonomous wiki update fires during the demo with a visible counter increment + durable promotion
 - [ ] Dashboard shows skill arc + L1→L2 progression — partially seeded, with real `/score` writes from the demo prompts visibly layered on top
 - [ ] The 7-sentence pitch lands with "five measurable dimensions"; mentor defenses ready (including the new score-card, privacy, and install-UX answers)
 - [ ] No live demo failure mode — every beat has a fallback recording

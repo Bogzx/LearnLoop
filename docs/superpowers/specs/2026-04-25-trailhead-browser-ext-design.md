@@ -311,7 +311,7 @@ Hand-runnable; covers `/score`, `/capture`, `/diff`, `/wiki/recent`. Run before 
 - Iterate to *"in src/api/webhooks/handler.ts, fix the retry"* → score climbs to 6/10
 - Click *Have Claude clarify* → Claude asks 2-3 clarifying questions
 - Answer them → Claude gives a perfect answer
-- Wiki toast appears in-conversation (driven by Claude Code in the integrated terminal via the Stop hook)
+- Wiki toast appears in-conversation (driven by Claude Code in the integrated terminal calling `wiki.update_learnings` via MCP)
 - Click outcome rating on the assistant message → "Recorded" pill
 - Click "Compare to team" on a user message → diff panel expands inline
 - Pass criteria: every visible step in §13 fires; no UI lag >300 ms; no console errors with our extension id in the stack

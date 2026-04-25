@@ -81,8 +81,7 @@ CREATE TABLE IF NOT EXISTS skill_observations (
 ALTER TABLE skill_observations ADD COLUMN IF NOT EXISTS prompt_hash TEXT;
 CREATE INDEX IF NOT EXISTS idx_skill_obs_team_dim_ts ON skill_observations(team_id, dimension, ts);
 
--- Cheap-insurance index for the GET /wiki/recent polling query
--- (Person C's roadmap §3 calls this out explicitly).
+-- Cheap-insurance index for the GET /wiki/recent polling query.
 CREATE INDEX IF NOT EXISTS idx_learnings_last_seen_at ON learnings(last_seen_at DESC);
 
 -- Bootstrap the demo team. Hardcoded UUID so every artifact can reference it
