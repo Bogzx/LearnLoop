@@ -1,15 +1,31 @@
-// MCP tool implementations. Each tool wraps an HTTP call to the Trailhead API
-// in a stable structured-content shape. Errors are returned as
-// `isError: true` content blocks so the model can react instead of crashing.
+// Three hero MCP tools for Trailhead: `coach`, `wiki_lookup`, `wiki_save`.
+//
+// The previous 7-tool surface (coach_score / coach_augment / coach_examples /
+// wiki_update_learnings / wiki_context_for / wiki_rules_for / wiki_search) is
+// collapsed into 3 because Copilot Chat is markedly stingier than Claude Code
+// about firing tools when descriptions overlap. Three tools is the sweet
+// spot: one verb each (coach / lookup / save), no overlap, no jargon in the
+// short description.
+//
+// All previous behavior is preserved by routing inside each handler:
+//   coach        → /score (+ buildAugmentation when mode='augment')
+//   wiki_lookup  → /context  (file_path) and/or /search (query)
+//   wiki_save    → /wiki/propose
+//
+// Spec ref: docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md §3
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { buildAugmentation } from '@trailhead/scoring';
 import type { Dimension, MissingHints } from '@trailhead/shared';
-import type { ApiClient, ContextResponse, SearchResponse } from './api-client.ts';
+import type { ApiClient, ContextResponse, ExamplesResponse, SearchResponse } from './api-client.ts';
+import { runBootstrap } from './bootstrap.ts';
 
-// Question hints for the always-on coach (spec: 2026-04-25-demo-completion-design.md
-// §4.1). Hardcoded so coach_score doesn't need an extra LLM round-trip — keeps
-// the always-on directive cheap. v2 polish would let the LLM phrase its own.
+// User-id is hardcoded to 'demo' — the MCP server has no real auth, matching
+// the rest of the demo posture.
+const COACH_USER_ID = 'demo';
+
+// Hardcoded clarifying questions per dimension. Keeps coach's "next question"
+// path off the LLM hot path — one fewer round-trip to Gemini.
 const NEXT_QUESTION_BY_DIMENSION: Record<Dimension, string> = {
   context_loading:
     'Which file or function is this about?',
@@ -23,8 +39,6 @@ const NEXT_QUESTION_BY_DIMENSION: Record<Dimension, string> = {
     'What exactly should change? Name the function, error, or behavior.',
 };
 
-// Lowest-scoring dimension in the result drives the next clarifying question.
-// Returns null when nothing is below 7 (no coaching needed).
 function pickNextQuestion(
   dimensions: Record<Dimension, number>,
   missing: MissingHints,
@@ -34,8 +48,6 @@ function pickNextQuestion(
     .sort(([, a], [, b]) => a - b);
   if (!sorted.length) return null;
   const [lowestDim] = sorted[0]!;
-  // Prefer the API's missing hint (specific to the prompt) over the static
-  // fallback (generic, dimension-only).
   const hint = missing[lowestDim];
   const question = hint
     ? `${NEXT_QUESTION_BY_DIMENSION[lowestDim]} (gap: ${hint})`
@@ -43,9 +55,8 @@ function pickNextQuestion(
   return { dimension: lowestDim, question };
 }
 
-// All tools share the same error shape: a single `text` content block with
-// the message, plus `isError: true`. The model sees a tool error and can
-// decide to retry or apologize.
+// All tools share the same error shape so the model can react instead of
+// crashing.
 function asError(e: unknown) {
   const msg = e instanceof Error ? e.message : String(e);
   return {
@@ -54,8 +65,8 @@ function asError(e: unknown) {
   };
 }
 
-// Friendly text rendering for the layered HCL bundle. Used by both
-// wiki_context_for (full bundle) and wiki_rules_for (rules only).
+// Friendly text rendering for the layered HCL bundle. Used by wiki_lookup
+// when called with a file_path.
 function renderContext(res: ContextResponse, { rulesOnly = false }: { rulesOnly?: boolean } = {}): string {
   if (!res.nodes.length) return '(no wiki nodes match this path)';
   const blocks: string[] = [];
@@ -75,7 +86,7 @@ function renderContext(res: ContextResponse, { rulesOnly = false }: { rulesOnly?
   return blocks.join('\n\n');
 }
 
-// Client-side fallback search when the server doesn't ship /search yet.
+// Client-side fallback when the server's /search endpoint isn't deployed.
 function searchInContext(res: ContextResponse, query: string): SearchResponse {
   const q = query.toLowerCase();
   const items: SearchResponse['items'] = [];
@@ -92,23 +103,277 @@ function searchInContext(res: ContextResponse, query: string): SearchResponse {
   return { items };
 }
 
-export function registerWikiTools(server: McpServer, client: ApiClient): void {
-  // (1) wiki_update_learnings — the dramatic demo call.
+function renderSearch(res: SearchResponse, query: string): string {
+  if (!res.items.length) return `(no matches for "${query}")`;
+  return res.items
+    .map((it) => `- [${it.kind} @ ${it.node_path}] ${it.body}`)
+    .join('\n');
+}
+
+// Render team-graduated prompts (the curriculum) for a path. Surfaced when
+// wiki_lookup is called with a file_path so the LLM can offer "here's how the
+// team has phrased this before" without needing a second tool call. Replaces
+// the demo-completion §4.1 coach.examples passthrough.
+function renderExamples(res: ExamplesResponse): string {
+  if (!res.items.length) return '';
+  const blocks = res.items.map((it, i) => {
+    const header = `### ${i + 1}. ${it.topic ?? 'team prompt'} (${it.reuse_count}× reused @ ${it.node_path})`;
+    return `${header}\n${it.template}`;
+  });
+  return blocks.join('\n\n');
+}
+
+// Tool descriptions exported as constants so the replay harness can reuse
+// the EXACT same prose when calling Gemini. Iterating on descriptions is a
+// single-file change.
+export const COACH_DESC =
+  'Use BEFORE answering any code task (fix, add, refactor, implement, ' +
+  'change, debug). Scores the user prompt 0-10 on five dimensions and ' +
+  'returns a clarifying question to ask when the score is below 7. ' +
+  'Default mode="score". Use mode="augment" to rewrite the prompt ' +
+  'instead of scoring.';
+
+export const WIKI_LOOKUP_DESC =
+  'Use BEFORE writing code in a known file (pass file_path) OR when ' +
+  'the user asks "how do we handle X / what is our convention for Y" ' +
+  '(pass query). Returns the team\'s rules, durable learnings, and ' +
+  'graduated prompt examples for that path or topic. At least one of ' +
+  'file_path or query is required; pass both for a path-scoped search.';
+
+export const WIKI_SAVE_DESC =
+  'Use WHEN the user states a teamwide convention ("we always X", ' +
+  '"we never Y", "the rule here is Z"). Saves the convention to the ' +
+  'team wiki. Server dedupes by normalized body and increments a ' +
+  'reinforcement counter; an insight reinforced 3+ times is promoted ' +
+  'from `draft` to `durable`.';
+
+export const WIKI_BOOTSTRAP_DESC =
+  'Use WHEN the user asks to set up Trailhead for a new repo, bootstrap ' +
+  'the wiki, initialize the team wiki, or "/init" the project. Walks the ' +
+  'current working directory and creates one wiki node per source folder ' +
+  '(skipping node_modules, .git, build output). Idempotent — safe to re-run.';
+
+// =============================================================================
+// Hero tool 1: `coach`
+//
+// Replaces the legacy coach_score + coach_augment. `mode='score'` (default)
+// returns the per-dimension scores and a next clarifying question.
+// `mode='augment'` rewrites the prompt with a built-in coaching addendum
+// for one-shot improvement.
+// =============================================================================
+export function registerCoach(server: McpServer, client: ApiClient): void {
   server.registerTool(
-    'wiki_update_learnings',
+    'coach',
     {
-      description:
-        'Save a teamwide engineering convention to the wiki. Server dedupes by ' +
-        'normalized body and increments a reinforcement counter; an insight ' +
-        'reinforced 3+ times is promoted from `draft` to `durable`. Use this when ' +
-        "the user states a convention (e.g. 'we always use exponential backoff " +
-        "with jitter here').",
+      description: COACH_DESC,
+      inputSchema: {
+        prompt: z
+          .string()
+          .min(1)
+          .describe("The user's exact prompt, scored as-is."),
+        file_path: z
+          .string()
+          .optional()
+          .describe(
+            "Optional repo-relative file path the prompt refers to. Used to weight context_loading.",
+          ),
+        mode: z
+          .enum(['score', 'augment'])
+          .optional()
+          .describe('Default "score". Use "augment" to one-shot-rewrite the prompt instead.'),
+      },
+      outputSchema: {
+        mode: z.enum(['score', 'augment']),
+        // Populated when mode='score' (always on, even after augment for visibility).
+        overall: z.number().int().min(0).max(10),
+        dimensions: z.object({
+          goal_clarity: z.number().int().min(0).max(10),
+          specificity: z.number().int().min(0).max(10),
+          context_loading: z.number().int().min(0).max(10),
+          constraint_articulation: z.number().int().min(0).max(10),
+          output_specification: z.number().int().min(0).max(10),
+        }),
+        missing: z.record(z.string(), z.string()),
+        next_question: z
+          .object({ dimension: z.string(), question: z.string() })
+          .nullable(),
+        // Populated when mode='augment'.
+        augmented_prompt: z.string().optional(),
+        missing_dims: z.array(z.string()).optional(),
+      },
+    },
+    async ({ prompt, file_path, mode }) => {
+      try {
+        const resolvedMode = mode ?? 'score';
+        const score = await client.score({
+          prompt,
+          file_path,
+          user_id: COACH_USER_ID,
+        });
+        const next = pickNextQuestion(score.dimensions, score.missing);
+
+        if (resolvedMode === 'augment') {
+          const augmented = buildAugmentation({
+            original: prompt,
+            missing: score.missing as Record<string, string>,
+          });
+          const missingDims = Object.keys(score.missing);
+          return {
+            structuredContent: {
+              mode: 'augment' as const,
+              overall: score.overall,
+              dimensions: score.dimensions,
+              missing: score.missing as Record<string, string>,
+              next_question: next,
+              augmented_prompt: augmented,
+              missing_dims: missingDims,
+            },
+            content: [
+              {
+                type: 'text' as const,
+                text:
+                  `original overall: ${score.overall}/10\n` +
+                  `missing: ${missingDims.length ? missingDims.join(', ') : '(none — augmentation is a no-op)'}\n\n` +
+                  `--- augmented prompt ---\n${augmented}`,
+              },
+            ],
+          };
+        }
+
+        // mode === 'score'
+        const lines = [
+          `overall: ${score.overall}/10`,
+          ...(Object.entries(score.dimensions) as Array<[Dimension, number]>).map(
+            ([d, s]) => `  ${s >= 7 ? '✓' : '✗'} ${d}: ${s}`,
+          ),
+        ];
+        if (next) lines.push('', `next question: ${next.question}`);
+        else lines.push('', 'no coaching needed (score >= 7)');
+        return {
+          structuredContent: {
+            mode: 'score' as const,
+            overall: score.overall,
+            dimensions: score.dimensions,
+            missing: score.missing as Record<string, string>,
+            next_question: next,
+          },
+          content: [{ type: 'text' as const, text: lines.join('\n') }],
+        };
+      } catch (e) {
+        return asError(e);
+      }
+    },
+  );
+}
+
+// =============================================================================
+// Hero tool 2: `wiki_lookup`
+//
+// Replaces wiki_context_for + wiki_rules_for + wiki_search. At least one of
+// `file_path` and `query` is required; both can be combined for path-scoped
+// search.
+// =============================================================================
+export function registerWikiLookup(server: McpServer, client: ApiClient): void {
+  server.registerTool(
+    'wiki_lookup',
+    {
+      description: WIKI_LOOKUP_DESC,
+      inputSchema: {
+        file_path: z
+          .string()
+          .optional()
+          .describe("Repo-relative path, e.g. 'src/api/webhooks/handler.ts'."),
+        query: z
+          .string()
+          .optional()
+          .describe("Free-text search, e.g. 'webhook idempotency'."),
+        rules_only: z
+          .boolean()
+          .optional()
+          .describe("If true, omit durable learnings AND graduated prompts; return only the rules. Default false."),
+      },
+    },
+    async ({ file_path, query, rules_only }) => {
+      try {
+        if (!file_path && !query) {
+          return asError(new Error('wiki_lookup requires file_path, query, or both'));
+        }
+        const sections: string[] = [];
+
+        if (file_path) {
+          const ctx = await client.context(file_path);
+          sections.push(`# context for ${file_path}`);
+          sections.push(renderContext(ctx, { rulesOnly: rules_only ?? false }));
+
+          // Graduated team prompts for this path — rendered alongside rules so
+          // the LLM can suggest the team's prior phrasing without a second
+          // tool call. Skipped under rules_only.
+          if (!rules_only) {
+            try {
+              const examples = await client.examples(file_path);
+              const rendered = renderExamples(examples);
+              if (rendered) {
+                sections.push('# team-graduated prompts');
+                sections.push(rendered);
+              }
+            } catch {
+              // /examples 404 / 500 is non-fatal — rules + learnings are the
+              // primary surface; examples are bonus context.
+            }
+          }
+
+          if (query) {
+            // Path-scoped search: try /search first, fall back to client-side
+            // filter against the same context bundle.
+            let results: SearchResponse;
+            try {
+              results = await client.search(query, file_path);
+            } catch {
+              results = searchInContext(ctx, query);
+            }
+            sections.push(`# search results for "${query}" (scoped to ${file_path})`);
+            sections.push(renderSearch(results, query));
+          }
+        } else if (query) {
+          // Free-text search, unscoped.
+          let results: SearchResponse;
+          try {
+            results = await client.search(query);
+          } catch {
+            const ctx = await client.context('');
+            results = searchInContext(ctx, query);
+          }
+          sections.push(`# search results for "${query}"`);
+          sections.push(renderSearch(results, query));
+        }
+
+        return {
+          content: [{ type: 'text' as const, text: sections.join('\n\n') }],
+        };
+      } catch (e) {
+        return asError(e);
+      }
+    },
+  );
+}
+
+// =============================================================================
+// Hero tool 3: `wiki_save`
+//
+// Renames wiki_update_learnings. Same input shape, same server-side dedup +
+// reinforcement-counter behavior.
+// =============================================================================
+export function registerWikiSave(server: McpServer, client: ApiClient): void {
+  server.registerTool(
+    'wiki_save',
+    {
+      description: WIKI_SAVE_DESC,
       inputSchema: {
         node_path: z
           .string()
           .min(1)
           .describe(
-            "Folder path (relative, trailing slash) the learning applies to, e.g. 'src/api/webhooks/'.",
+            "Folder path the convention applies to, e.g. 'src/api/webhooks/'. Trailing slash is added if missing.",
           ),
         insight: z
           .string()
@@ -123,8 +388,6 @@ export function registerWikiTools(server: McpServer, client: ApiClient): void {
     },
     async ({ node_path, insight }) => {
       try {
-        // Normalize trailing slash defensively — the spec requires it for
-        // the HCL ancestor query but the model may forget.
         const path = node_path.endsWith('/') ? node_path : `${node_path}/`;
         const res = await client.wikiPropose({ node_path: path, insight });
         const summary =
@@ -142,302 +405,66 @@ export function registerWikiTools(server: McpServer, client: ApiClient): void {
       }
     },
   );
-
-  // (2) wiki_context_for — layered HCL bundle.
-  server.registerTool(
-    'wiki_context_for',
-    {
-      description:
-        "Return the team's hierarchical context for a given file path: " +
-        'concatenated node.md from each ancestor folder plus durable learnings, ' +
-        'ordered shallow → deep. Call this before answering a code question to ' +
-        "use the team's conventions.",
-      inputSchema: {
-        file_path: z
-          .string()
-          .min(1)
-          .describe(
-            "Repo-relative file path, e.g. 'src/api/webhooks/handler.ts'. The server resolves ancestor folders.",
-          ),
-      },
-    },
-    async ({ file_path }) => {
-      try {
-        const res = await client.context(file_path);
-        return {
-          content: [{ type: 'text' as const, text: renderContext(res) }],
-        };
-      } catch (e) {
-        return asError(e);
-      }
-    },
-  );
-
-  // (3) wiki_rules_for — same as context_for but rules-only.
-  server.registerTool(
-    'wiki_rules_for',
-    {
-      description:
-        "Return only the rules / node.md content from each ancestor folder " +
-        'of a given file path (no durable learnings). Lighter-weight than ' +
-        'wiki_context_for when you only need the conventions.',
-      inputSchema: {
-        file_path: z
-          .string()
-          .min(1)
-          .describe("Repo-relative file path, e.g. 'src/api/webhooks/handler.ts'."),
-      },
-    },
-    async ({ file_path }) => {
-      try {
-        const res = await client.context(file_path);
-        return {
-          content: [
-            { type: 'text' as const, text: renderContext(res, { rulesOnly: true }) },
-          ],
-        };
-      } catch (e) {
-        return asError(e);
-      }
-    },
-  );
-
-  // (4) wiki_search — ILIKE on learnings/rules. Falls back to client-side
-  // filter against wiki_context_for output if /search isn't deployed.
-  server.registerTool(
-    'wiki_search',
-    {
-      description:
-        "Search the team's wiki rules and durable learnings for a query string. " +
-        "Use to recall a known convention without specifying a path (e.g. 'how do " +
-        "we handle webhook idempotency').",
-      inputSchema: {
-        query: z.string().min(1).describe('Free-text search query.'),
-        scope: z
-          .string()
-          .optional()
-          .describe(
-            "Optional folder scope, e.g. 'src/api/'. If omitted, searches the whole wiki.",
-          ),
-      },
-    },
-    async ({ query, scope }) => {
-      try {
-        let result: SearchResponse;
-        try {
-          result = await client.search(query, scope);
-        } catch {
-          // /search isn't live yet — fall back to context-walk + ILIKE.
-          const ctx = await client.context(scope ?? '');
-          result = searchInContext(ctx, query);
-        }
-        const lines = result.items.map(
-          (it) => `- [${it.kind} @ ${it.node_path}] ${it.body}`,
-        );
-        const text = lines.length
-          ? lines.join('\n')
-          : `(no matches for "${query}")`;
-        return { content: [{ type: 'text' as const, text }] };
-      } catch (e) {
-        return asError(e);
-      }
-    },
-  );
 }
 
 // =============================================================================
-// Coach tools — spec: 2026-04-25-demo-completion-design.md §4
+// Hero tool 4: `wiki_bootstrap`
 //
-// These tools mirror the browser-extension coaching loop on the MCP surface.
-// The always-on directive in CLAUDE.md (written by `bin/init.ts --auto-coach`)
-// instructs the host LLM to call `coach_score` before answering any code
-// task and to ask the returned `next_question` if the score is < 7.
+// Spin up a fresh wiki for a new repo. Walks the MCP server's working
+// directory (where Claude Code / Copilot spawned us — usually the user's
+// project root), upserts one node per source folder, optionally seeds
+// body_md from CLAUDE.md or .github/copilot-instructions.md.
 //
-// User-id is hardcoded to 'demo' to match the rest of the demo posture; the
-// MCP server has no real auth.
+// Safe to re-run: paths that already exist are not duplicated, and existing
+// non-empty body_md is not overwritten.
 // =============================================================================
-
-const COACH_USER_ID = 'demo';
-
-export function registerCoachTools(server: McpServer, client: ApiClient): void {
-  // (1) coach_score — score the user's prompt and surface the lowest-scoring
-  // dimension as a clarifying question for the host LLM to ask the user.
+export function registerWikiBootstrap(server: McpServer, client: ApiClient): void {
   server.registerTool(
-    'coach_score',
+    'wiki_bootstrap',
     {
-      description:
-        "Score a developer's draft prompt on five dimensions (goal_clarity, " +
-        'specificity, context_loading, constraint_articulation, ' +
-        'output_specification, each 0-10). Returns overall, per-dimension scores, ' +
-        'missing-hints, and a `next_question` the LLM should ask the user when ' +
-        'overall < 7. When overall >= 7, `next_question` is null and the LLM ' +
-        'should proceed without coaching.',
+      description: WIKI_BOOTSTRAP_DESC,
       inputSchema: {
-        prompt: z
-          .string()
-          .min(1)
-          .describe("The user's draft prompt, scored as-is."),
-        file_path: z
-          .string()
+        paths: z
+          .array(z.string())
           .optional()
           .describe(
-            "Optional repo-relative file path the prompt refers to, e.g. 'src/api/webhooks/handler.ts'. Used by the scorer to weight context_loading.",
+            "Optional explicit folder list, e.g. ['src/api/', 'src/db/']. " +
+              'If omitted, the server walks its cwd and auto-discovers source folders.',
+          ),
+        seed_from_files: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true (default), seed the wiki's root node from ./CLAUDE.md " +
+              'and ./.github/copilot-instructions.md when they exist.',
           ),
       },
       outputSchema: {
-        overall: z.number().int().min(0).max(10),
-        dimensions: z.object({
-          goal_clarity: z.number().int().min(0).max(10),
-          specificity: z.number().int().min(0).max(10),
-          context_loading: z.number().int().min(0).max(10),
-          constraint_articulation: z.number().int().min(0).max(10),
-          output_specification: z.number().int().min(0).max(10),
-        }),
-        missing: z.record(z.string(), z.string()),
-        next_question: z
-          .object({
-            dimension: z.string(),
-            question: z.string(),
-          })
-          .nullable(),
+        nodes_created: z.number().int(),
+        nodes_total: z.number().int(),
+        paths_submitted: z.array(z.string()),
       },
     },
-    async ({ prompt, file_path }) => {
+    async ({ paths, seed_from_files }) => {
       try {
-        const res = await client.score({
-          prompt,
-          file_path,
-          user_id: COACH_USER_ID,
+        const { paths: submitted, response } = await runBootstrap(client, {
+          paths,
+          seedFromFiles: seed_from_files !== false,
         });
-        const next = pickNextQuestion(res.dimensions, res.missing);
-        const summaryLines = [
-          `overall: ${res.overall}/10`,
-          ...(Object.entries(res.dimensions) as Array<[Dimension, number]>).map(
-            ([d, s]) => `  ${s >= 7 ? '✓' : '✗'} ${d}: ${s}`,
-          ),
-        ];
-        if (next) {
-          summaryLines.push('', `next question: ${next.question}`);
-        } else {
-          summaryLines.push('', 'no coaching needed (score >= 7)');
-        }
+        const summary =
+          `Wiki bootstrapped: ${response.nodes_created} new, ` +
+          `${response.nodes.length - response.nodes_created} already existed. ` +
+          `Total: ${response.nodes.length} nodes across ${submitted.length} paths.`;
         return {
           structuredContent: {
-            overall: res.overall,
-            dimensions: res.dimensions,
-            missing: res.missing as Record<string, string>,
-            next_question: next,
-          },
-          content: [{ type: 'text' as const, text: summaryLines.join('\n') }],
-        };
-      } catch (e) {
-        return asError(e);
-      }
-    },
-  );
-
-  // (2) coach_examples — surface the team's graduated prompts for a path.
-  // Lets the LLM offer "here's how the team has handled this before" before
-  // asking the user to refine.
-  server.registerTool(
-    'coach_examples',
-    {
-      description:
-        "Return the team's top graduated prompts (templates) for a given file " +
-        "path, ranked by reuse_count. Use to show the user how the team has " +
-        'phrased similar requests before.',
-      inputSchema: {
-        file_path: z
-          .string()
-          .min(1)
-          .describe("Repo-relative file path, e.g. 'src/api/webhooks/handler.ts'."),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(10)
-          .optional()
-          .describe('Max prompts to return (default 3).'),
-      },
-    },
-    async ({ file_path, limit }) => {
-      try {
-        const res = await client.examples(file_path);
-        const items = limit ? res.items.slice(0, limit) : res.items;
-        if (!items.length) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `(no graduated team prompts match ${file_path})`,
-              },
-            ],
-          };
-        }
-        const blocks = items.map((it, i) => {
-          const header = `### ${i + 1}. ${it.topic ?? 'team prompt'} (${it.reuse_count}× reused @ ${it.node_path})`;
-          return `${header}\n${it.template}`;
-        });
-        return {
-          content: [{ type: 'text' as const, text: blocks.join('\n\n') }],
-        };
-      } catch (e) {
-        return asError(e);
-      }
-    },
-  );
-
-  // (3) coach_augment — return the prompt rewritten with a coaching addendum
-  // that asks the AI itself to clarify before answering. The MCP equivalent
-  // of the browser ext's "Have Claude clarify" button. Useful when the user
-  // wants the LLM to refine the prompt mechanically rather than answer
-  // clarifying questions interactively.
-  server.registerTool(
-    'coach_augment',
-    {
-      description:
-        "Rewrite the user's prompt to ask the AI to first clarify with 2-3 " +
-        'questions before answering. Mechanical equivalent of the browser ' +
-        'extension\'s "Have Claude clarify" button. Use when the user wants ' +
-        'a one-shot improvement instead of multi-turn coaching.',
-      inputSchema: {
-        prompt: z
-          .string()
-          .min(1)
-          .describe('The original prompt to augment.'),
-        file_path: z
-          .string()
-          .optional()
-          .describe('Optional repo-relative file path the prompt refers to.'),
-      },
-      outputSchema: {
-        augmented_prompt: z.string(),
-        missing_dims: z.array(z.string()),
-        original_overall: z.number().int().min(0).max(10),
-      },
-    },
-    async ({ prompt, file_path }) => {
-      try {
-        const score = await client.score({
-          prompt,
-          file_path,
-          user_id: COACH_USER_ID,
-        });
-        const augmented = buildAugmentation({
-          original: prompt,
-          missing: score.missing as Record<string, string>,
-        });
-        const missingDims = Object.keys(score.missing);
-        return {
-          structuredContent: {
-            augmented_prompt: augmented,
-            missing_dims: missingDims,
-            original_overall: score.overall,
+            nodes_created: response.nodes_created,
+            nodes_total: response.nodes.length,
+            paths_submitted: submitted,
           },
           content: [
             {
               type: 'text' as const,
-              text: `original overall: ${score.overall}/10\nmissing: ${missingDims.length ? missingDims.join(', ') : '(none — augmentation is a no-op)'}\n\n--- augmented prompt ---\n${augmented}`,
+              text: `${summary}\n\nPaths:\n${submitted.map((p) => `  - ${p}`).join('\n')}`,
             },
           ],
         };
@@ -446,4 +473,12 @@ export function registerCoachTools(server: McpServer, client: ApiClient): void {
       }
     },
   );
+}
+
+// Convenience: register all hero tools at once.
+export function registerHeroTools(server: McpServer, client: ApiClient): void {
+  registerCoach(server, client);
+  registerWikiLookup(server, client);
+  registerWikiSave(server, client);
+  registerWikiBootstrap(server, client);
 }
