@@ -237,6 +237,12 @@ export interface CoachNextRoundInputs {
   original_dimensions: DimensionScores;
   previous_dimensions: DimensionScores;
   round: number;            // the round number to pass back next call
+  // Opaque base64 JSON of the four fields above. The MCP tool can echo
+  // ONLY this token on the next /coach call and the server reconstructs
+  // the same state — useful because LLMs sometimes drop one of the four
+  // explicit fields, which silently restarts the loop at round 1. Both
+  // shapes accepted; token wins when both are present.
+  round_token: string;
 }
 
 export interface CoachRequest {
@@ -247,10 +253,13 @@ export interface CoachRequest {
 
   // Round-state inputs — required from round 2+ for progress tracking, and
   // from `mode: 'skip_reveal'` for rendering the strong-rewrite reveal.
+  // Pass either the four fields below OR `round_token` (echoed verbatim
+  // from the previous response's next_round_inputs.round_token).
   original_prompt?: string;
   original_dimensions?: DimensionScores;
   previous_dimensions?: DimensionScores;
   round?: number;            // 1-indexed; server clamps to [1, 5]
+  round_token?: string;      // shorthand for the four fields above
 
   // Optional team-wiki context, same semantics as ScoreRequest.context_path.
   context_path?: string;

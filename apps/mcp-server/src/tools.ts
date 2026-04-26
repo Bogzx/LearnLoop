@@ -48,6 +48,25 @@ function asError(e: unknown) {
   };
 }
 
+// Strip the per-file "## Source" embed that rich-bootstrap writes into a
+// file node's body_md. The host LLM already has Read access to the file;
+// the embed is a frozen snapshot from bootstrap time and inflates response
+// size by 5-10× without adding new signal. Removed at render so we don't
+// have to re-bootstrap to get the win.
+function stripSourceEmbed(md: string): string {
+  return md.replace(/\n## Source[\s\S]*?(?=\n## |$)/g, '');
+}
+
+// Trim the layered HCL bundle to the requested depth. 'file' → only the
+// deepest node (typically the file itself). 'folder' → file + immediate
+// parent folder. 'full' → all ancestors including root narrative.
+type LookupDepth = 'file' | 'folder' | 'full';
+function trimNodesByDepth<T>(nodes: T[], depth: LookupDepth): T[] {
+  if (depth === 'full' || nodes.length <= 1) return nodes;
+  const take = depth === 'file' ? 1 : 2;
+  return nodes.slice(-take);
+}
+
 // Friendly text rendering for the layered HCL bundle. Used by wiki_lookup
 // when called with a file_path.
 function renderContext(res: ContextResponse, { rulesOnly = false }: { rulesOnly?: boolean } = {}): string {
@@ -55,7 +74,7 @@ function renderContext(res: ContextResponse, { rulesOnly = false }: { rulesOnly?
   const blocks: string[] = [];
   for (const n of res.nodes) {
     const header = `## ${n.path}`;
-    const body = n.body_md.trim();
+    const body = stripSourceEmbed(n.body_md).trim();
     const learnings = rulesOnly
       ? []
       : n.durable_learnings.map(
@@ -86,10 +105,27 @@ function searchInContext(res: ContextResponse, query: string): SearchResponse {
   return { items };
 }
 
+// Window the body around the first match so a 5KB rule body doesn't dump
+// in full. Falls back to the head when the query isn't a literal substring
+// (e.g. /search returned a node because the query matched its path).
+const SEARCH_SNIPPET_WINDOW = 240;
+function snippet(body: string, query: string, window = SEARCH_SNIPPET_WINDOW): string {
+  const trimmed = body.replace(/\s+/g, ' ').trim();
+  if (trimmed.length <= window) return trimmed;
+  const idx = trimmed.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return `${trimmed.slice(0, window).trim()}…`;
+  const half = Math.floor(window / 2);
+  const start = Math.max(0, idx - half);
+  const end = Math.min(trimmed.length, start + window);
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < trimmed.length ? '…' : '';
+  return `${prefix}${trimmed.slice(start, end).trim()}${suffix}`;
+}
+
 function renderSearch(res: SearchResponse, query: string): string {
   if (!res.items.length) return `(no matches for "${query}")`;
   return res.items
-    .map((it) => `- [${it.kind} @ ${it.node_path}] ${it.body}`)
+    .map((it) => `- [${it.kind} @ ${it.node_path}] ${snippet(it.body, query)}`)
     .join('\n');
 }
 
@@ -126,19 +162,14 @@ export const COACH_DESC =
   'educational coaching loop. The tool returns { proceed, text, ' +
   'next_round_inputs? }: when proceed=false, relay text VERBATIM ' +
   "and call coach again with the user's reply concatenated to the " +
-  'prompt and the four next_round_inputs fields echoed back; when ' +
-  'proceed=true, relay any non-empty text and produce your answer. ' +
-  "Use mode='skip_reveal' if the user dismisses coaching mid-loop. " +
-  'GRADUATION ANNOUNCEMENT: when proceed=true AND mode=\'score\' AND ' +
-  'overall>=7, you MUST append exactly one short sentence to your reply ' +
-  "telling the user their prompt was strong enough to join the team's " +
-  'graduated prompt library — for example: "Your prompt scored ' +
-  '{overall}/10 and joined your team\'s library; future prompts in ' +
-  'this folder will be coached against it." The server auto-promotes ' +
-  'silently in the background, so this announcement is the only signal ' +
-  'the user gets that the library grew from their work — never skip it. ' +
-  'NEVER skip this tool to "save time" — the score-arc IS the user-' +
-  'facing product.';
+  'prompt and the previous next_round_inputs.round_token echoed ' +
+  'back as the new `round_token` argument (one field, less surface ' +
+  'for the LLM to drop than the four-field shape). When proceed=true, ' +
+  'relay any non-empty text and produce your answer — the server ' +
+  'embeds the graduation banner in `text` itself when applicable, so ' +
+  'no extra sentence is needed. Use mode=\'skip_reveal\' if the user ' +
+  'dismisses coaching mid-loop. NEVER skip this tool to "save time" — ' +
+  'the score-arc IS the user-facing product.';
 
 export const WIKI_LOOKUP_DESC =
   'MANDATORY before reading source files, grepping the repo, or ' +
@@ -238,6 +269,14 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
           .max(5)
           .optional()
           .describe('Round 2+ only. Echoed from next_round_inputs.round. Server clamps to [1, 5].'),
+        round_token: z
+          .string()
+          .optional()
+          .describe(
+            'Round 2+ shorthand. Echo the `round_token` field from the previous response\'s next_round_inputs verbatim. ' +
+              'When set, the server reconstructs round state from this single value and ignores the four explicit fields ' +
+              '(original_prompt / original_dimensions / previous_dimensions / round) — fewer slots for an LLM to drop.',
+          ),
       },
       outputSchema: {
         proceed: z.boolean(),
@@ -252,6 +291,7 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
             original_dimensions: dimensionScoresSchema(),
             previous_dimensions: dimensionScoresSchema(),
             round: z.number().int(),
+            round_token: z.string(),
           })
           .optional(),
         augmented_prompt: z.string().optional(),
@@ -268,6 +308,7 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
           original_dimensions: input.original_dimensions,
           previous_dimensions: input.previous_dimensions,
           round: input.round,
+          round_token: input.round_token,
           user_id: COACH_USER_ID,
         });
 
@@ -324,46 +365,54 @@ export function registerWikiLookup(server: McpServer, client: ApiClient): void {
           .boolean()
           .optional()
           .describe("If true, omit durable learnings AND graduated prompts; return only the rules. Default false."),
+        depth: z
+          .enum(['file', 'folder', 'full'])
+          .optional()
+          .describe(
+            "Limits how many ancestor wiki nodes to include. " +
+              "'file' = deepest node only. 'folder' (DEFAULT) = file + immediate parent. " +
+              "'full' = whole ancestor chain (root narrative included). " +
+              "Use 'full' only when team-wide context is needed; the default is right for code tasks.",
+          ),
       },
     },
-    async ({ file_path, query, rules_only }) => {
+    async ({ file_path, query, rules_only, depth }) => {
       try {
         if (!file_path && !query) {
           return asError(new Error('wiki_lookup requires file_path, query, or both'));
         }
         const sections: string[] = [];
+        const resolvedDepth: LookupDepth = depth ?? 'folder';
 
         if (file_path) {
-          const ctx = await client.context(file_path);
+          // Fan out the three independent reads in parallel. /examples and
+          // /search failures are non-fatal: rules + learnings are the
+          // primary surface and we fall back to a client-side substring
+          // search over the context bundle when /search is unavailable.
+          const [ctxRaw, examplesRaw, searchRaw] = await Promise.all([
+            client.context(file_path),
+            !rules_only
+              ? client.examples(file_path).catch(() => null)
+              : Promise.resolve(null),
+            query ? client.search(query, file_path).catch(() => null) : Promise.resolve(null),
+          ]);
+
+          const ctx: ContextResponse = {
+            nodes: trimNodesByDepth(ctxRaw.nodes, resolvedDepth),
+          };
           sections.push(`# context for ${file_path}`);
           sections.push(renderContext(ctx, { rulesOnly: rules_only ?? false }));
 
-          // Graduated team prompts for this path — rendered alongside rules so
-          // the LLM can suggest the team's prior phrasing without a second
-          // tool call. Skipped under rules_only.
-          if (!rules_only) {
-            try {
-              const examples = await client.examples(file_path);
-              const rendered = renderExamples(examples);
-              if (rendered) {
-                sections.push('# team-graduated prompts');
-                sections.push(rendered);
-              }
-            } catch {
-              // /examples 404 / 500 is non-fatal — rules + learnings are the
-              // primary surface; examples are bonus context.
+          if (examplesRaw) {
+            const rendered = renderExamples(examplesRaw);
+            if (rendered) {
+              sections.push('# team-graduated prompts');
+              sections.push(rendered);
             }
           }
 
           if (query) {
-            // Path-scoped search: try /search first, fall back to client-side
-            // filter against the same context bundle.
-            let results: SearchResponse;
-            try {
-              results = await client.search(query, file_path);
-            } catch {
-              results = searchInContext(ctx, query);
-            }
+            const results = searchRaw ?? searchInContext(ctxRaw, query);
             sections.push(`# search results for "${query}" (scoped to ${file_path})`);
             sections.push(renderSearch(results, query));
           }

@@ -109,7 +109,7 @@ const HARNESS_TOOLS = [
   },
 ];
 
-const MODEL = process.env.HARNESS_MODEL ?? 'gemini-2.5-flash';
+const MODEL = process.env.HARNESS_MODEL ?? 'gemini-3-flash-preview';
 
 let cachedClient: GoogleGenAI | null = null;
 function client(): GoogleGenAI {
