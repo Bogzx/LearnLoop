@@ -55,12 +55,13 @@ import {
 } from '@trailhead/scoring';
 import { DEMO_TEAM_TOKEN, q, teamIdForToken, upsertNode, wipeTeamData } from './db.ts';
 import {
-  type CoachPhase,
-  coachScore,
+  acknowledgeProgress,
   extractTopic,
   improveCoach,
   overallScore,
+  rewriteForDims,
   scorePrompt,
+  summarizeCoaching,
   synthesizeDiff,
 } from './gemini.ts';
 import { tryPromotePrompt } from './prompt-promotion.ts';
@@ -275,81 +276,147 @@ function lowestDimBelow(dims: DimensionScores, threshold: number = 7): Dimension
   return pick;
 }
 
-// Fetch reference templates for the model's "style guidance" inline hint.
-// Topic-aware so we don't drift the user's theme; pulls up to `limit` top
-// graduated prompts whose `topic` matches the inferred topic of the user's
-// prompt. Returns an empty array when no same-topic templates exist —
-// model still emits an example using only team_context as guidance.
-async function fetchReferenceTemplates(
+// Wiki-first lookup: top graduated prompt in the file_path's ancestor nodes.
+// Prefers prompts authored by SOMEONE OTHER than `userId` so the user isn't
+// shown their own prompt back as the strong example. Self-authored rows are
+// still returned when no other-authored alternative exists — keeps the
+// single-user demo posture working.
+async function fetchTopGraduatedForPath(
   teamId: string,
-  filePath: string | undefined,
-  topic: string | null,
-  limit: number,
-): Promise<string[]> {
-  if (!topic) return [];
-  if (filePath) {
-    const ancestors = ancestorPaths(filePath);
-    if (ancestors.length === 0) return [];
-    const rows = await q<{ template: string }>(
-      `SELECT p.template
-         FROM prompts p
-         JOIN nodes n ON n.id = p.node_id
-        WHERE n.team_id = $1
-          AND n.path = ANY($2::text[])
-          AND p.status = 'graduated'
-          AND p.topic = $3
-        ORDER BY p.reuse_count DESC, length(n.path) DESC, p.id ASC
-        LIMIT $4`,
-      [teamId, ancestors, topic, limit],
-    );
-    return rows.map((r) => r.template);
-  }
+  filePath: string,
+  userId: string,
+): Promise<string | null> {
+  const ancestors = ancestorPaths(filePath);
+  if (ancestors.length === 0) return null;
+  const rows = await q<{ template: string }>(
+    `SELECT p.template
+       FROM prompts p
+       JOIN nodes n ON n.id = p.node_id
+      WHERE n.team_id = $1
+        AND n.path = ANY($2::text[])
+        AND p.status = 'graduated'
+      ORDER BY (p.author_user_id IS NULL OR p.author_user_id <> $3) DESC,
+               p.reuse_count DESC,
+               length(n.path) DESC
+      LIMIT 1`,
+    [teamId, ancestors, userId],
+  );
+  return rows.length ? rows[0]!.template : null;
+}
+
+// Wiki-first lookup: top graduated prompt across the team. Used when no
+// file_path is available. Same self-author preference as the path variant.
+async function fetchTopGraduatedForTeam(teamId: string, userId: string): Promise<string | null> {
   const rows = await q<{ template: string }>(
     `SELECT p.template
        FROM prompts p
        JOIN nodes n ON n.id = p.node_id
       WHERE n.team_id = $1
         AND p.status = 'graduated'
-        AND p.topic = $2
-      ORDER BY p.reuse_count DESC, p.id ASC
-      LIMIT $3`,
-    [teamId, topic, limit],
+      ORDER BY (p.author_user_id IS NULL OR p.author_user_id <> $2) DESC,
+               p.reuse_count DESC
+      LIMIT 1`,
+    [teamId, userId],
   );
-  return rows.map((r) => r.template);
+  return rows.length ? rows[0]!.template : null;
 }
 
-// Cheap topic inference — keyword match against the prompt 'topic' taxonomy
-// stored on graduated prompts. Zero LLM calls. Used to keep the inline
-// reference templates on the user's actual theme so the model's strong
-// example doesn't drift to a different topic. Returns null when nothing
-// matches → fetchReferenceTemplates returns [] → model writes the example
-// from team_context alone (no inline reference style).
-const TOPIC_KEYWORDS: { topic: string; pattern: RegExp }[] = [
-  { topic: 'retry',          pattern: /\b(retry|retries|retrying|retried|backoff)\b/i },
-  { topic: 'webhook',        pattern: /\b(webhook|webhooks|callback)\b/i },
-  { topic: 'auth',           pattern: /\b(auth|authentication|authenticated|login|signin|sign[- ]?in|token|tokens|jwt|credential|credentials|password|oauth)\b/i },
-  { topic: 'db_migration',   pattern: /\b(migration|migrations|migrate|migrating|alter table)\b/i },
-  { topic: 'error_handling', pattern: /\b(error|errors|exception|exceptions|throw|catch|fallback)\b/i },
-  { topic: 'logging',        pattern: /\b(log|logs|logging|logger|trace)\b/i },
-  { topic: 'testing',        pattern: /\b(test|tests|testing|spec|specs|fixture|fixtures)\b/i },
-  { topic: 'deployment',     pattern: /\b(deploy|deploying|deployment|release|rollout|ci\/cd|pipeline)\b/i },
-  { topic: 'refactor',       pattern: /\b(refactor|refactoring|cleanup|restructure|rename)\b/i },
-  { topic: 'performance',    pattern: /\b(performance|fast|slow|optimize|optimise|latency|throughput|p99|p95)\b/i },
-  { topic: 'schema',         pattern: /\b(schema|model|table|column|field)\b/i },
-  { topic: 'validation',     pattern: /\b(validate|validation|valid|invalid|sanitize)\b/i },
-];
+// Wiki-first → Gemini fallback. Hackathon simplification: we don't re-score
+// graduated prompts to filter for `target_dims`; the assumption is that a
+// graduated team prompt is already strong on most dims and seeing it
+// teaches the user something either way. If the wiki has nothing, fall
+// back to a Gemini rewrite that explicitly targets the named dimensions.
+//
+// Returns the example string AND the optional tip — the wiki path has no
+// tip (we just have the template), the Gemini fallback emits one alongside
+// the rewrite. Callers showing a single-dim teach block render the tip;
+// multi-dim callers (skip / no-progress) ignore it because one tip can't
+// honestly summarize several principles at once.
+async function getStrongExample(args: {
+  teamId: string;
+  userId: string;
+  prompt: string;
+  file_path?: string;
+  target_dims: Dimension[];
+  team_context: string | null;
+}): Promise<{ example: string; tip: string }> {
+  const wiki = args.file_path
+    ? await fetchTopGraduatedForPath(args.teamId, args.file_path, args.userId)
+    : await fetchTopGraduatedForTeam(args.teamId, args.userId);
+  if (wiki) return { example: wiki, tip: '' };
 
-function inferTopic(prompt: string): string | null {
-  for (const { topic, pattern } of TOPIC_KEYWORDS) {
-    if (pattern.test(prompt)) return topic;
+  const fallback = await rewriteForDims({
+    prompt: args.prompt,
+    target_dims: args.target_dims,
+    file_path: args.file_path,
+    team_context: args.team_context ?? undefined,
+  });
+  // Empty strings on Gemini failure — render block falls back accordingly.
+  return { example: fallback.rewritten_prompt, tip: fallback.tip };
+}
+
+// Library banner emitted on every /coach response that triggers prompt
+// promotion (overall >= 7 in mode=score). Lives in `text` so a forgetful
+// host LLM can't drop it — the previous "directive instructs the model to
+// append one sentence" approach was reliable only when the host remembered
+// the rule. This wording is the canonical one referenced in the directive.
+function renderLibraryBanner(overall: number): string {
+  return (
+    `Your prompt scored ${overall}/10 and joined your team's library; ` +
+    `future prompts in this folder will be coached against it.`
+  );
+}
+
+// Round-state token. Compresses the four `next_round_inputs` fields into a
+// single opaque base64url JSON blob. Round 2+ callers can echo only the
+// token instead of all four fields — fewer slots for an LLM to drop. Both
+// shapes are accepted on input; the token wins when both are present.
+type RoundState = {
+  original_prompt: string;
+  original_dimensions: DimensionScores;
+  previous_dimensions: DimensionScores;
+  round: number;
+};
+function encodeRoundToken(state: RoundState): string {
+  return Buffer.from(JSON.stringify(state), 'utf8').toString('base64url');
+}
+function decodeRoundToken(token: string): RoundState | null {
+  try {
+    const json = Buffer.from(token, 'base64url').toString('utf8');
+    const p = JSON.parse(json) as Partial<RoundState>;
+    if (
+      typeof p.original_prompt === 'string' &&
+      typeof p.round === 'number' &&
+      p.original_dimensions && typeof p.original_dimensions === 'object' &&
+      p.previous_dimensions && typeof p.previous_dimensions === 'object'
+    ) {
+      return p as RoundState;
+    }
+    return null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 app.post('/coach', async (c) => {
   const body = await c.req.json<CoachRequest>().catch(() => null);
   if (!body || typeof body.prompt !== 'string' || typeof body.user_id !== 'string') {
     return c.json({ error: 'bad_request' }, 400);
+  }
+
+  // Round-token shorthand. When present, decode and use as authoritative
+  // round state — overrides any individual field the caller also sent.
+  // Invalid tokens fall through to the four-field path with a warning.
+  if (body.round_token) {
+    const decoded = decodeRoundToken(body.round_token);
+    if (decoded) {
+      body.original_prompt = decoded.original_prompt;
+      body.original_dimensions = decoded.original_dimensions;
+      body.previous_dimensions = decoded.previous_dimensions;
+      body.round = decoded.round;
+    } else {
+      console.warn('[coach] received invalid round_token; falling back to explicit fields');
+    }
   }
 
   const mode: CoachMode = body.mode === 'augment' || body.mode === 'skip_reveal'
@@ -368,30 +435,60 @@ app.post('/coach', async (c) => {
     ? await renderTeamContext(teamId, contextPath)
     : null;
 
+  // 1. Score (always). Failure is fail-open: hand the LLM a "no coaching
+  //    this turn" signal and let it produce its answer with the original
+  //    prompt. Spec §7.
+  let scoreResult: { dimensions: DimensionScores; missing: Record<string, string> };
+  try {
+    const result = await scorePrompt({
+      prompt: body.prompt,
+      file_path: body.file_path,
+      team_context: teamContext ?? undefined,
+    });
+    scoreResult = { dimensions: result.dimensions, missing: result.missing as Record<string, string> };
+  } catch (err) {
+    console.warn('[api] /coach scorePrompt failed', err);
+    const zeros = Object.fromEntries(DIMENSIONS.map((d) => [d, 0])) as DimensionScores;
+    const res: CoachResponse = {
+      proceed: true,
+      mode,
+      overall: 0,
+      dimensions: zeros,
+      missing: {},
+      text: '',
+    };
+    return c.json(res);
+  }
+  const overall = overallScore(scoreResult.dimensions);
+
+  // Fail-open: scorePrompt does NOT throw on Gemini parse failures — it
+  // silently returns zeros + empty missing (see gemini.ts coerceScore).
+  // That signal is indistinguishable from a real all-zero score except by
+  // the empty `missing` object: a real-zero score from Gemini populates
+  // hints for the dims < 5. When we detect the zero+empty fingerprint,
+  // treat it as "Gemini failed, no coaching this turn" rather than
+  // pretending the user wrote a perfectly empty prompt. Spec §7.
+  const allZero = DIMENSIONS.every((d) => scoreResult.dimensions[d] === 0);
+  const noMissing = Object.keys(scoreResult.missing).length === 0;
+  if (allZero && noMissing) {
+    const res: CoachResponse = {
+      proceed: true,
+      mode,
+      overall: 0,
+      dimensions: scoreResult.dimensions,
+      missing: {},
+      text: '',
+    };
+    return c.json(res);
+  }
+
+  // 2. Skill_observation writes (same dedup as /score).
+  await writeSkillObservations(teamId, body.user_id, body.prompt, scoreResult.dimensions);
+
+  // 3. Branch on mode.
+
   // ---- Augment mode (legacy passthrough) -----------------------------------
-  // Augment doesn't need teach content — just score + template-based
-  // augmentation. Keep it on the existing scorePrompt path so we don't pay
-  // for the bigger coachScore schema when the caller asked for the
-  // simpler one-shot rewrite.
   if (mode === 'augment') {
-    let scoreResult: { dimensions: DimensionScores; missing: Record<string, string> };
-    try {
-      const result = await scorePrompt({
-        prompt: body.prompt,
-        file_path: body.file_path,
-        team_context: teamContext ?? undefined,
-      });
-      scoreResult = { dimensions: result.dimensions, missing: result.missing as Record<string, string> };
-    } catch (err) {
-      console.warn('[api] /coach scorePrompt failed', err);
-      const zeros = Object.fromEntries(DIMENSIONS.map((d) => [d, 0])) as DimensionScores;
-      const res: CoachResponse = {
-        proceed: true, mode, overall: 0, dimensions: zeros, missing: {}, text: '',
-      };
-      return c.json(res);
-    }
-    const overallA = overallScore(scoreResult.dimensions);
-    await writeSkillObservations(teamId, body.user_id, body.prompt, scoreResult.dimensions);
     const augmented = buildAugmentation({
       original: body.prompt,
       missing: scoreResult.missing,
@@ -399,7 +496,7 @@ app.post('/coach', async (c) => {
     const res: CoachResponse = {
       proceed: true,
       mode: 'augment',
-      overall: overallA,
+      overall,
       dimensions: scoreResult.dimensions,
       missing: scoreResult.missing,
       text: '',
@@ -409,137 +506,123 @@ app.post('/coach', async (c) => {
     return c.json(res);
   }
 
-  // ---- Coach modes (score + skip_reveal) — single-call path --------------
-  // Determine phase BEFORE calling Gemini, from request signals only. The
-  // model uses the phase to decide which conditional fields to emit, and
-  // for `mid_loop` it emits BOTH teach content AND a summary so the server
-  // can pick which to render once we know the actual score.
-  const round = clampRound(body.round);
-  const isRound1 = round === 1 || !body.original_prompt;
-  const phase: CoachPhase =
-    mode === 'skip_reveal' ? 'exit_skip' :
-    round >= COACH_MAX_ROUNDS ? 'exit_max_rounds' :
-    isRound1 ? 'teach' :
-    'mid_loop';
-
-  // Reference templates for inline style guidance — topic-aware so the
-  // example doesn't drift to a different theme. Reads only from DB, no LLM.
-  //
-  // GATED on contextPath: when the user did not select team context, no
-  // team templates leak into the example. This matches the gate on
-  // teamContext above — both team-derived inputs are off-by-default and
-  // only fire when the user opted in via the popup. Without this gate,
-  // inferTopic alone was pulling library templates and the model was
-  // regurgitating them verbatim.
-  const inferredTopic = contextPath
-    ? inferTopic(body.original_prompt ?? body.prompt)
-    : null;
-  const referenceTemplates = contextPath
-    ? await fetchReferenceTemplates(teamId, body.file_path, inferredTopic, 3)
-    : [];
-
-  // Single Gemini call. Returns score + missing + (conditionally)
-  // strong_example + tip + acknowledgment + summary. Fail-open inside the
-  // helper: any error returns zeros + empty fields.
-  const result = await coachScore({
-    prompt: body.prompt,
-    original_prompt: body.original_prompt,
-    file_path: body.file_path,
-    team_context: teamContext ?? undefined,
-    reference_templates: referenceTemplates,
-    previous_target_dim: body.previous_dimensions
-      ? lowestDimBelow(body.previous_dimensions, 7)
-      : null,
-    previous_dimensions: body.previous_dimensions,
-    original_dimensions: body.original_dimensions,
-    phase,
-  });
-  const dims = result.dimensions;
-  const missing = result.missing as Record<string, string>;
-  const overall = overallScore(dims);
-
-  // Same fail-open fingerprint as before (zeros + no missing == Gemini
-  // dropped the call, not a real all-zero score).
-  const allZero = DIMENSIONS.every((d) => dims[d] === 0);
-  const noMissing = Object.keys(missing).length === 0;
-  if (allZero && noMissing) {
-    const res: CoachResponse = {
-      proceed: true, mode, overall: 0, dimensions: dims, missing: {}, text: '',
-    };
-    return c.json(res);
-  }
-
-  await writeSkillObservations(teamId, body.user_id, body.prompt, dims);
-
-  // ---- Skip reveal mode rendering ------------------------------------------
+  // ---- Skip reveal mode ----------------------------------------------------
   if (mode === 'skip_reveal') {
-    const originalDims = body.original_dimensions ?? dims;
-    const text = result.strong_example
+    const originalDims = body.original_dimensions ?? scoreResult.dimensions;
+    // Dimensions we'd want to lift on the rewrite. Spec §5 picks dims that
+    // scored below 5; if the original is already above that bar, fall back
+    // to dims below 7 so the rewrite still has direction.
+    let dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 5);
+    if (dimsToImprove.length === 0) {
+      dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 7);
+    }
+    const originalPrompt = body.original_prompt ?? body.prompt;
+    // Run the rewrite and the closing summary in parallel — both are
+    // independent Gemini calls and the user is already waiting on the
+    // skip-reveal text. Each fails open to '' so a partial outage still
+    // produces a useful (if shorter) reveal.
+    const [strong, summary] = await Promise.all([
+      getStrongExample({
+        teamId,
+        userId: body.user_id,
+        prompt: originalPrompt,
+        file_path: body.file_path,
+        target_dims: dimsToImprove.length ? dimsToImprove : ['specificity'],
+        team_context: teamContext,
+      }),
+      summarizeCoaching({
+        original_prompt: originalPrompt,
+        final_prompt: body.prompt,
+        original_dimensions: originalDims,
+        final_dimensions: scoreResult.dimensions,
+        reason: 'skip',
+      }),
+    ]);
+    const text = strong.example
       ? renderSkipReveal({
-          strongRewrite: result.strong_example,
+          strongRewrite: strong.example,
           originalDimensions: originalDims,
           reason: 'skip',
-          summary: result.summary,
+          summary,
         })
       : '';
     const res: CoachResponse = {
       proceed: true,
       mode: 'skip_reveal',
       overall,
-      dimensions: dims,
-      missing,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
       text,
     };
     return c.json(res);
   }
 
-  // ---- Score mode rendering ------------------------------------------------
-  const lowest = lowestDimBelow(dims, 7);
+  // ---- Score mode (the main loop) ------------------------------------------
+  const round = clampRound(body.round);
+  const isRound1 = round === 1 || !body.original_prompt;
+  const lowest = lowestDimBelow(scoreResult.dimensions, 7);
 
-  // Round 1, score >=7 → silent fast path. Power users see no friction. We
-  // wasted a few tokens on the emitted strong_example/tip but kept the call
-  // count at 1 — net cost is still well under the previous two-call flow.
+  // Round 1, score >=7 → silent fast path. Power users see no friction.
   if (isRound1 && overall >= 7) {
     const res: CoachResponse = {
       proceed: true,
       mode: 'score',
       overall,
-      dimensions: dims,
-      missing,
-      text: '',
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      // The graduation banner ships in `text` itself so a forgetful host LLM
+      // can't drop the only signal that the team's library grew. Was
+      // previously delegated to a CLAUDE.md "append one sentence" rule that
+      // hosts sometimes ignored.
+      text: renderLibraryBanner(overall),
     };
+    // Fire-and-forget auto-promotion to the team's prompt library. Off the
+    // response path, fail-open inside tryPromotePrompt. MCP-only by call
+    // site (only /coach calls this — browser ext / VS Code ext don't).
     setImmediate(() => {
       void tryPromotePrompt({
         teamId,
+        userId: body.user_id,
         prompt: body.prompt,
         filePath: body.file_path ?? null,
-        dimensions: dims,
+        dimensions: scoreResult.dimensions,
       });
     });
     return c.json(res);
   }
 
-  // Round 1, score <7 → first teach block (using the strong_example + tip
-  // emitted by coachScore in this same call).
+  // Round 1, score <7 → first teach block.
   if (isRound1 && lowest) {
+    const strong = await getStrongExample({
+      teamId,
+      userId: body.user_id,
+      prompt: body.prompt,
+      file_path: body.file_path,
+      target_dims: [lowest],
+      team_context: teamContext,
+    });
     const text = renderTeachBlock({
       targetDim: lowest,
-      targetScore: dims[lowest],
-      strongExample: result.strong_example,
-      tip: result.tip,
+      targetScore: scoreResult.dimensions[lowest],
+      strongExample: strong.example,
+      tip: strong.tip,
     });
-    const next: CoachNextRoundInputs = {
+    const nextState: RoundState = {
       original_prompt: body.prompt,
-      original_dimensions: dims,
-      previous_dimensions: dims,
+      original_dimensions: scoreResult.dimensions,
+      previous_dimensions: scoreResult.dimensions,
       round: 2,
+    };
+    const next: CoachNextRoundInputs = {
+      ...nextState,
+      round_token: encodeRoundToken(nextState),
     };
     const res: CoachResponse = {
       proceed: false,
       mode: 'score',
       overall,
-      dimensions: dims,
-      missing,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
       text,
       next_round_inputs: next,
     };
@@ -548,116 +631,186 @@ app.post('/coach', async (c) => {
 
   // Round >=2 paths. Need original_prompt (we treated round 1 already).
   const originalPrompt = body.original_prompt!;
-  const originalDims = body.original_dimensions ?? dims;
+  const originalDims = body.original_dimensions ?? scoreResult.dimensions;
   const previousDims = body.previous_dimensions ?? originalDims;
   const previousOverall = overallScore(previousDims);
   const previousLowest = lowestDimBelow(previousDims, 7);
   const originalOverall = overallScore(originalDims);
 
-  // Score crossed 7 → success reveal (using the summary from coachScore).
+  // Score crossed 7 → success reveal.
   if (overall >= 7) {
-    const text = renderSuccessReveal({
-      originalPrompt,
-      finalPrompt: body.prompt,
-      originalOverall,
-      finalOverall: overall,
-      originalDimensions: originalDims,
-      finalDimensions: dims,
-      summary: result.summary,
+    const summary = await summarizeCoaching({
+      original_prompt: originalPrompt,
+      final_prompt: body.prompt,
+      original_dimensions: originalDims,
+      final_dimensions: scoreResult.dimensions,
+      reason: 'success',
     });
+    const text =
+      renderSuccessReveal({
+        originalPrompt,
+        finalPrompt: body.prompt,
+        originalOverall,
+        finalOverall: overall,
+        originalDimensions: originalDims,
+        finalDimensions: scoreResult.dimensions,
+        summary,
+      }) +
+      `\n\n${renderLibraryBanner(overall)}`;
     const res: CoachResponse = {
       proceed: true,
       mode: 'score',
       overall,
-      dimensions: dims,
-      missing,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
       text,
     };
+    // Fire-and-forget auto-promotion (round 2+ success). The user iterated
+    // through coaching and landed a >=7 prompt — promote the final form.
     setImmediate(() => {
       void tryPromotePrompt({
         teamId,
+        userId: body.user_id,
         prompt: body.prompt,
         filePath: body.file_path ?? null,
-        dimensions: dims,
+        dimensions: scoreResult.dimensions,
       });
     });
     return c.json(res);
   }
 
-  // No-progress detection — same logic as before.
+  // No-progress detection: the dim we were teaching about (= last round's
+  // lowest) did NOT improve, AND overall did not improve. We test the
+  // previously-targeted dim directly rather than checking `lowest` equality,
+  // because Gemini's tiebreakers can shuffle which 0-scored dim is "lowest"
+  // between rounds even when nothing material changed (this was the original
+  // failing case from the design spec — "fix the retry. it needs to be more
+  // accurate" leaves context_loading at 0 but the lowest tiebreaker drifts).
   const targetDimDidNotImprove = !!(
     previousLowest &&
-    dims[previousLowest] <= previousDims[previousLowest]
+    scoreResult.dimensions[previousLowest] <= previousDims[previousLowest]
   );
   if (targetDimDidNotImprove && overall <= previousOverall) {
-    const text = result.strong_example
+    let dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 5);
+    if (dimsToImprove.length === 0) {
+      dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 7);
+    }
+    // Parallel: rewrite + closing recap. Same fail-open posture as the
+    // skip-reveal branch — both helpers return '' on Gemini failure and the
+    // render fallback handles each independently.
+    const [strong, summary] = await Promise.all([
+      getStrongExample({
+        teamId,
+        userId: body.user_id,
+        prompt: originalPrompt,
+        file_path: body.file_path,
+        target_dims: dimsToImprove.length ? dimsToImprove : [lowest!],
+        team_context: teamContext,
+      }),
+      summarizeCoaching({
+        original_prompt: originalPrompt,
+        final_prompt: body.prompt,
+        original_dimensions: originalDims,
+        final_dimensions: scoreResult.dimensions,
+        reason: 'no_progress',
+      }),
+    ]);
+    const text = strong.example
       ? renderSkipReveal({
-          strongRewrite: result.strong_example,
+          strongRewrite: strong.example,
           originalDimensions: originalDims,
           reason: 'no_progress',
           noProgressDim: previousLowest ?? undefined,
-          summary: result.summary,
+          summary,
         })
       : '';
     const res: CoachResponse = {
       proceed: true,
       mode: 'score',
       overall,
-      dimensions: dims,
-      missing,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
       text,
     };
     return c.json(res);
   }
 
-  // Forced exit at COACH_MAX_ROUNDS (still <7, made progress, but rounds
-  // exhausted). The model already wrote the summary in exit_max_rounds tone.
+  // Forced exit at COACH_MAX_ROUNDS (still <7, made progress, but rounds exhausted).
   if (round >= COACH_MAX_ROUNDS) {
+    const summary = await summarizeCoaching({
+      original_prompt: originalPrompt,
+      final_prompt: body.prompt,
+      original_dimensions: originalDims,
+      final_dimensions: scoreResult.dimensions,
+      reason: 'max_rounds',
+    });
     const text = renderSuccessReveal({
       originalPrompt,
       finalPrompt: body.prompt,
       originalOverall,
       finalOverall: overall,
       originalDimensions: originalDims,
-      finalDimensions: dims,
+      finalDimensions: scoreResult.dimensions,
       maxRoundsHit: true,
-      summary: result.summary,
+      summary,
     });
     const res: CoachResponse = {
       proceed: true,
       mode: 'score',
       overall,
-      dimensions: dims,
-      missing,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
       text,
     };
     return c.json(res);
   }
 
-  // Else: score still <7, made progress, more rounds remain. Keep teaching
-  // (using strong_example + tip + acknowledgment all from the same call).
+  // Else: score still <7, made progress, more rounds remain. Keep teaching.
   if (lowest) {
+    // Parallel: pull a fresh strong example AND ask Gemini to acknowledge
+    // what the user just added. Both feed renderTeachBlock; both fail-open
+    // to '' so the static template still produces a usable block.
+    const [strong, acknowledgment] = await Promise.all([
+      getStrongExample({
+        teamId,
+        userId: body.user_id,
+        prompt: body.prompt,
+        file_path: body.file_path,
+        target_dims: [lowest],
+        team_context: teamContext,
+      }),
+      acknowledgeProgress({
+        previous_prompt: originalPrompt,
+        current_prompt: body.prompt,
+        previous_dimensions: previousDims,
+        current_dimensions: scoreResult.dimensions,
+      }),
+    ]);
     const text = renderTeachBlock({
       targetDim: lowest,
-      targetScore: dims[lowest],
-      strongExample: result.strong_example,
+      targetScore: scoreResult.dimensions[lowest],
+      strongExample: strong.example,
       previousLowestDim:
         previousLowest && previousLowest !== lowest ? previousLowest : undefined,
-      acknowledgment: result.acknowledgment,
-      tip: result.tip,
+      acknowledgment,
+      tip: strong.tip,
     });
-    const next: CoachNextRoundInputs = {
+    const nextState: RoundState = {
       original_prompt: originalPrompt,
       original_dimensions: originalDims,
-      previous_dimensions: dims,
+      previous_dimensions: scoreResult.dimensions,
       round: round + 1,
+    };
+    const next: CoachNextRoundInputs = {
+      ...nextState,
+      round_token: encodeRoundToken(nextState),
     };
     const res: CoachResponse = {
       proceed: false,
       mode: 'score',
       overall,
-      dimensions: dims,
-      missing,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
       text,
       next_round_inputs: next,
     };
@@ -671,8 +824,8 @@ app.post('/coach', async (c) => {
     proceed: true,
     mode: 'score',
     overall,
-    dimensions: dims,
-    missing,
+    dimensions: scoreResult.dimensions,
+    missing: scoreResult.missing,
     text: '',
   };
   return c.json(res);
@@ -713,6 +866,33 @@ app.post('/capture', async (c) => {
 // to durable at >= 3. Idempotent: repeated calls for the same insight only
 // reinforce the existing draft.
 
+// Bigram-Jaccard similarity over normalized strings. Used as a paraphrase
+// fallback when exact body_normalized match misses — catches "go through" /
+// "flow through" style edits that the lowercase+strip-punct normalize can't
+// collapse. Bigrams (vs unigrams) are deliberate: a polarity flip ("never"
+// inserted into an otherwise identical sentence) drops the bigram score
+// well below the threshold, so opposite-meaning insights stay distinct.
+const PARAPHRASE_THRESHOLD = 0.7;
+
+function bigramSet(normalized: string): Set<string> {
+  const tokens = normalized.split(' ').filter(Boolean);
+  const out = new Set<string>();
+  for (let i = 0; i < tokens.length - 1; i++) {
+    out.add(`${tokens[i]} ${tokens[i + 1]}`);
+  }
+  return out;
+}
+
+function bigramJaccard(a: string, b: string): number {
+  const aBg = bigramSet(a);
+  const bBg = bigramSet(b);
+  if (aBg.size === 0 || bBg.size === 0) return 0;
+  let intersection = 0;
+  for (const bg of aBg) if (bBg.has(bg)) intersection++;
+  const union = aBg.size + bBg.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
 app.post('/wiki/propose', async (c) => {
   const body = await c.req.json<WikiProposeRequest>().catch(() => null);
   if (!body || typeof body.node_path !== 'string' || typeof body.insight !== 'string') {
@@ -724,7 +904,10 @@ app.post('/wiki/propose', async (c) => {
   const nodeId = await upsertNode(c.get('team_id'), path);
   const bodyNormalized = normalize(body.insight);
 
-  const existing = await q<{
+  // Step 1: exact match on body_normalized — the cheap fast path. Hits when
+  // the user (or LLM) sent the same insight verbatim or with only
+  // punctuation/whitespace/case differences.
+  const exact = await q<{
     id: string; reinforcement_count: number; status: 'draft' | 'durable';
   }>(
     `SELECT id, reinforcement_count, status
@@ -734,11 +917,41 @@ app.post('/wiki/propose', async (c) => {
     [nodeId, bodyNormalized],
   );
 
+  let matchId: string | null = null;
+  let matchPriorStatus: 'draft' | 'durable' | null = null;
+  if (exact.length) {
+    matchId = exact[0]!.id;
+    matchPriorStatus = exact[0]!.status;
+  } else {
+    // Step 2: paraphrase fallback. Pull this node's existing learnings and
+    // compute bigram-Jaccard against each. Keeps the wiki from accumulating
+    // near-duplicate drafts that never hit the 3× durability threshold.
+    const candidates = await q<{
+      id: string; body_normalized: string; status: 'draft' | 'durable';
+    }>(
+      `SELECT id, body_normalized, status
+         FROM learnings
+        WHERE node_id = $1`,
+      [nodeId],
+    );
+    let best: { id: string; status: 'draft' | 'durable'; sim: number } | null = null;
+    for (const cand of candidates) {
+      const sim = bigramJaccard(bodyNormalized, cand.body_normalized);
+      if (sim >= PARAPHRASE_THRESHOLD && (!best || sim > best.sim)) {
+        best = { id: cand.id, status: cand.status, sim };
+      }
+    }
+    if (best) {
+      matchId = best.id;
+      matchPriorStatus = best.status;
+    }
+  }
+
   let action: WikiProposeResponse['action'];
   let currentCount: number;
   let promotedToDurable = false;
 
-  if (existing.length === 0) {
+  if (matchId === null) {
     const inserted = await q<{ reinforcement_count: number }>(
       `INSERT INTO learnings (node_id, body, body_normalized)
        VALUES ($1, $2, $3)
@@ -748,7 +961,6 @@ app.post('/wiki/propose', async (c) => {
     action = 'created';
     currentCount = inserted[0]!.reinforcement_count;
   } else {
-    const row = existing[0]!;
     const updated = await q<{ reinforcement_count: number; status: 'draft' | 'durable' }>(
       `UPDATE learnings
           SET reinforcement_count = reinforcement_count + 1,
@@ -756,11 +968,11 @@ app.post('/wiki/propose', async (c) => {
               status = CASE WHEN reinforcement_count + 1 >= 3 THEN 'durable' ELSE status END
         WHERE id = $1
         RETURNING reinforcement_count, status`,
-      [row.id],
+      [matchId],
     );
     const after = updated[0]!;
     currentCount = after.reinforcement_count;
-    promotedToDurable = row.status === 'draft' && after.status === 'durable';
+    promotedToDurable = matchPriorStatus === 'draft' && after.status === 'durable';
     action = promotedToDurable ? 'promoted' : 'reinforced';
   }
 
@@ -873,11 +1085,20 @@ app.get('/search', async (c) => {
   const teamId = c.get('team_id');
   const ancestors = scope ? ancestorPaths(scope) : null;
 
+  // Rule branch matches on body_md OR the node path itself — so a query like
+  // "scoring" surfaces packages/scoring/ even when body_md doesn't repeat the
+  // folder name. Path-only matches return a placeholder body so the renderer
+  // doesn't dump the whole node narrative when the match was structural.
   const rows = await q<{ kind: 'rule' | 'learning' | 'prompt'; body: string; node_path: string }>(
-    `SELECT 'rule'::text AS kind, n.body_md AS body, n.path AS node_path
+    `SELECT 'rule'::text AS kind,
+            CASE
+              WHEN n.body_md ILIKE $2 THEN n.body_md
+              ELSE '(matched on path: ' || n.path || ')'
+            END AS body,
+            n.path AS node_path
        FROM nodes n
       WHERE n.team_id = $1
-        AND n.body_md ILIKE $2
+        AND (n.body_md ILIKE $2 OR n.path ILIKE $2)
         AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
      UNION ALL
      SELECT 'learning'::text AS kind, l.body AS body, n.path AS node_path
@@ -1620,8 +1841,25 @@ app.onError((err, c) => {
   return c.json({ error: 'internal_error', detail: String((err as { message?: string }).message ?? err) }, 500);
 });
 
+// Lightweight startup migration. The full schema is applied via
+// packages/db/migrate.mjs; this just guarantees columns introduced in
+// recent commits exist before /coach reads or writes them, so a Railway
+// auto-deploy doesn't 500 in the gap between the new image landing and
+// the operator running migrate.mjs. Idempotent — every statement uses
+// IF NOT EXISTS or is a no-op when the column already exists.
+//
+// Keep this list short. Anything beyond column adds belongs in
+// schema.sql and should be applied via migrate.mjs.
+async function ensureRecentMigrations(): Promise<void> {
+  await q(`ALTER TABLE prompts ADD COLUMN IF NOT EXISTS author_user_id TEXT`);
+}
+
 const port = Number(process.env.PORT ?? 3000);
-serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`trailhead-api listening on http://localhost:${info.port}`);
-});
+ensureRecentMigrations()
+  .catch((err) => console.warn('[migrate] startup check failed', err))
+  .finally(() => {
+    serve({ fetch: app.fetch, port }, (info) => {
+      console.log(`trailhead-api listening on http://localhost:${info.port}`);
+    });
+  });
 

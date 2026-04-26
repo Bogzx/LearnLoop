@@ -30,7 +30,7 @@ if (!prompt) {
   process.exit(2);
 }
 
-console.error(`[harness] model: ${process.env.HARNESS_MODEL ?? 'gemini-2.5-flash'}`);
+console.error(`[harness] model: ${process.env.HARNESS_MODEL ?? 'gemini-3-flash-preview'}`);
 console.error(`[harness] prompt: ${prompt}`);
 console.error('');
 

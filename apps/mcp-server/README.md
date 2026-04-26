@@ -139,7 +139,7 @@ even if the client doesn't auto-load resources.
 ## Iteration
 
 ```sh
-# Run a single prompt against gemini-2.5-flash with the hero tools attached
+# Run a single prompt against gemini-3-flash-preview with the hero tools attached
 npm run try -- "fix the webhook handler"
 
 # Run the full demo-script matrix (the same prompts the demo uses)
@@ -152,7 +152,7 @@ in `src/tools.ts` (the constants `COACH_DESC`, `WIKI_LOOKUP_DESC`,
 `WIKI_SAVE_DESC`, `WIKI_BOOTSTRAP_DESC`) or the directive in
 `src/coaching-directive.md`.
 
-`HARNESS_MODEL` env var swaps the model (default `gemini-2.5-flash`).
+`HARNESS_MODEL` env var swaps the model (default `gemini-3-flash-preview`).
 
 ## End-to-end smoke
 

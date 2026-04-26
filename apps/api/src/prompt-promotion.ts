@@ -21,6 +21,11 @@ interface PromoteArgs {
   teamId: string;
   prompt: string;
   filePath: string | null | undefined;
+  // Stored on insert so /examples and getStrongExample can prefer
+  // OTHER-authored prompts when picking strong examples — keeps a user
+  // from being shown their own work back as the "this is what good looks
+  // like" template (issue #6 from the 2026-04-26 self-test report).
+  userId: string;
   // Reserved so the call site can pass scoring context without a re-shape
   // later (e.g. min-dim threshold gating). Today the gate lives at the
   // call site (overall >= 7).
@@ -118,14 +123,14 @@ export async function tryPromotePrompt(args: PromoteArgs): Promise<void> {
     }
 
     const inserted = await q<{ id: string }>(
-      `INSERT INTO prompts (node_id, template, topic, status, reuse_count)
-       VALUES ($1, $2, $3, 'graduated', 0)
+      `INSERT INTO prompts (node_id, template, topic, status, reuse_count, author_user_id)
+       VALUES ($1, $2, $3, 'graduated', 0, $4)
        RETURNING id`,
-      [nodeId, trimmed, topic],
+      [nodeId, trimmed, topic, args.userId || null],
     );
     console.log(
       `[promote] graduated prompt ${inserted[0]!.id} ` +
-      `(node=${nodeId}, topic=${topic ?? 'null'})`,
+      `(node=${nodeId}, topic=${topic ?? 'null'}, author=${args.userId})`,
     );
   } catch (err) {
     console.warn('[promote] tryPromotePrompt failed', err);

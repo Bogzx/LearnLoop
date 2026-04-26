@@ -30,7 +30,7 @@ const pad = (s: string, n: number): string =>
   s.length >= n ? s.slice(0, n - 1) + '…' : s + ' '.repeat(n - s.length);
 
 console.error(`[harness] running ${matrix.length} matrix prompts`);
-console.error(`[harness] model: ${process.env.HARNESS_MODEL ?? 'gemini-2.5-flash'}`);
+console.error(`[harness] model: ${process.env.HARNESS_MODEL ?? 'gemini-3-flash-preview'}`);
 console.error('');
 
 const header = pad('prompt', 56) + pad('expected', 14) + pad('actual', 14) + 'ok';
