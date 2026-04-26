@@ -28,10 +28,37 @@ type Tree = {
 function buildTree(nodes: WikiTreeNode[]): Tree {
   const byPath = new Map<string, WikiTreeNode>();
   for (const n of nodes) byPath.set(normalize(n.path), n);
-  const children = new Map<string, string[]>();
-  children.set('', []);
+
+  // Defensive: synthesize phantom nodes for any missing ancestor on the way
+  // from root → leaf. The bootstrap pipeline can leave gaps when carrier
+  // folders (e.g. `apps/`, `packages/`) have no direct code files, or when
+  // a per-folder LLM pass fails and never inserts a row. Without phantoms,
+  // their entire subtree becomes orphaned because the layout walks down
+  // from root via existing nodes only. Phantoms render with empty content
+  // but keep the graph connected.
   for (const n of nodes) {
     const np = normalize(n.path);
+    if (!np) continue;
+    const parts = np.split('/').filter(Boolean);
+    for (let i = 1; i < parts.length; i++) {
+      const ancestor = parts.slice(0, i).join('/');
+      if (byPath.has(ancestor)) continue;
+      byPath.set(ancestor, {
+        path: `${ancestor}/`,
+        body_md: '',
+        durable_learnings: [],
+        draft_learnings: [],
+        graduated_prompts: [],
+      });
+    }
+  }
+
+  const children = new Map<string, string[]>();
+  children.set('', []);
+  // Iterate byPath.keys() (real + phantom), not the original nodes list, so
+  // synthesized ancestors also get registered as children of their own
+  // parent — otherwise the chain breaks at the first phantom.
+  for (const np of byPath.keys()) {
     if (np === '') continue;
     const parts = np.split('/').filter(Boolean);
     parts.pop();
