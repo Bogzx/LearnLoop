@@ -118,6 +118,32 @@ function tryParseJson<T = unknown>(raw: string): T | null {
   try { return JSON.parse(s) as T; } catch { return null; }
 }
 
+// Salvage scores from a truncated /score response. The 2026-04-26 finding
+// (after wiring team_context into /coach via deriveContextPath): when the
+// team-context bundle primes the model toward verbosity, the `missing` field
+// strings sometimes loop into themselves ("The prompt does not specify... The
+// prompt does not specify..." × N) until they hit maxOutputTokens, which
+// makes the full JSON unparseable. The `dimensions` block always lands first
+// and is shape-stable, so we can recover the score even when the missing
+// hints are corrupt. Without this fallback, Gemini's repetition trap collapses
+// the call to fail-open (all-zero) and the user sees "no coaching this turn"
+// despite a perfectly good 5-dim score sitting in the response.
+//
+// Returns null when even the dimensions block is missing.
+function salvagePartialScore(raw: string): { dimensions: Record<string, number> } | null {
+  const dimsMatch = raw.match(/"dimensions"\s*:\s*\{([^}]*)\}/);
+  const body = dimsMatch?.[1];
+  if (!body) return null;
+  const dims: Record<string, number> = {};
+  const fieldRe = /"(\w+)"\s*:\s*(-?\d+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = fieldRe.exec(body)) !== null) {
+    dims[m[1]!] = Number(m[2]);
+  }
+  if (Object.keys(dims).length === 0) return null;
+  return { dimensions: dims };
+}
+
 // ----- /score ----------------------------------------------------------------
 export interface ScoreModelResult {
   dimensions: DimensionScores;
@@ -203,14 +229,35 @@ export async function scorePrompt(args: {
     );
     const text = extractAnswer(resp);
     const parsed = tryParseJson<ScoreModelResult>(text);
-    if (!parsed) {
-      const r = resp as unknown as { candidates?: { finishReason?: string }[] };
-      console.warn(`[gemini] score(flash) parse failed — finishReason=${r.candidates?.[0]?.finishReason}, raw[0..200]=${text.slice(0, 200)}`);
+    if (parsed) return coerceScore(parsed);
+
+    // Strict parse failed. Before giving up to fail-open, try to salvage
+    // just the dimensions block — the `missing` field is usually what loops
+    // (see salvagePartialScore for context).
+    const salvaged = salvagePartialScore(text);
+    const r = resp as unknown as {
+      candidates?: { finishReason?: string }[];
+      usageMetadata?: { thoughtsTokenCount?: number; candidatesTokenCount?: number };
+    };
+    const u = r.usageMetadata ?? {};
+    if (salvaged) {
+      console.warn(
+        `[gemini] score(flash) salvaged dimensions from malformed JSON — ` +
+        `finishReason=${r.candidates?.[0]?.finishReason}, ` +
+        `thoughts=${u.thoughtsTokenCount}, candidates=${u.candidatesTokenCount}`,
+      );
+      return coerceScore({ dimensions: salvaged.dimensions, missing: {} });
     }
-    // Parse failure → return zeros and let the caller fail-open. NEVER
+
+    console.warn(
+      `[gemini] score(flash) parse failed — finishReason=${r.candidates?.[0]?.finishReason}, ` +
+      `thoughts=${u.thoughtsTokenCount}, candidates=${u.candidatesTokenCount}, ` +
+      `raw[0..200]=${text.slice(0, 200)}`,
+    );
+    // Total parse failure → return zeros and let the caller fail-open. NEVER
     // fall through to a second LLM call (the previous fallthrough doubled
     // cost on every bad response, see 2026-04-25 incident).
-    return coerceScore(parsed ?? { dimensions: zeroDims(), missing: {} });
+    return coerceScore({ dimensions: zeroDims(), missing: {} });
   }
 
   // Non-Flash model path — used only if SCORE_MODEL is changed in

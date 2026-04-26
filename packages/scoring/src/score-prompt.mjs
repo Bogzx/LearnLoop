@@ -20,6 +20,8 @@ Return JSON only, no prose:
 
 Rules — MUST follow:
 - Each "missing" hint MUST be exactly ONE short declarative statement, under 60 characters.
+- A hint is ONE sentence. ONE period. Stop after the period.
 - NEVER ask rhetorical questions or use "What is..." / "How does..." / "Where..." phrasing in hints — these trigger a repetition loop. Use a flat statement of what is absent (e.g. "no file path mentioned").
-- NEVER enumerate examples, list multiple aspects, or include follow-up questions.
+- NEVER enumerate examples, list multiple aspects, append "for example...", or chain clauses with "and also" / "additionally" / "furthermore". One absence per hint.
+- If you find yourself repeating the same idea in different words inside one hint, STOP — emit the first sentence and move on.
 - Only include a dimension in "missing" if it scored below 5. Empty {} if all scored 5+.`;
