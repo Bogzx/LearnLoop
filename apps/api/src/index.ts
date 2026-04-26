@@ -25,6 +25,8 @@ import type {
   OnboardRepoFullResponse,
   OnboardRepoRequest,
   OnboardRepoResponse,
+  ProvenPromptItem,
+  ProvenPromptsResponse,
   ScoreRequest,
   ScoreResponse,
   SkillArcObservation,
@@ -130,6 +132,7 @@ app.get('/', (c) =>
       'POST /wiki/propose',
       'GET  /context?path=',
       'GET  /examples?path=',
+      'GET  /prompts/proven?min_score=&path=&topic=&limit=',
       'GET  /search?q=&scope=',
       'GET  /wiki/recent?since=ISO',
       'POST /diff',
@@ -586,6 +589,7 @@ app.post('/coach', async (c) => {
         prompt: body.prompt,
         filePath: body.file_path ?? null,
         dimensions: scoreResult.dimensions,
+        overall,
       });
     });
     return c.json(res);
@@ -674,6 +678,7 @@ app.post('/coach', async (c) => {
         prompt: body.prompt,
         filePath: body.file_path ?? null,
         dimensions: scoreResult.dimensions,
+        overall,
       });
     });
     return c.json(res);
@@ -1063,6 +1068,68 @@ app.get('/examples', async (c) => {
     reuse_count: r.reuse_count,
     node_path: r.node_path,
   })) };
+  return c.json(res);
+});
+
+// ----- GET /prompts/proven ---------------------------------------------------
+// All graduated prompts for the team, optionally filtered by min score, an
+// ancestor path, or topic. Powers the wiki_proven_prompts MCP tool.
+//
+// "Proven" == status='graduated'. Today every graduated prompt is by
+// definition overall>=7 (the gate in /coach), and the actual score is now
+// stored on graduated_overall_score so callers can filter ≥8 / ≥9 too.
+//
+// Ranking: score DESC, reuse_count DESC, created_at DESC. Score is the
+// primary signal because reuse_count starts at 0 and grows over time —
+// without the score tiebreaker, brand-new 10/10 prompts would rank below
+// older 7/10 prompts that happened to be re-graduated once or twice.
+app.get('/prompts/proven', async (c) => {
+  const minScoreRaw = Number(c.req.query('min_score') ?? 7);
+  const minScore = Number.isFinite(minScoreRaw) ? Math.max(0, Math.min(10, Math.floor(minScoreRaw))) : 7;
+  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') ?? 20)));
+  const pathScope = c.req.query('path');
+  const topic = c.req.query('topic');
+  const ancestors = pathScope ? ancestorPaths(pathScope) : null;
+
+  const rows = await q<{
+    id: string;
+    template: string;
+    topic: string | null;
+    reuse_count: number;
+    graduated_overall_score: number;
+    author_user_id: string | null;
+    node_path: string;
+    created_at: Date;
+  }>(
+    `SELECT p.id, p.template, p.topic, p.reuse_count,
+            p.graduated_overall_score, p.author_user_id,
+            n.path AS node_path, p.created_at
+       FROM prompts p
+       JOIN nodes n ON n.id = p.node_id
+      WHERE n.team_token = $1
+        AND p.status = 'graduated'
+        AND p.graduated_overall_score >= $2
+        AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
+        AND ($4::text  IS NULL OR p.topic = $4)
+      ORDER BY p.graduated_overall_score DESC,
+               p.reuse_count DESC,
+               p.created_at DESC
+      LIMIT $5`,
+    [c.get('team_token'), minScore, ancestors, topic ?? null, limit],
+  );
+
+  const res: ProvenPromptsResponse = {
+    items: rows.map((r): ProvenPromptItem => ({
+      id: r.id,
+      template: r.template,
+      topic: r.topic,
+      reuse_count: r.reuse_count,
+      graduated_overall_score: r.graduated_overall_score,
+      author_user_id: r.author_user_id,
+      node_path: r.node_path,
+      created_at: r.created_at.toISOString(),
+    })),
+  };
   return c.json(res);
 });
 

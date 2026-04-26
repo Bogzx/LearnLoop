@@ -53,16 +53,19 @@ CREATE INDEX IF NOT EXISTS idx_learnings_node_normalized ON learnings(node_id, b
 
 -- Graduated prompt templates (the curriculum)
 CREATE TABLE IF NOT EXISTS prompts (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  node_id         UUID NOT NULL REFERENCES nodes(id),
-  template        TEXT NOT NULL,                   -- the prompt itself
-  topic           TEXT,                            -- e.g., 'retry', 'auth', 'webhook'
-  reuse_count     INT  NOT NULL DEFAULT 0,
-  status          TEXT NOT NULL DEFAULT 'graduated',
-  author_user_id  TEXT,                            -- who promoted this prompt; nullable for legacy rows
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  node_id                  UUID NOT NULL REFERENCES nodes(id),
+  template                 TEXT NOT NULL,                   -- the prompt itself
+  topic                    TEXT,                            -- e.g., 'retry', 'auth', 'webhook'
+  reuse_count              INT  NOT NULL DEFAULT 0,
+  status                   TEXT NOT NULL DEFAULT 'graduated',
+  author_user_id           TEXT,                            -- who promoted this prompt; nullable for legacy rows
+  graduated_overall_score  INT  NOT NULL DEFAULT 7,         -- overall 0-10 at graduation; ≥7 by gate, default backfills legacy rows
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_prompts_node_topic ON prompts(node_id, topic);
+-- Idempotent add for installs that ran the table CREATE before this column existed.
+ALTER TABLE prompts ADD COLUMN IF NOT EXISTS graduated_overall_score INT NOT NULL DEFAULT 7;
 
 -- Captured sessions
 CREATE TABLE IF NOT EXISTS captures (

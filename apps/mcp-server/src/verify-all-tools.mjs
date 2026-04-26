@@ -69,6 +69,10 @@ function callTool(name, args) {
     ['wiki_lookup', { file_path: 'src/api/webhooks/', query: 'idempotency' }],
     ['wiki_save', { node_path: 'src/api/webhooks/', insight: 'Use exponential backoff with jitter for webhook retries.' }],
     ['wiki_bootstrap', { paths: ['src/api/', 'src/db/'], seed_from_files: false }],
+    ['wiki_proven_prompts', {}],
+    ['wiki_proven_prompts', { min_score: 10 }],
+    ['wiki_proven_prompts', { file_path: 'src/api/webhooks/handler.ts', limit: 3 }],
+    ['wiki_proven_prompts', { topic: 'retry' }],
   ];
 
   const pad = (s, n) => String(s).padEnd(n);

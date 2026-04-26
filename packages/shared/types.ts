@@ -77,6 +77,22 @@ export interface ExamplesItem {
 }
 export interface ExamplesResponse { items: ExamplesItem[]; }
 
+// GET /prompts/proven — every graduated prompt for the team, with the
+// actual overall score from when /coach promoted it. "Proven" is the user-
+// facing framing; under the hood it's status='graduated' filtered by
+// graduated_overall_score >= min_score.
+export interface ProvenPromptItem {
+  id: string;
+  template: string;
+  topic: string | null;
+  reuse_count: number;
+  graduated_overall_score: number;     // 0-10; ≥7 by /coach gate
+  author_user_id: string | null;
+  node_path: string;
+  created_at: string;                  // ISO
+}
+export interface ProvenPromptsResponse { items: ProvenPromptItem[]; }
+
 // GET /wiki/recent?since=ISO — sidebar polling endpoint (Person C roadmap §3)
 export interface WikiRecentItem {
   id: string;

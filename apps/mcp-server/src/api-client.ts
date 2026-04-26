@@ -8,6 +8,7 @@ import type {
   OnboardRepoFullResponse,
   OnboardRepoRequest,
   OnboardRepoResponse,
+  ProvenPromptsResponse,
   ScoreRequest,
   ScoreResponse,
   WikiJobStatusResponse,
@@ -110,6 +111,21 @@ export class ApiClient {
     const q = new URLSearchParams({ q: query });
     if (scope) q.set('scope', scope);
     return this.req('GET', `/search?${q}`);
+  }
+
+  provenPrompts(args: {
+    minScore?: number;
+    path?: string;
+    topic?: string;
+    limit?: number;
+  } = {}): Promise<ProvenPromptsResponse> {
+    const q = new URLSearchParams();
+    if (typeof args.minScore === 'number') q.set('min_score', String(args.minScore));
+    if (args.path) q.set('path', args.path);
+    if (args.topic) q.set('topic', args.topic);
+    if (typeof args.limit === 'number') q.set('limit', String(args.limit));
+    const suffix = q.toString();
+    return this.req('GET', `/prompts/proven${suffix ? `?${suffix}` : ''}`);
   }
 
   onboardRepo(body: OnboardRepoRequest): Promise<OnboardRepoResponse> {
