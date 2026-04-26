@@ -49,8 +49,8 @@ function render(enabled: boolean): void {
   switchEl.classList.toggle('is-on', enabled);
   switchEl.setAttribute('aria-checked', String(enabled));
   hintEl.textContent = enabled
-    ? 'Trailhead scores every prompt right before you send it. Low-scoring prompts open a coaching panel where you can refine the wording, add missing context, or accept an AI-polished version — all before the message reaches Claude.'
-    : 'Paused. Your messages go straight to Claude with no scoring, no coaching panel, and no wiki context attached — exactly the same as if Trailhead weren’t installed. Flip the switch on to resume coaching.';
+    ? 'Weak prompts open a quick coaching panel before they send.'
+    : 'Prompts send straight to Claude with no coaching.';
 }
 
 async function getStoredToken(): Promise<string> {
@@ -111,7 +111,7 @@ async function refreshCurrentTeamName(): Promise<void> {
 
 async function refreshCurrentContextName(): Promise<void> {
   const path = await getStoredContextPath();
-  currentContextNameEl.textContent = path ?? '';
+  currentContextNameEl.textContent = displayPath(path);
 }
 
 function renderTeamList(teams: TeamSummary[], currentToken: string): void {
@@ -210,6 +210,36 @@ function lastSegment(path: string): string {
   return i === -1 ? stripped : stripped.slice(i + 1);
 }
 
+// Display name for a tree node. Root nodes (path '/' or '' or anything that
+// reduces to an empty last segment) render as "Root" instead of a blank
+// label — the previous behaviour left the row visually empty next to the
+// folder icon.
+function displayName(path: string): string {
+  const seg = lastSegment(path);
+  if (seg) return seg;
+  return 'Root';
+}
+
+// Translate a wiki-tree node path into the value we persist to chrome.storage.
+// The root node has path = '' which clashes with the truthy-check used by
+// getStoredContextPath / context-state.ts to mean "no context selected".
+// We persist root as '/' so those callers see a non-empty string and treat
+// it as an active context. context-bundle.ts and team-context.ts translate
+// '/' back to '' when filtering the subtree, so the filter still matches
+// every node under root.
+const ROOT_SENTINEL = '/';
+function pathForStorage(path: string): string {
+  return path === '' ? ROOT_SENTINEL : path;
+}
+// Render either the bare path or the friendly "Root" label for the root
+// sentinel — used in the popup's "Active: …" row, the toast, and the
+// header label next to the Select-context button.
+function displayPath(path: string | null): string {
+  if (!path) return '';
+  if (path === ROOT_SENTINEL) return 'Root';
+  return path;
+}
+
 function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): void {
   contextTreeEl.replaceChildren();
 
@@ -222,7 +252,7 @@ function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): v
     const lbl = document.createElement('span');
     lbl.style.opacity = '0.7';
     lbl.style.fontSize = '11px';
-    lbl.textContent = `Active: ${currentPath}`;
+    lbl.textContent = `Active: ${displayPath(currentPath)}`;
     const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
     clearBtn.className = 'clear-ctx-btn';
@@ -250,7 +280,9 @@ function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): v
     const depth = pathDepth(node.path);
     li.style.paddingLeft = `${6 + depth * 12}px`;
     li.title = node.path;
-    if (node.path === currentPath) {
+    // Compare on the STORED form so the root node ('') matches the
+    // sentinel value ('/') we persisted earlier.
+    if (pathForStorage(node.path) === currentPath) {
       li.classList.add('is-current');
       const check = document.createElement('span');
       check.className = 'check';
@@ -263,14 +295,15 @@ function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): v
     li.appendChild(icon);
     const label = document.createElement('span');
     label.className = 'tree-label';
-    label.textContent = lastSegment(node.path) || node.path;
+    label.textContent = displayName(node.path);
     li.appendChild(label);
     li.addEventListener('click', async () => {
-      await setStoredContextPath(node.path);
-      cachedTree && renderContextTree(cachedTree, node.path);
+      const stored = pathForStorage(node.path);
+      await setStoredContextPath(stored);
+      cachedTree && renderContextTree(cachedTree, stored);
       await refreshCurrentContextName();
       closeContextDropdown();
-      showToast(`Context set: ${node.path}`);
+      showToast(`Context set: ${displayName(node.path)}`);
     });
     contextTreeEl.appendChild(li);
   }
