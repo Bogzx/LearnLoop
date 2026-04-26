@@ -30,6 +30,10 @@ interface PromoteArgs {
   // later (e.g. min-dim threshold gating). Today the gate lives at the
   // call site (overall >= 7).
   dimensions: DimensionScores;
+  // Overall 0-10 at graduation, persisted on the prompt row so
+  // /prompts/proven and the wiki_proven_prompts MCP tool can show the
+  // actual score (8 vs 10) rather than only "graduated".
+  overall: number;
 }
 
 // Drop the file segment off a possibly-file-shaped path. Returns the
@@ -123,14 +127,14 @@ export async function tryPromotePrompt(args: PromoteArgs): Promise<void> {
     }
 
     const inserted = await q<{ id: string }>(
-      `INSERT INTO prompts (node_id, template, topic, status, reuse_count, author_user_id)
-       VALUES ($1, $2, $3, 'graduated', 0, $4)
+      `INSERT INTO prompts (node_id, template, topic, status, reuse_count, author_user_id, graduated_overall_score)
+       VALUES ($1, $2, $3, 'graduated', 0, $4, $5)
        RETURNING id`,
-      [nodeId, trimmed, topic, args.userId || null],
+      [nodeId, trimmed, topic, args.userId || null, args.overall],
     );
     console.log(
       `[promote] graduated prompt ${inserted[0]!.id} ` +
-      `(node=${nodeId}, topic=${topic ?? 'null'}, author=${args.userId})`,
+      `(node=${nodeId}, topic=${topic ?? 'null'}, author=${args.userId}, overall=${args.overall})`,
     );
   } catch (err) {
     console.warn('[promote] tryPromotePrompt failed', err);

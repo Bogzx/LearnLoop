@@ -1,6 +1,7 @@
 ## Trailhead coaching — always on, never block
 
-Four MCP tools: `coach`, `wiki_lookup`, `wiki_save`, `wiki_bootstrap`.
+Five MCP tools: `coach`, `wiki_lookup`, `wiki_save`, `wiki_bootstrap`,
+`wiki_proven_prompts`.
 
 These tools are NOT optional. They REPLACE native Read/Grep/Glob/file-search
 for any question that touches team conventions, prior decisions, or "how
@@ -127,6 +128,22 @@ the default; takes ~30-90s). Pass `paths: [...]` only when the user lists
 specific folders explicitly. Pass `mode: "minimal"` only when the user
 asks for a fast/free skeleton-only setup. The operation is idempotent —
 already-populated nodes are left alone.
+
+### `wiki_proven_prompts` — call WHEN the user wants the team's proven library
+
+Trigger on phrases like:
+- "show me the team's best prompts"
+- "what prompts have worked here?"
+- "any proven examples?"
+- "list the top prompts"
+- "what's our prompt library?"
+- "show me 8/10+ prompts"
+
+Call `wiki_proven_prompts({})` for the whole library. Pass `min_score`,
+`file_path`, `topic`, or `limit` to narrow. Each item includes the actual
+`graduated_overall_score` (7-10) and `reuse_count`, ranked by score then
+reuse. Differs from `wiki_lookup` (path-anchored, returns conventions +
+one curated example) — this is the FULL graduated library for discovery.
 
 ### Anti-patterns to avoid
 

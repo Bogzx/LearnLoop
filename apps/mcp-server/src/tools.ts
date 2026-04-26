@@ -204,6 +204,19 @@ export const WIKI_SAVE_DESC =
   'from `draft` to `durable`. Calling twice with the same insight is ' +
   'safe and reinforces the count.';
 
+export const WIKI_PROVEN_PROMPTS_DESC =
+  'MANDATORY when the user asks for proven prompts, the team\'s best ' +
+  'prompts, gold-standard examples, "what\'s worked before", "show me ' +
+  'top prompts", or any phrasing that implies "give me the team\'s ' +
+  'highest-rated prompt library". Returns every prompt graduated by ' +
+  'coach (overall >= 7 by gate; the actual score is on each row so the ' +
+  'caller can filter ≥8 / ≥9). Differs from wiki_lookup, which is path-' +
+  'anchored and returns conventions + a single curated example: this ' +
+  'tool is the FULL graduated library, ranked by score then reuse. ' +
+  'Optional filters: min_score (default 7), file_path (scope to ancestor ' +
+  'nodes), topic, limit (default 20, max 100). Use this for discovery; ' +
+  'use wiki_lookup for "how does this team do X".';
+
 export const WIKI_BOOTSTRAP_DESC =
   'MANDATORY when the user asks to set up Trailhead, bootstrap the ' +
   'wiki, initialize the team wiki, "/init" the project, or "create the ' +
@@ -693,10 +706,110 @@ export function registerWikiBootstrap(server: McpServer, client: ApiClient): voi
   );
 }
 
+// =============================================================================
+// Hero tool 5: `wiki_proven_prompts`
+//
+// Returns every graduated prompt for the team — the full library, not a
+// path-scoped curated pick. Complements wiki_lookup: lookup answers "how
+// does this team do X for THIS file", proven_prompts answers "what are
+// the team's best prompts overall" (or scoped to a path/topic on demand).
+// =============================================================================
+function renderProvenPrompts(items: { template: string; topic: string | null; reuse_count: number; graduated_overall_score: number; node_path: string; author_user_id: string | null }[]): string {
+  if (!items.length) return '(no graduated prompts match the filters)';
+  return items
+    .map((it, i) => {
+      const meta = [
+        `${it.graduated_overall_score}/10`,
+        `${it.reuse_count}× reuse`,
+        `@ ${it.node_path}`,
+        it.topic ? `topic=${it.topic}` : null,
+        it.author_user_id ? `author=${it.author_user_id}` : null,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      return `### ${i + 1}. ${meta}\n${it.template}`;
+    })
+    .join('\n\n');
+}
+
+export function registerWikiProvenPrompts(server: McpServer, client: ApiClient): void {
+  server.registerTool(
+    'wiki_proven_prompts',
+    {
+      description: WIKI_PROVEN_PROMPTS_DESC,
+      inputSchema: {
+        min_score: z
+          .number()
+          .int()
+          .min(0)
+          .max(10)
+          .optional()
+          .describe(
+            'Minimum overall score 0-10 (default 7). Every graduated prompt is ≥7 by /coach gate, so values <7 just include all of them.',
+          ),
+        file_path: z
+          .string()
+          .optional()
+          .describe(
+            "Optional path scope, e.g. 'src/api/webhooks/'. Returns only prompts attached to ancestors of this path.",
+          ),
+        topic: z
+          .string()
+          .optional()
+          .describe("Optional exact-match topic filter, e.g. 'retry', 'auth', 'webhook'."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe('Max prompts to return. Default 20, max 100.'),
+      },
+      outputSchema: {
+        items: z.array(
+          z.object({
+            id: z.string(),
+            template: z.string(),
+            topic: z.string().nullable(),
+            reuse_count: z.number().int(),
+            graduated_overall_score: z.number().int(),
+            author_user_id: z.string().nullable(),
+            node_path: z.string(),
+            created_at: z.string(),
+          }),
+        ),
+      },
+    },
+    async ({ min_score, file_path, topic, limit }) => {
+      try {
+        const res = await client.provenPrompts({
+          minScore: min_score,
+          path: file_path,
+          topic,
+          limit,
+        });
+        const heading = `# proven prompts (${res.items.length}${typeof min_score === 'number' ? `, min ${min_score}/10` : ''}${file_path ? `, scoped to ${file_path}` : ''}${topic ? `, topic=${topic}` : ''})`;
+        return {
+          structuredContent: { items: res.items },
+          content: [
+            {
+              type: 'text' as const,
+              text: `${heading}\n\n${renderProvenPrompts(res.items)}`,
+            },
+          ],
+        };
+      } catch (e) {
+        return asError(e);
+      }
+    },
+  );
+}
+
 // Convenience: register all hero tools at once.
 export function registerHeroTools(server: McpServer, client: ApiClient): void {
   registerCoach(server, client);
   registerWikiLookup(server, client);
   registerWikiSave(server, client);
   registerWikiBootstrap(server, client);
+  registerWikiProvenPrompts(server, client);
 }
