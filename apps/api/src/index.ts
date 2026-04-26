@@ -1387,12 +1387,14 @@ app.get('/wiki/tree', async (c) => {
       template: string;
       topic: string | null;
       reuse_count: number;
+      author_user_id: string | null;
     }>(
       `SELECT n.path,
               p.id AS prompt_id,
               p.template,
               p.topic,
-              p.reuse_count
+              p.reuse_count,
+              p.author_user_id
          FROM prompts p
          JOIN nodes n ON n.id = p.node_id
         WHERE n.team_token = $1
@@ -1448,6 +1450,7 @@ app.get('/wiki/tree', async (c) => {
       template: r.template,
       topic: r.topic,
       reuse_count: r.reuse_count,
+      author_user_id: r.author_user_id,
     });
   }
 
