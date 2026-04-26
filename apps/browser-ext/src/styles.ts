@@ -627,6 +627,35 @@ export const TRAILHEAD_CSS = `
   flex-direction: column;
   gap: 10px;
 }
+/* "What changed" lesson recap shown above the polished prompt in preview. */
+.trailhead-improve-preview-rationale {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  background: linear-gradient(135deg, rgba(108,140,255,0.10), rgba(108,140,255,0.04));
+  border: 1px solid rgba(108,140,255,0.32);
+  border-radius: var(--th-radius);
+  border-left: 3px solid var(--th-accent);
+}
+.trailhead-improve-preview-rationale-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--th-accent);
+}
+.trailhead-improve-preview-rationale-label::before {
+  content: '💡 ';
+  margin-right: 2px;
+}
+.trailhead-improve-preview-rationale-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: rgba(255,255,255,0.88);
+}
+
 .trailhead-improve-preview-body {
   background: rgba(0,0,0,0.28);
   padding: 14px 16px;
