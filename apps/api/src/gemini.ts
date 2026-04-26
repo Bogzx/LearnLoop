@@ -278,6 +278,26 @@ export async function scorePrompt(args: {
   return coerceScore(parsed ?? { dimensions: zeroDims(), missing: {} });
 }
 
+// Sanity check on a single missing-hint string. The score system prompt
+// requires "ONE absence per hint, under 60 chars" but Flash 2.5 sometimes
+// crams hints for multiple dimensions into one slot or glues token salad
+// around dim names ("overjoyedcontext_loading" in 2026-04-26 logs). Returns
+// false when the hint looks corrupt — caller drops it, keeping the dim
+// score and falling back to the static teach template.
+//
+// Length cap matches the system-prompt rule (60 chars). Cross-field bleed
+// is detected by checking for any other dim's snake_case name as a
+// substring; well-formed prose hints don't contain those identifiers.
+function isCleanHint(value: string, slot: Dimension): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (trimmed.length > 60) return false;
+  for (const other of DIMENSIONS) {
+    if (other !== slot && trimmed.includes(other)) return false;
+  }
+  return true;
+}
+
 // Defensively shape model output. Gemma sometimes returns `missing` as a
 // flat array of strings instead of the keyed object Flash returns; we keep
 // that variant available to the caller as best-effort hints.
@@ -296,13 +316,23 @@ function coerceScore(input: unknown): ScoreModelResult {
   if (obj.missing && typeof obj.missing === 'object' && !Array.isArray(obj.missing)) {
     for (const d of DIMENSIONS) {
       const v = (obj.missing as Record<string, unknown>)[d];
-      if (typeof v === 'string' && v.trim()) missing[d] = v.trim();
+      if (typeof v !== 'string') continue;
+      if (isCleanHint(v, d)) {
+        missing[d] = v.trim();
+      } else if (v.trim()) {
+        console.warn(`[gemini] score dropped corrupt hint for ${d}: ${v.slice(0, 80)}`);
+      }
     }
   } else if (Array.isArray(obj.missing)) {
     const lowDims = DIMENSIONS.filter((d) => dimensions[d] < 5);
     obj.missing.forEach((entry, i) => {
       const d = lowDims[i];
-      if (d && typeof entry === 'string' && entry.trim()) missing[d] = entry.trim();
+      if (!d || typeof entry !== 'string') return;
+      if (isCleanHint(entry, d)) {
+        missing[d] = entry.trim();
+      } else if (entry.trim()) {
+        console.warn(`[gemini] score dropped corrupt hint for ${d}: ${entry.slice(0, 80)}`);
+      }
     });
   }
   return { dimensions, missing };
