@@ -182,6 +182,8 @@ function fail(msg) {
   console.log('input validation OK (rejected empty fields)');
 
   // 8. coach (mode='score' default) on a deliberately weak prompt.
+  // Educational-loop shape: { proceed, text, next_round_inputs?, ... }.
+  // Spec: docs/superpowers/specs/2026-04-26-trailhead-educational-loop-design.md
   const weakRes = await send('tools/call', {
     name: 'coach',
     arguments: { prompt: 'fix the retry' },
@@ -191,17 +193,21 @@ function fail(msg) {
   if (!weakSc) fail('coach missing structuredContent');
   if (weakSc.mode !== 'score') fail(`coach default mode should be 'score', got ${weakSc.mode}`);
   if (typeof weakSc.overall !== 'number') fail('coach missing overall');
+  if (typeof weakSc.proceed !== 'boolean') fail('coach missing proceed flag');
   if (weakSc.overall >= 7) {
     console.warn(`WARN: weak prompt scored ${weakSc.overall}/10 — coaching beat will not trigger.`);
   } else {
-    if (!weakSc.next_question) fail('coach < 7 must have next_question');
-    if (!weakSc.next_question.dimension || !weakSc.next_question.question) {
-      fail(`coach next_question malformed: ${JSON.stringify(weakSc.next_question)}`);
+    if (weakSc.proceed !== false) fail(`coach < 7 must have proceed=false, got ${weakSc.proceed}`);
+    if (!weakSc.text || typeof weakSc.text !== 'string') fail('coach < 7 must have non-empty text');
+    if (!weakSc.next_round_inputs) fail('coach < 7 must have next_round_inputs for the loop');
+    const nri = weakSc.next_round_inputs;
+    for (const k of ['original_prompt', 'original_dimensions', 'previous_dimensions', 'round']) {
+      if (nri[k] === undefined) fail(`coach next_round_inputs missing ${k}: ${JSON.stringify(nri)}`);
     }
-    console.log(`coach OK: weak prompt → ${weakSc.overall}/10, next_question on '${weakSc.next_question.dimension}'`);
+    console.log(`coach OK: weak prompt → ${weakSc.overall}/10, proceed=false, round→${nri.round}`);
   }
 
-  // 9. coach (mode='score') on a strong prompt — must score >= 7 with next_question=null.
+  // 9. coach (mode='score') on a strong prompt — must score >= 7 with proceed=true and empty text.
   const strongRes = await send('tools/call', {
     name: 'coach',
     arguments: {
@@ -215,24 +221,31 @@ function fail(msg) {
   if (!strongSc) fail('coach (strong) missing structuredContent');
   if (strongSc.overall < 7) {
     console.warn(`WARN: strong prompt scored ${strongSc.overall}/10 — Gemini variance.`);
-  } else if (strongSc.next_question !== null) {
-    fail(`coach (strong) >= 7 must have next_question=null, got: ${JSON.stringify(strongSc.next_question)}`);
   } else {
-    console.log(`coach OK: strong prompt → ${strongSc.overall}/10, no coaching needed`);
+    if (strongSc.proceed !== true) fail(`coach (strong) >= 7 must have proceed=true, got ${strongSc.proceed}`);
+    // Round-1 silent fast path: text MUST be empty when score >= 7.
+    if (strongSc.text && strongSc.text.length > 0) {
+      fail(`coach (strong) >= 7 round 1 must have empty text, got: ${strongSc.text.slice(0, 80)}`);
+    }
+    console.log(`coach OK: strong prompt → ${strongSc.overall}/10, silent fast path`);
   }
 
-  // 10. coach (mode='augment') — round-trip the weak prompt.
-  const augRes = await send('tools/call', {
+  // 10. coach (mode='skip_reveal') — round-trip the weak prompt with the user
+  // dismissing coaching. Must return proceed=true with a reveal block.
+  const skipRes = await send('tools/call', {
     name: 'coach',
-    arguments: { prompt: 'fix the retry', mode: 'augment' },
+    arguments: {
+      prompt: 'fix the retry',
+      mode: 'skip_reveal',
+      original_prompt: 'fix the retry',
+      original_dimensions: weakSc.dimensions,
+    },
   });
-  if (augRes.result?.isError) fail(`coach (augment) error: ${JSON.stringify(augRes.result)}`);
-  const augSc = augRes.result?.structuredContent;
-  if (augSc?.mode !== 'augment') fail(`coach mode should be 'augment', got ${augSc?.mode}`);
-  if (!augSc?.augmented_prompt?.includes('Trailhead coaching')) {
-    fail(`coach augmented_prompt missing coaching addendum: ${augSc?.augmented_prompt?.slice(0, 100)}`);
-  }
-  console.log(`coach augment OK: original=${augSc.original_overall ?? augSc.overall}/10, ${augSc.missing_dims.length} missing dims`);
+  if (skipRes.result?.isError) fail(`coach (skip_reveal) error: ${JSON.stringify(skipRes.result)}`);
+  const skipSc = skipRes.result?.structuredContent;
+  if (skipSc?.mode !== 'skip_reveal') fail(`coach mode should be 'skip_reveal', got ${skipSc?.mode}`);
+  if (skipSc?.proceed !== true) fail(`coach (skip_reveal) must have proceed=true, got ${skipSc?.proceed}`);
+  console.log(`coach skip_reveal OK: proceed=true, ${skipSc.text.length} chars of reveal text`);
 
   // 11. wiki_lookup with file_path — should return rules + learnings.
   const lookupRes = await send('tools/call', {
@@ -252,13 +265,16 @@ function fail(msg) {
   }
   console.log('wiki_lookup validation OK (rejected empty args)');
 
-  // 13. wiki_bootstrap with explicit paths — idempotent against the seeded
-  // demo team. paths_submitted should equal what we sent.
+  // 13. wiki_bootstrap with explicit mode='minimal' — idempotent against the
+  // seeded demo team. paths_submitted should equal what we sent. We use
+  // minimal so the smoke test stays fast and free; rich mode is exercised
+  // separately by hand. Spec ref: 2026-04-26-wiki-bootstrap-rich-design.md
   const bootstrapRes = await send('tools/call', {
     name: 'wiki_bootstrap',
     arguments: {
       paths: ['src/api/', 'src/api/webhooks/', 'src/db/'],
       seed_from_files: false,
+      mode: 'minimal',
     },
   });
   if (bootstrapRes.result?.isError) {
@@ -266,6 +282,7 @@ function fail(msg) {
   }
   const bootSc = bootstrapRes.result?.structuredContent;
   if (!bootSc) fail('wiki_bootstrap missing structuredContent');
+  if (bootSc.mode !== 'minimal') fail(`wiki_bootstrap mode should be 'minimal', got ${bootSc.mode}`);
   if (typeof bootSc.nodes_created !== 'number') fail('wiki_bootstrap missing nodes_created');
   if (typeof bootSc.nodes_total !== 'number') fail('wiki_bootstrap missing nodes_total');
   if (!Array.isArray(bootSc.paths_submitted) || bootSc.paths_submitted.length !== 3) {
