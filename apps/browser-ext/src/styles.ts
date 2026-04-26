@@ -435,22 +435,19 @@ export const TRAILHEAD_CSS = `
 }
 
 #trailhead-context-pill {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  z-index: 2147483646;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 320px;
+  margin: 6px 0 0 auto;
   padding: 5px 8px 5px 10px;
   border-radius: 999px;
-  background: rgba(74,107,255,0.18);
-  border: 1px solid rgba(74,107,255,0.55);
-  box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+  background: rgba(74,107,255,0.14);
+  border: 1px solid rgba(74,107,255,0.42);
   color: var(--text-primary, #ddd);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 320px;
 }
 #trailhead-context-pill[hidden] { display: none; }
 .trailhead-context-pill-icon { font-size: 12px; }
