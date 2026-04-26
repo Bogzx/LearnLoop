@@ -356,7 +356,7 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   previewImDoneBtn.type = 'button';
   previewImDoneBtn.title =
     'Discard coaching changes — use my original prompt as I typed it.';
-  previewImDoneBtn.textContent = 'I’m done';
+  previewImDoneBtn.textContent = 'Keep original';
   previewActionsRow.append(previewImDoneBtn);
 
   // Error stage actions: bail to original or accept the legacy template.
@@ -370,7 +370,7 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   const errImDoneBtn = document.createElement('button');
   errImDoneBtn.type = 'button';
   errImDoneBtn.title = 'Discard the coaching attempt and use my original prompt as-is.';
-  errImDoneBtn.textContent = 'I’m done';
+  errImDoneBtn.textContent = 'Keep original';
   const useTemplateBtn = document.createElement('button');
   useTemplateBtn.type = 'button';
   useTemplateBtn.className = 'is-primary';

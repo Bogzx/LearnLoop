@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Trailhead",
+  "name": "LearnLoop",
   "version": "0.0.1",
   "description": "Live prompt-quality coach for Claude.ai — 5-dimension score-card under your textarea.",
   "minimum_chrome_version": "120",
@@ -10,7 +10,7 @@
     "https://trailheadapi-production.up.railway.app/*"
   ],
   "action": {
-    "default_title": "Trailhead",
+    "default_title": "LearnLoop",
     "default_popup": "popup.html"
   },
   "content_scripts": [
