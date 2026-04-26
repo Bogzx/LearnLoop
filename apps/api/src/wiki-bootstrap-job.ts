@@ -32,9 +32,12 @@ import { q, upsertNode } from './db.ts';
 // asserts this is set on startup so we can lean on it being present.
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Flash for all three passes (spec §6 reasoning). Same model id used in
-// gemini.ts for `extractTopic` etc.
-const MODEL = 'gemini-2.5-flash';
+// Flash for all three passes (spec §6 reasoning). Sourced from the shared
+// model registry so a single rename in packages/scoring/src/models.mjs
+// flows everywhere — was a hardcoded 'gemini-2.5-flash' before the
+// 2026-04-26 migration to gemini-3-flash-preview.
+import { SCORE_MODEL } from '@trailhead/scoring';
+const MODEL = SCORE_MODEL;
 
 // Per spec §7. Hard ceilings the worker enforces regardless of what the
 // client sent.

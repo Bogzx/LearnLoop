@@ -37,10 +37,11 @@ const CODE_EXTS = new Set<string>([
 ]);
 
 // Folders we never descend into. Names matched by basename (case-sensitive).
-// Note: `bin` and `obj` are not on this list — JS/Python projects often have
-// meaningful project-root `bin/` directories (e.g. our own apps/mcp-server/bin).
-// For .NET/Java users where bin/obj are build output, those land inside
-// `target/` (already ignored) on the canonical layouts.
+// Note: `bin` and `obj` are not on this base list — JS/Python projects
+// often have meaningful project-root `bin/` directories (e.g. our own
+// apps/mcp-server/bin). For .NET/Java repos where `bin`/`obj` are build
+// output, effectiveIgnore() adds them dynamically when it sees a marker
+// file (.csproj/.sln/pom.xml/build.gradle) at cwd.
 //
 // The list errs on the side of excluding more — the rich bootstrap walks
 // every survivor and POSTs file contents to the API server, so a single
@@ -94,6 +95,26 @@ function isGeneratedFile(basename: string): boolean {
   return GENERATED_FILE_PATTERNS.some((re) => re.test(basename));
 }
 
+// .NET / Java projects use `bin/` and `obj/` for build output. JS / Python
+// projects use them for source (e.g. `apps/mcp-server/bin/cli.mjs`). Detect
+// the project type by looking for marker files at cwd; if found, extend the
+// ignore set so the bundle doesn't ship compiled DLLs / class files.
+function effectiveIgnore(cwd: string, override?: Set<string>): Set<string> {
+  if (override) return override;
+  let entries: string[];
+  try {
+    entries = readdirSync(cwd);
+  } catch {
+    return DEFAULT_IGNORE;
+  }
+  const isDotNetOrJava = entries.some((name) => {
+    if (name === 'pom.xml' || name === 'build.gradle' || name === 'build.gradle.kts') return true;
+    return /\.(csproj|sln|fsproj|vbproj)$/i.test(name);
+  });
+  if (!isDotNetOrJava) return DEFAULT_IGNORE;
+  return new Set<string>([...DEFAULT_IGNORE, 'bin', 'obj']);
+}
+
 export interface DiscoverOptions {
   maxDepth?: number;       // default 3
   ignore?: Set<string>;    // override DEFAULT_IGNORE
@@ -107,7 +128,7 @@ export interface DiscoverOptions {
 // because they almost never contain user-authored source.
 export function discoverPaths(cwd: string, opts: DiscoverOptions = {}): string[] {
   const maxDepth = opts.maxDepth ?? 3;
-  const ignore = opts.ignore ?? DEFAULT_IGNORE;
+  const ignore = effectiveIgnore(cwd, opts.ignore);
   const found = new Set<string>();
 
   function walk(absDir: string, depth: number): void {
@@ -257,7 +278,7 @@ export interface RichBundleCaps {
 // Same ignore-list and CODE_EXTS filter so folders and files stay in sync.
 export function discoverFiles(cwd: string, opts: DiscoverOptions = {}): string[] {
   const maxDepth = opts.maxDepth ?? 3;
-  const ignore = opts.ignore ?? DEFAULT_IGNORE;
+  const ignore = effectiveIgnore(cwd, opts.ignore);
   const found: string[] = [];
 
   function walk(absDir: string, depth: number): void {
