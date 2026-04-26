@@ -296,16 +296,15 @@ function Demo() {
         <div className="mt-12 md:mt-16 max-w-5xl mx-auto">
           <div className="paper-card overflow-hidden">
             <div className="relative" style={{aspectRatio:'16 / 9', background:'#0E1A1F'}}>
-              <div className="absolute inset-0 grid-dots opacity-10" />
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-center px-6">
-                <div className="w-16 h-16 rounded-full flex items-center justify-center"
-                     style={{background:'rgba(31,162,154,0.15)', border:'1px solid rgba(31,162,154,0.4)'}}>
-                  <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-                    <path d="M7 4l11 7-11 7V4z" fill="#1FA29A"/>
-                  </svg>
-                </div>
-                <div className="font-serif text-2xl md:text-3xl text-paper-100">Demo video coming soon</div>
-              </div>
+              <iframe
+                className="absolute inset-0 w-full h-full"
+                src="https://www.youtube.com/embed/kD6nnJAmRK8"
+                title="LearnLoop demo"
+                frameBorder="0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                referrerPolicy="strict-origin-when-cross-origin"
+                allowFullScreen
+              />
             </div>
           </div>
         </div>
