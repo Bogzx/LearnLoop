@@ -1,6 +1,7 @@
 ## Trailhead coaching — always on, never block
 
-Four MCP tools: `coach`, `wiki_lookup`, `wiki_save`, `wiki_bootstrap`.
+Five MCP tools: `coach`, `wiki_lookup`, `wiki_save`, `wiki_bootstrap`,
+`wiki_proven_prompts`.
 
 These tools are NOT optional. They REPLACE native Read/Grep/Glob/file-search
 for any question that touches team conventions, prior decisions, or "how
@@ -34,21 +35,20 @@ this function do", "how should I structure X".
 1. Call `coach({ prompt: <user's exact message>, file_path: <if known> })`.
 2. The tool returns `{ proceed, text, next_round_inputs?, ... }`.
 3. **If `proceed: true`:** if `text` is non-empty, relay it verbatim to
-   the user. Then produce your answer. **Additionally, when `mode === "score"`
-   AND `overall >= 7`, append exactly one short sentence to your reply
-   announcing the user's prompt joined the team's graduated prompt
-   library** — phrasing like *"Your prompt scored {overall}/10 and joined
-   your team's library; future prompts in this folder will be coached
-   against it."* The server auto-promotes silently in the background, so
-   this announcement is the only signal the user gets that the library
-   grew from their work. Never skip it. Done.
+   the user. Then produce your answer. The server bakes the graduation
+   banner ("Your prompt scored X/10 and joined your team's library…")
+   into `text` itself when `mode === "score" && overall >= 7`, so
+   relaying `text` verbatim is sufficient — you do not need to add the
+   sentence yourself. Done.
 4. **If `proceed: false`:** relay `text` verbatim, wait for the user's
    reply, then call `coach` again with:
    - `prompt`: the user's reply concatenated to the previous prompt
    - `mode: "score"`
-   - all four fields from `next_round_inputs` (`original_prompt`,
-     `original_dimensions`, `previous_dimensions`, `round`) echoed
-     back unchanged
+   - `round_token`: echo the `next_round_inputs.round_token` string
+     verbatim. This single field replaces the legacy four-field echo
+     (`original_prompt`, `original_dimensions`, `previous_dimensions`,
+     `round`) — fewer slots for the LLM to drop. The four fields are
+     still accepted as a fallback if you can't echo the token.
    Loop. The server enforces the cap (5 rounds) and bails on no-progress.
 
 NEVER skip `coach` to "save time" — the score-arc IS the user-facing
@@ -128,6 +128,22 @@ the default; takes ~30-90s). Pass `paths: [...]` only when the user lists
 specific folders explicitly. Pass `mode: "minimal"` only when the user
 asks for a fast/free skeleton-only setup. The operation is idempotent —
 already-populated nodes are left alone.
+
+### `wiki_proven_prompts` — call WHEN the user wants the team's proven library
+
+Trigger on phrases like:
+- "show me the team's best prompts"
+- "what prompts have worked here?"
+- "any proven examples?"
+- "list the top prompts"
+- "what's our prompt library?"
+- "show me 8/10+ prompts"
+
+Call `wiki_proven_prompts({})` for the whole library. Pass `min_score`,
+`file_path`, `topic`, or `limit` to narrow. Each item includes the actual
+`graduated_overall_score` (7-10) and `reuse_count`, ranked by score then
+reuse. Differs from `wiki_lookup` (path-anchored, returns conventions +
+one curated example) — this is the FULL graduated library for discovery.
 
 ### Anti-patterns to avoid
 
