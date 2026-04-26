@@ -4,26 +4,23 @@
 -- Apply against your Neon database:
 --   psql "$DATABASE_URL" -f packages/db/schema.sql
 -- Idempotent: every CREATE uses IF NOT EXISTS so re-running is safe.
+--
+-- Multi-tenant key: teams.token is the primary key (a stable string the
+-- client sends as X-Team-Token, e.g. 'repo_9d01...'). Child tables use
+-- team_token TEXT FK. The legacy UUID teams.id was retired in the
+-- 2026-04-26 token-as-team-key refactor — see
+-- packages/db/migrations/2026-04-26-token-as-team-key.sql for the data move.
 
 -- pgcrypto provides gen_random_uuid() on Postgres < 13. Neon ships 16+ which
 -- has it built-in, but the extension is still required to expose the function.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- Tenancy
+-- Tenancy. Token is the primary key (it's the value the client sends as
+-- X-Team-Token), so there's no separate UUID indirection to cache.
 CREATE TABLE IF NOT EXISTS teams (
-  id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name  TEXT NOT NULL,
-  token TEXT UNIQUE                              -- X-Team-Token value; nullable on legacy rows
+  token TEXT PRIMARY KEY,
+  name  TEXT NOT NULL
 );
--- Backfill the column on databases that were created before multi-tenant.
-ALTER TABLE teams ADD COLUMN IF NOT EXISTS token TEXT;
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'teams_token_key'
-  ) THEN
-    ALTER TABLE teams ADD CONSTRAINT teams_token_key UNIQUE (token);
-  END IF;
-END $$;
 
 -- Wiki tree (one row per folder OR file path).
 -- Folder paths end in '/'; file paths do not. Both shapes coexist after the
@@ -31,16 +28,14 @@ END $$;
 -- wiki-bootstrap-rich-design.md).
 CREATE TABLE IF NOT EXISTS nodes (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id     UUID NOT NULL REFERENCES teams(id),
+  team_token  TEXT NOT NULL REFERENCES teams(token),
   path        TEXT NOT NULL,                    -- e.g., 'src/api/auth/' OR 'src/api/auth/issue.ts'
   body_md     TEXT NOT NULL DEFAULT '',         -- the node.md content
   body_source TEXT NOT NULL DEFAULT 'manual',   -- 'manual' | 'bootstrap'; protects user edits from --force re-runs
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (team_id, path)
+  UNIQUE (team_token, path)
 );
-CREATE INDEX IF NOT EXISTS idx_nodes_team_path ON nodes(team_id, path);
--- Backfill the column on databases that pre-date rich bootstrap.
-ALTER TABLE nodes ADD COLUMN IF NOT EXISTS body_source TEXT NOT NULL DEFAULT 'manual';
+CREATE INDEX IF NOT EXISTS idx_nodes_team_token_path ON nodes(team_token, path);
 
 -- Accumulated learnings (the "AI-managed" content)
 CREATE TABLE IF NOT EXISTS learnings (
@@ -68,13 +63,11 @@ CREATE TABLE IF NOT EXISTS prompts (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_prompts_node_topic ON prompts(node_id, topic);
--- Backfill column on databases that pre-date the self-author filter.
-ALTER TABLE prompts ADD COLUMN IF NOT EXISTS author_user_id TEXT;
 
 -- Captured sessions
 CREATE TABLE IF NOT EXISTS captures (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id           UUID NOT NULL REFERENCES teams(id),
+  team_token        TEXT NOT NULL REFERENCES teams(token),
   surface           TEXT NOT NULL,             -- 'browser' | 'vscode' | 'mcp'
   user_prompt       TEXT NOT NULL,
   ai_response       TEXT,
@@ -90,15 +83,14 @@ CREATE TABLE IF NOT EXISTS captures (
 -- prompt-hash) within a 30s window."
 CREATE TABLE IF NOT EXISTS skill_observations (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id     UUID NOT NULL REFERENCES teams(id),
+  team_token  TEXT NOT NULL REFERENCES teams(token),
   user_id     TEXT NOT NULL,                     -- placeholder; no real users for demo
   dimension   TEXT NOT NULL,                     -- one of the 5 dimensions
   score       INT  NOT NULL,
   prompt_hash TEXT,
   ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-ALTER TABLE skill_observations ADD COLUMN IF NOT EXISTS prompt_hash TEXT;
-CREATE INDEX IF NOT EXISTS idx_skill_obs_team_dim_ts ON skill_observations(team_id, dimension, ts);
+CREATE INDEX IF NOT EXISTS idx_skill_obs_team_token_dim_ts ON skill_observations(team_token, dimension, ts);
 
 -- Cheap-insurance index for the GET /wiki/recent polling query.
 CREATE INDEX IF NOT EXISTS idx_learnings_last_seen_at ON learnings(last_seen_at DESC);
@@ -108,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_learnings_last_seen_at ON learnings(last_seen_at 
 -- per-path Gemini calls and updates these counters.
 CREATE TABLE IF NOT EXISTS wiki_jobs (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  team_id       UUID NOT NULL REFERENCES teams(id),
+  team_token    TEXT NOT NULL REFERENCES teams(token),
   status        TEXT NOT NULL DEFAULT 'pending',  -- pending | running | done | failed
   paths_total   INT NOT NULL,
   paths_done    INT NOT NULL DEFAULT 0,
@@ -118,7 +110,7 @@ CREATE TABLE IF NOT EXISTS wiki_jobs (
   error         TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_wiki_jobs_team_created ON wiki_jobs(team_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wiki_jobs_team_token_created ON wiki_jobs(team_token, created_at DESC);
 
 -- Per-path progress for a wiki_jobs row. `kind` lets the worker pick the
 -- right LLM prompt template. ON DELETE CASCADE so an admin clearing old jobs
@@ -132,11 +124,8 @@ CREATE TABLE IF NOT EXISTS wiki_job_paths (
   PRIMARY KEY (job_id, path)
 );
 
--- Bootstrap the demo team. Hardcoded UUID so every artifact can reference it
--- without first reading the row back. Idempotent on (id). Token mirrors the
--- value the legacy single-tenant build expected, so existing installs continue
--- to work after the multi-tenant cutover.
-INSERT INTO teams (id, name, token)
-VALUES ('11111111-1111-1111-1111-111111111111', 'Acme Fintech', 'trailhead_demo_acme_2026')
-ON CONFLICT (id) DO UPDATE
-  SET token = COALESCE(teams.token, EXCLUDED.token);
+-- Bootstrap the demo team. Idempotent on (token). Token mirrors the value the
+-- legacy single-tenant build expected, so existing installs continue to work.
+INSERT INTO teams (token, name)
+VALUES ('trailhead_demo_acme_2026', 'Acme Fintech')
+ON CONFLICT (token) DO NOTHING;

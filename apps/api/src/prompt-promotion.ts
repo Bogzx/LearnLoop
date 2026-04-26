@@ -18,7 +18,7 @@ import { q, upsertNode } from './db.ts';
 import { extractPathAndTopic } from './gemini.ts';
 
 interface PromoteArgs {
-  teamId: string;
+  teamToken: string;
   prompt: string;
   filePath: string | null | undefined;
   // Stored on insert so /examples and getStrongExample can prefer
@@ -60,7 +60,7 @@ function deepestFolderOf(p: string): string {
 //
 // Returns the node id and any topic Gemini extracted along the way.
 async function resolveTargetNode(
-  teamId: string,
+  teamToken: string,
   prompt: string,
   filePath: string | null | undefined,
 ): Promise<{ nodeId: string; topic: string | null }> {
@@ -77,19 +77,19 @@ async function resolveTargetNode(
     const ancestors = ancestorPaths(pathHint);
     const rows = await q<{ id: string }>(
       `SELECT id FROM nodes
-        WHERE team_id = $1 AND path = ANY($2::text[])
+        WHERE team_token = $1 AND path = ANY($2::text[])
         ORDER BY length(path) DESC
         LIMIT 1`,
-      [teamId, ancestors],
+      [teamToken, ancestors],
     );
     if (rows.length) return { nodeId: rows[0]!.id, topic };
     // No ancestor exists → upsert at the path's deepest folder so the
     // library entry sits as close to the work as possible.
-    const nodeId = await upsertNode(teamId, deepestFolderOf(pathHint));
+    const nodeId = await upsertNode(teamToken, deepestFolderOf(pathHint));
     return { nodeId, topic };
   }
 
-  const nodeId = await upsertNode(teamId, '');
+  const nodeId = await upsertNode(teamToken, '');
   return { nodeId, topic };
 }
 
@@ -101,7 +101,7 @@ export async function tryPromotePrompt(args: PromoteArgs): Promise<void> {
     if (!trimmed) return;
 
     const { nodeId, topic } = await resolveTargetNode(
-      args.teamId,
+      args.teamToken,
       trimmed,
       args.filePath,
     );

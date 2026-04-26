@@ -53,7 +53,7 @@ import {
   renderSuccessReveal,
   renderTeachBlock,
 } from '@trailhead/scoring';
-import { DEMO_TEAM_TOKEN, q, teamIdForToken, upsertNode, wipeTeamData } from './db.ts';
+import { applyTeamNameIfPlaceholder, DEMO_TEAM_TOKEN, q, ensureTeam, upsertNode, wipeTeamData } from './db.ts';
 import {
   acknowledgeProgress,
   extractTopic,
@@ -77,9 +77,9 @@ if (!process.env.GEMINI_API_KEY) { console.error('GEMINI_API_KEY not set'); proc
 // register teams explicitly.
 const AUTO_CREATE_TEAMS = process.env.TRAILHEAD_AUTO_CREATE_TEAMS !== 'false';
 
-// Hono context typing — the auth middleware sets `team_id` so every
-// downstream handler can pull it via c.get('team_id') with type safety.
-type AppEnv = { Variables: { team_id: string } };
+// Hono context typing — the auth middleware sets `team_token` so every
+// downstream handler can pull it via c.get('team_token') with type safety.
+type AppEnv = { Variables: { team_token: string } };
 const app = new Hono<AppEnv>();
 
 app.use('*', logger());
@@ -93,7 +93,7 @@ app.use(
 );
 
 // Auth middleware — multi-tenant. Resolves the X-Team-Token header into a
-// team_id (cached) and attaches it to the request context. Unknown tokens
+// team_token (cached) and attaches it to the request context. Unknown tokens
 // either spawn a new team (AUTO_CREATE_TEAMS=true, the demo default) or 401.
 //
 // The legacy single-tenant TEAM_TOKEN env var is no longer required: the
@@ -106,14 +106,14 @@ app.use('*', async (c, next) => {
   if (c.req.path === '/teams') return next();
   const token = c.req.header('x-team-token');
   if (!token) return c.json({ error: 'unauthorized', detail: 'missing X-Team-Token' }, 401);
-  const teamId = await teamIdForToken(token, { autoCreate: AUTO_CREATE_TEAMS });
-  if (!teamId) {
+  const teamToken = await ensureTeam(token, { autoCreate: AUTO_CREATE_TEAMS });
+  if (!teamToken) {
     return c.json(
       { error: 'unauthorized', detail: 'unknown team token' },
       401,
     );
   }
-  c.set('team_id', teamId);
+  c.set('team_token', teamToken);
   await next();
 });
 
@@ -165,30 +165,30 @@ function simpleHash(s: string): string {
 // and /coach so both write to the same rubric stream — the dashboard and
 // skill arc don't care which endpoint produced the row.
 async function writeSkillObservations(
-  teamId: string,
+  teamToken: string,
   userId: string,
   prompt: string,
   dimensions: DimensionScores,
 ): Promise<void> {
   const promptHash = simpleHash(prompt);
   await q(
-    `INSERT INTO skill_observations (team_id, user_id, dimension, score, prompt_hash)
-     SELECT i.team_id, i.user_id, i.dimension, i.score, i.prompt_hash
+    `INSERT INTO skill_observations (team_token, user_id, dimension, score, prompt_hash)
+     SELECT i.team_token, i.user_id, i.dimension, i.score, i.prompt_hash
        FROM ( VALUES
          ${DIMENSIONS.map((_, i) =>
-           `($1::uuid, $2::text, $${3 + i * 2}::text, $${4 + i * 2}::int, $13::text)`
+           `($1::text, $2::text, $${3 + i * 2}::text, $${4 + i * 2}::int, $13::text)`
          ).join(',\n         ')}
-       ) AS i(team_id, user_id, dimension, score, prompt_hash)
+       ) AS i(team_token, user_id, dimension, score, prompt_hash)
       WHERE NOT EXISTS (
         SELECT 1 FROM skill_observations s
-         WHERE s.team_id     = i.team_id
+         WHERE s.team_token     = i.team_token
            AND s.user_id     = i.user_id
            AND s.dimension   = i.dimension
            AND s.prompt_hash = i.prompt_hash
            AND s.ts          > NOW() - INTERVAL '30 seconds'
       )`,
     [
-      teamId,
+      teamToken,
       userId,
       ...DIMENSIONS.flatMap((d) => [d, dimensions[d]]),
       promptHash,
@@ -207,7 +207,7 @@ app.post('/score', async (c) => {
   // is calibrated against the team's conventions without inflating the
   // prompt being scored.
   const teamContext = body.context_path
-    ? await renderTeamContext(c.get('team_id'), body.context_path)
+    ? await renderTeamContext(c.get('team_token'), body.context_path)
     : null;
 
   const result = await scorePrompt({
@@ -218,7 +218,7 @@ app.post('/score', async (c) => {
   const overall = overallScore(result.dimensions);
 
   await writeSkillObservations(
-    c.get('team_id'),
+    c.get('team_token'),
     body.user_id,
     body.prompt,
     result.dimensions,
@@ -282,7 +282,7 @@ function lowestDimBelow(dims: DimensionScores, threshold: number = 7): Dimension
 // still returned when no other-authored alternative exists — keeps the
 // single-user demo posture working.
 async function fetchTopGraduatedForPath(
-  teamId: string,
+  teamToken: string,
   filePath: string,
   userId: string,
 ): Promise<string | null> {
@@ -292,31 +292,31 @@ async function fetchTopGraduatedForPath(
     `SELECT p.template
        FROM prompts p
        JOIN nodes n ON n.id = p.node_id
-      WHERE n.team_id = $1
+      WHERE n.team_token = $1
         AND n.path = ANY($2::text[])
         AND p.status = 'graduated'
       ORDER BY (p.author_user_id IS NULL OR p.author_user_id <> $3) DESC,
                p.reuse_count DESC,
                length(n.path) DESC
       LIMIT 1`,
-    [teamId, ancestors, userId],
+    [teamToken, ancestors, userId],
   );
   return rows.length ? rows[0]!.template : null;
 }
 
 // Wiki-first lookup: top graduated prompt across the team. Used when no
 // file_path is available. Same self-author preference as the path variant.
-async function fetchTopGraduatedForTeam(teamId: string, userId: string): Promise<string | null> {
+async function fetchTopGraduatedForTeam(teamToken: string, userId: string): Promise<string | null> {
   const rows = await q<{ template: string }>(
     `SELECT p.template
        FROM prompts p
        JOIN nodes n ON n.id = p.node_id
-      WHERE n.team_id = $1
+      WHERE n.team_token = $1
         AND p.status = 'graduated'
       ORDER BY (p.author_user_id IS NULL OR p.author_user_id <> $2) DESC,
                p.reuse_count DESC
       LIMIT 1`,
-    [teamId, userId],
+    [teamToken, userId],
   );
   return rows.length ? rows[0]!.template : null;
 }
@@ -333,7 +333,7 @@ async function fetchTopGraduatedForTeam(teamId: string, userId: string): Promise
 // multi-dim callers (skip / no-progress) ignore it because one tip can't
 // honestly summarize several principles at once.
 async function getStrongExample(args: {
-  teamId: string;
+  teamToken: string;
   userId: string;
   prompt: string;
   file_path?: string;
@@ -341,8 +341,8 @@ async function getStrongExample(args: {
   team_context: string | null;
 }): Promise<{ example: string; tip: string }> {
   const wiki = args.file_path
-    ? await fetchTopGraduatedForPath(args.teamId, args.file_path, args.userId)
-    : await fetchTopGraduatedForTeam(args.teamId, args.userId);
+    ? await fetchTopGraduatedForPath(args.teamToken, args.file_path, args.userId)
+    : await fetchTopGraduatedForTeam(args.teamToken, args.userId);
   if (wiki) return { example: wiki, tip: '' };
 
   const fallback = await rewriteForDims({
@@ -428,11 +428,11 @@ app.post('/coach', async (c) => {
   // teach prompts and Gemini's scoring see the team's subtree automatically.
   // The MCP coach tool only forwards file_path, so this is what makes coach
   // wiki-aware in practice.
-  const teamId = c.get('team_id');
+  const teamToken = c.get('team_token');
   const contextPath =
     body.context_path ?? (body.file_path ? deriveContextPath(body.file_path) : '');
   const teamContext = contextPath
-    ? await renderTeamContext(teamId, contextPath)
+    ? await renderTeamContext(teamToken, contextPath)
     : null;
 
   // 1. Score (always). Failure is fail-open: hand the LLM a "no coaching
@@ -483,7 +483,7 @@ app.post('/coach', async (c) => {
   }
 
   // 2. Skill_observation writes (same dedup as /score).
-  await writeSkillObservations(teamId, body.user_id, body.prompt, scoreResult.dimensions);
+  await writeSkillObservations(teamToken, body.user_id, body.prompt, scoreResult.dimensions);
 
   // 3. Branch on mode.
 
@@ -523,7 +523,7 @@ app.post('/coach', async (c) => {
     // produces a useful (if shorter) reveal.
     const [strong, summary] = await Promise.all([
       getStrongExample({
-        teamId,
+        teamToken,
         userId: body.user_id,
         prompt: originalPrompt,
         file_path: body.file_path,
@@ -581,7 +581,7 @@ app.post('/coach', async (c) => {
     // site (only /coach calls this — browser ext / VS Code ext don't).
     setImmediate(() => {
       void tryPromotePrompt({
-        teamId,
+        teamToken,
         userId: body.user_id,
         prompt: body.prompt,
         filePath: body.file_path ?? null,
@@ -594,7 +594,7 @@ app.post('/coach', async (c) => {
   // Round 1, score <7 → first teach block.
   if (isRound1 && lowest) {
     const strong = await getStrongExample({
-      teamId,
+      teamToken,
       userId: body.user_id,
       prompt: body.prompt,
       file_path: body.file_path,
@@ -669,7 +669,7 @@ app.post('/coach', async (c) => {
     // through coaching and landed a >=7 prompt — promote the final form.
     setImmediate(() => {
       void tryPromotePrompt({
-        teamId,
+        teamToken,
         userId: body.user_id,
         prompt: body.prompt,
         filePath: body.file_path ?? null,
@@ -700,7 +700,7 @@ app.post('/coach', async (c) => {
     // render fallback handles each independently.
     const [strong, summary] = await Promise.all([
       getStrongExample({
-        teamId,
+        teamToken,
         userId: body.user_id,
         prompt: originalPrompt,
         file_path: body.file_path,
@@ -772,7 +772,7 @@ app.post('/coach', async (c) => {
     // to '' so the static template still produces a usable block.
     const [strong, acknowledgment] = await Promise.all([
       getStrongExample({
-        teamId,
+        teamToken,
         userId: body.user_id,
         prompt: body.prompt,
         file_path: body.file_path,
@@ -844,11 +844,11 @@ app.post('/capture', async (c) => {
 
   const rows = await q<{ id: string }>(
     `INSERT INTO captures
-       (team_id, surface, user_prompt, ai_response, file_path, outcome, scored_dimensions)
+       (team_token, surface, user_prompt, ai_response, file_path, outcome, scored_dimensions)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id`,
     [
-      c.get('team_id'),
+      c.get('team_token'),
       surface,
       body.user_prompt,
       body.ai_response ?? null,
@@ -901,7 +901,7 @@ app.post('/wiki/propose', async (c) => {
   if (!body.insight.trim()) return c.json({ error: 'empty_insight' }, 400);
 
   const path = normalizePath(body.node_path);
-  const nodeId = await upsertNode(c.get('team_id'), path);
+  const nodeId = await upsertNode(c.get('team_token'), path);
   const bodyNormalized = normalize(body.insight);
 
   // Step 1: exact match on body_normalized — the cheap fast path. Hits when
@@ -1006,11 +1006,11 @@ app.get('/context', async (c) => {
        LEFT JOIN learnings l
               ON l.node_id = n.id
              AND l.status = 'durable'
-      WHERE n.team_id = $1
+      WHERE n.team_token = $1
         AND n.path = ANY($2::text[])
       ORDER BY length(n.path) ASC, n.path ASC,
                COALESCE(l.reinforcement_count, 0) DESC`,
-    [c.get('team_id'), ancestors],
+    [c.get('team_token'), ancestors],
   );
 
   const byPath = new Map<string, ContextNode>();
@@ -1049,12 +1049,12 @@ app.get('/examples', async (c) => {
     `SELECT p.template, p.topic, p.reuse_count, n.path AS node_path
        FROM prompts p
        JOIN nodes n ON n.id = p.node_id
-      WHERE n.team_id = $1
+      WHERE n.team_token = $1
         AND n.path = ANY($2::text[])
         AND p.status = 'graduated'
       ORDER BY p.reuse_count DESC, length(n.path) DESC
       LIMIT $3`,
-    [c.get('team_id'), ancestors, limit],
+    [c.get('team_token'), ancestors, limit],
   );
 
   const res: ExamplesResponse = { items: rows.map((r): ExamplesItem => ({
@@ -1082,7 +1082,7 @@ app.get('/search', async (c) => {
   // literal substring rather than "100<anything>".
   const escaped = query.replace(/[\\%_]/g, (ch) => `\\${ch}`);
   const pattern = `%${escaped}%`;
-  const teamId = c.get('team_id');
+  const teamToken = c.get('team_token');
   const ancestors = scope ? ancestorPaths(scope) : null;
 
   // Rule branch matches on body_md OR the node path itself — so a query like
@@ -1097,14 +1097,14 @@ app.get('/search', async (c) => {
             END AS body,
             n.path AS node_path
        FROM nodes n
-      WHERE n.team_id = $1
+      WHERE n.team_token = $1
         AND (n.body_md ILIKE $2 OR n.path ILIKE $2)
         AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
      UNION ALL
      SELECT 'learning'::text AS kind, l.body AS body, n.path AS node_path
        FROM learnings l
        JOIN nodes n ON n.id = l.node_id
-      WHERE n.team_id = $1
+      WHERE n.team_token = $1
         AND l.status = 'durable'
         AND l.body ILIKE $2
         AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
@@ -1112,12 +1112,12 @@ app.get('/search', async (c) => {
      SELECT 'prompt'::text AS kind, p.template AS body, n.path AS node_path
        FROM prompts p
        JOIN nodes n ON n.id = p.node_id
-      WHERE n.team_id = $1
+      WHERE n.team_token = $1
         AND p.status = 'graduated'
         AND p.template ILIKE $2
         AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
       LIMIT $4`,
-    [teamId, pattern, ancestors, limit],
+    [teamToken, pattern, ancestors, limit],
   );
 
   return c.json({ items: rows });
@@ -1143,11 +1143,11 @@ app.get('/wiki/recent', async (c) => {
             l.reinforcement_count, l.last_seen_at, l.created_at
        FROM learnings l
        JOIN nodes n ON n.id = l.node_id
-      WHERE n.team_id = $1
+      WHERE n.team_token = $1
         AND l.last_seen_at > $2
       ORDER BY l.last_seen_at DESC
       LIMIT $3`,
-    [c.get('team_id'), since.toISOString(), limit],
+    [c.get('team_token'), since.toISOString(), limit],
   );
 
   const res: WikiRecentResponse = {
@@ -1184,13 +1184,13 @@ app.post('/diff', async (c) => {
       `SELECT p.template, p.topic, n.path AS node_path
          FROM prompts p
          JOIN nodes n ON n.id = p.node_id
-        WHERE n.team_id = $1
+        WHERE n.team_token = $1
           AND p.status = 'graduated'
           AND p.topic = $2
           AND n.path = ANY($3::text[])
         ORDER BY p.reuse_count DESC, length(n.path) DESC
         LIMIT 1`,
-      [c.get('team_id'), topic, ancestors],
+      [c.get('team_token'), topic, ancestors],
     )
   )[0];
   if (!candidate) {
@@ -1199,12 +1199,12 @@ app.post('/diff', async (c) => {
         `SELECT p.template, p.topic, n.path AS node_path
            FROM prompts p
            JOIN nodes n ON n.id = p.node_id
-          WHERE n.team_id = $1
+          WHERE n.team_token = $1
             AND p.status = 'graduated'
             AND n.path = ANY($2::text[])
           ORDER BY p.reuse_count DESC, length(n.path) DESC
           LIMIT 1`,
-        [c.get('team_id'), ancestors],
+        [c.get('team_token'), ancestors],
       )
     )[0];
   }
@@ -1214,10 +1214,10 @@ app.post('/diff', async (c) => {
         `SELECT p.template, p.topic, n.path AS node_path
            FROM prompts p
            JOIN nodes n ON n.id = p.node_id
-          WHERE n.team_id = $1 AND p.status = 'graduated'
+          WHERE n.team_token = $1 AND p.status = 'graduated'
           ORDER BY p.reuse_count DESC
           LIMIT 1`,
-        [c.get('team_id')],
+        [c.get('team_token')],
       )
     )[0];
   }
@@ -1271,18 +1271,18 @@ app.get('/skill-arc', async (c) => {
     ? await q<{ dimension: Dimension; score: number; ts: Date }>(
         `SELECT dimension, score, ts
            FROM skill_observations
-          WHERE team_id = $1 AND user_id = $2 AND ts > $3
+          WHERE team_token = $1 AND user_id = $2 AND ts > $3
           ORDER BY ts ASC
           LIMIT $4`,
-        [c.get('team_id'), userIdParam, since.toISOString(), limit],
+        [c.get('team_token'), userIdParam, since.toISOString(), limit],
       )
     : await q<{ dimension: Dimension; score: number; ts: Date }>(
         `SELECT dimension, score, ts
            FROM skill_observations
-          WHERE team_id = $1 AND ts > $2
+          WHERE team_token = $1 AND ts > $2
           ORDER BY ts ASC
           LIMIT $3`,
-        [c.get('team_id'), since.toISOString(), limit],
+        [c.get('team_token'), since.toISOString(), limit],
       );
 
   const res: SkillArcResponse = {
@@ -1308,8 +1308,8 @@ app.get('/team/metrics', async (c) => {
     q<{ avg_overall: number | null; total_obs: number }>(
       `SELECT AVG(score)::float AS avg_overall, COUNT(*)::int AS total_obs
          FROM skill_observations
-        WHERE team_id = $1 AND ts > $2`,
-      [c.get('team_id'), sevenDaysAgo],
+        WHERE team_token = $1 AND ts > $2`,
+      [c.get('team_token'), sevenDaysAgo],
     ),
     q<{ durable_count: number; draft_count: number }>(
       `SELECT
@@ -1317,22 +1317,22 @@ app.get('/team/metrics', async (c) => {
          COUNT(*) FILTER (WHERE l.status = 'draft')::int   AS draft_count
          FROM learnings l
          JOIN nodes n ON n.id = l.node_id
-        WHERE n.team_id = $1`,
-      [c.get('team_id')],
+        WHERE n.team_token = $1`,
+      [c.get('team_token')],
     ),
     q<{ total: number; helpful: number }>(
       `SELECT
          COUNT(*)::int AS total,
          COUNT(*) FILTER (WHERE outcome = 'helpful')::int AS helpful
          FROM captures
-        WHERE team_id = $1 AND created_at > $2`,
-      [c.get('team_id'), sevenDaysAgo],
+        WHERE team_token = $1 AND created_at > $2`,
+      [c.get('team_token'), sevenDaysAgo],
     ),
     q<{ active_users: number }>(
       `SELECT COUNT(DISTINCT user_id)::int AS active_users
          FROM skill_observations
-        WHERE team_id = $1 AND ts > $2`,
-      [c.get('team_id'), sevenDaysAgo],
+        WHERE team_token = $1 AND ts > $2`,
+      [c.get('team_token'), sevenDaysAgo],
     ),
   ]);
 
@@ -1357,7 +1357,7 @@ app.get('/team/metrics', async (c) => {
 // learnings split into durable vs draft. Sort by path (prefix-friendly).
 
 app.get('/wiki/tree', async (c) => {
-  const teamId = c.get('team_id');
+  const teamToken = c.get('team_token');
   // Two queries instead of a three-way LEFT JOIN to avoid the cartesian
   // row explosion (nodes × learnings × prompts). Run in parallel — the
   // round-trip overhead is negligible at hackathon scale.
@@ -1376,10 +1376,10 @@ app.get('/wiki/tree', async (c) => {
               l.status AS learning_status, l.reinforcement_count
          FROM nodes n
          LEFT JOIN learnings l ON l.node_id = n.id
-        WHERE n.team_id = $1
+        WHERE n.team_token = $1
         ORDER BY n.path ASC,
                  COALESCE(l.reinforcement_count, 0) DESC`,
-      [teamId],
+      [teamToken],
     ),
     q<{
       path: string;
@@ -1395,12 +1395,12 @@ app.get('/wiki/tree', async (c) => {
               p.reuse_count
          FROM prompts p
          JOIN nodes n ON n.id = p.node_id
-        WHERE n.team_id = $1
+        WHERE n.team_token = $1
           AND p.status = 'graduated'
         ORDER BY n.path ASC,
                  p.reuse_count DESC,
                  p.created_at DESC`,
-      [teamId],
+      [teamToken],
     ),
   ]);
 
@@ -1460,13 +1460,12 @@ app.get('/wiki/tree', async (c) => {
 // populate a Select-team dropdown before any token is configured). Demo
 // simplicity: no per-user permission filter.
 app.get('/teams', async (c) => {
-  const rows = await q<{ id: string; name: string; token: string | null }>(
-    'SELECT id, name, token FROM teams WHERE token IS NOT NULL ORDER BY name ASC',
+  const rows = await q<{ name: string; token: string }>(
+    'SELECT name, token FROM teams ORDER BY name ASC',
   );
   const teams: TeamSummary[] = rows.map((r) => ({
-    id: r.id,
     name: r.name,
-    token: r.token as string,
+    token: r.token,
   }));
   const res: TeamsListResponse = { teams };
   return c.json(res);
@@ -1511,7 +1510,7 @@ app.post('/improve', async (c) => {
   // subtree as system context so the coach's clarifying questions and the
   // polished prompt land in the team's idiom.
   const teamContext = body.context_path
-    ? await renderTeamContext(c.get('team_id'), body.context_path)
+    ? await renderTeamContext(c.get('team_token'), body.context_path)
     : null;
 
   try {
@@ -1560,7 +1559,7 @@ app.delete('/team/data', async (c) => {
       400,
     );
   }
-  const teamId = c.get('team_id');
+  const teamToken = c.get('team_token');
   const isDemo = c.req.header('x-team-token') === DEMO_TEAM_TOKEN;
   if (isDemo && process.env.TRAILHEAD_ALLOW_DEMO_RESET !== 'true') {
     return c.json(
@@ -1572,8 +1571,8 @@ app.delete('/team/data', async (c) => {
       403,
     );
   }
-  const deleted = await wipeTeamData(teamId);
-  return c.json({ team_id: teamId, deleted });
+  const deleted = await wipeTeamData(teamToken);
+  return c.json({ team_token: teamToken, deleted });
 });
 
 // ----- POST /onboard/repo ----------------------------------------------------
@@ -1628,6 +1627,10 @@ app.post('/onboard/repo', async (c) => {
     return c.json({ error: 'bad_request', detail: 'no valid paths after normalization' }, 400);
   }
 
+  if (typeof body.team_name === 'string' && body.team_name.trim()) {
+    await applyTeamNameIfPlaceholder(c.get('team_token'), body.team_name);
+  }
+
   const nodes: { path: string; id: string }[] = [];
   let nodes_created = 0;
 
@@ -1645,16 +1648,16 @@ app.post('/onboard/repo', async (c) => {
     // marks it 0 on fresh inserts; ON CONFLICT updates set xmax to the
     // current xid). Lets us count creates without a second query.
     const rows = await q<{ id: string; inserted: boolean }>(
-      `INSERT INTO nodes (team_id, path, body_md)
+      `INSERT INTO nodes (team_token, path, body_md)
          VALUES ($1, $2, $3)
-       ON CONFLICT (team_id, path) DO UPDATE
+       ON CONFLICT (team_token, path) DO UPDATE
          SET body_md = CASE
                WHEN $3 <> '' AND nodes.body_md = '' THEN $3
                ELSE nodes.body_md
              END,
              updated_at = NOW()
        RETURNING id, (xmax = 0) AS inserted`,
-      [c.get('team_id'), path, seedBody],
+      [c.get('team_token'), path, seedBody],
     );
     const row = rows[0]!;
     if (row.inserted) nodes_created += 1;
@@ -1716,7 +1719,11 @@ app.post('/onboard/repo/full', async (c) => {
     }
   }
 
-  const teamId = c.get('team_id');
+  const teamToken = c.get('team_token');
+
+  if (typeof body.team_name === 'string' && body.team_name.trim()) {
+    await applyTeamNameIfPlaceholder(teamToken, body.team_name);
+  }
 
   // Normalize folder paths (trailing slash) and dedupe.
   const folderSet = new Set<string>();
@@ -1740,8 +1747,8 @@ app.post('/onboard/repo/full', async (c) => {
   // Insert job header and per-path rows in one transaction so a partial
   // failure doesn't leave a job with no work items.
   const jobRows = await q<{ id: string }>(
-    `INSERT INTO wiki_jobs (team_id, paths_total) VALUES ($1, $2) RETURNING id`,
-    [teamId, pathsTotal],
+    `INSERT INTO wiki_jobs (team_token, paths_total) VALUES ($1, $2) RETURNING id`,
+    [teamToken, pathsTotal],
   );
   const jobId = jobRows[0]!.id;
 
@@ -1767,7 +1774,7 @@ app.post('/onboard/repo/full', async (c) => {
   // throws to here.
   const bundle = bundleFromRequest({ ...body, folders, files });
   setImmediate(() => {
-    runJob(jobId, teamId, bundle).catch((e) => {
+    runJob(jobId, teamToken, bundle).catch((e) => {
       console.error(`[wiki-job ${jobId}] uncaught:`, e);
     });
   });
@@ -1781,7 +1788,7 @@ app.post('/onboard/repo/full', async (c) => {
 // this every 2s. Returns the job header counters plus per-path rows so the
 // UI can render which path is processing / which failed.
 //
-// Cross-team safety: the auth middleware sets team_id from the X-Team-Token
+// Cross-team safety: the auth middleware sets team_token from the X-Team-Token
 // header; the WHERE clause filters on it. A team can only see its own jobs
 // (otherwise a leaked job_id would be a tenancy break).
 
@@ -1790,7 +1797,7 @@ app.get('/onboard/jobs/:id', async (c) => {
   if (!id || !/^[0-9a-f-]{8,}$/i.test(id)) {
     return c.json({ error: 'bad_request', detail: 'invalid job id' }, 400);
   }
-  const teamId = c.get('team_id');
+  const teamToken = c.get('team_token');
 
   const headers = await q<{
     id: string;
@@ -1803,8 +1810,8 @@ app.get('/onboard/jobs/:id', async (c) => {
     error: string | null;
   }>(
     `SELECT id, status, paths_total, paths_done, paths_failed, started_at, finished_at, error
-       FROM wiki_jobs WHERE team_id = $1 AND id = $2`,
-    [teamId, id],
+       FROM wiki_jobs WHERE team_token = $1 AND id = $2`,
+    [teamToken, id],
   );
   if (headers.length === 0) return c.json({ error: 'not_found' }, 404);
   const h = headers[0]!;
