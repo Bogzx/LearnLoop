@@ -240,7 +240,7 @@ app.post('/score', async (c) => {
 // next_round_inputs echoed back. Server enforces the round cap and bails
 // on no-progress.
 
-const COACH_MAX_ROUNDS = 3;
+const COACH_MAX_ROUNDS = 5;
 
 function clampRound(n: number | undefined): number {
   if (typeof n !== 'number' || !Number.isFinite(n)) return 1;
@@ -1135,31 +1135,64 @@ app.get('/team/metrics', async (c) => {
 // learnings split into durable vs draft. Sort by path (prefix-friendly).
 
 app.get('/wiki/tree', async (c) => {
-  const rows = await q<{
-    node_id: string;
-    path: string;
-    body_md: string;
-    learning_id: string | null;
-    learning_body: string | null;
-    learning_status: 'draft' | 'durable' | null;
-    reinforcement_count: number | null;
-  }>(
-    `SELECT n.id AS node_id, n.path, n.body_md,
-            l.id AS learning_id, l.body AS learning_body,
-            l.status AS learning_status, l.reinforcement_count
-       FROM nodes n
-       LEFT JOIN learnings l ON l.node_id = n.id
-      WHERE n.team_id = $1
-      ORDER BY n.path ASC,
-               COALESCE(l.reinforcement_count, 0) DESC`,
-    [c.get('team_id')],
-  );
+  const teamId = c.get('team_id');
+  // Two queries instead of a three-way LEFT JOIN to avoid the cartesian
+  // row explosion (nodes × learnings × prompts). Run in parallel — the
+  // round-trip overhead is negligible at hackathon scale.
+  const [rows, promptRows] = await Promise.all([
+    q<{
+      node_id: string;
+      path: string;
+      body_md: string;
+      learning_id: string | null;
+      learning_body: string | null;
+      learning_status: 'draft' | 'durable' | null;
+      reinforcement_count: number | null;
+    }>(
+      `SELECT n.id AS node_id, n.path, n.body_md,
+              l.id AS learning_id, l.body AS learning_body,
+              l.status AS learning_status, l.reinforcement_count
+         FROM nodes n
+         LEFT JOIN learnings l ON l.node_id = n.id
+        WHERE n.team_id = $1
+        ORDER BY n.path ASC,
+                 COALESCE(l.reinforcement_count, 0) DESC`,
+      [teamId],
+    ),
+    q<{
+      path: string;
+      prompt_id: string;
+      template: string;
+      topic: string | null;
+      reuse_count: number;
+    }>(
+      `SELECT n.path,
+              p.id AS prompt_id,
+              p.template,
+              p.topic,
+              p.reuse_count
+         FROM prompts p
+         JOIN nodes n ON n.id = p.node_id
+        WHERE n.team_id = $1
+          AND p.status = 'graduated'
+        ORDER BY n.path ASC,
+                 p.reuse_count DESC,
+                 p.created_at DESC`,
+      [teamId],
+    ),
+  ]);
 
   const byPath = new Map<string, WikiTreeNode>();
   for (const r of rows) {
     let node = byPath.get(r.path);
     if (!node) {
-      node = { path: r.path, body_md: r.body_md, durable_learnings: [], draft_learnings: [] };
+      node = {
+        path: r.path,
+        body_md: r.body_md,
+        durable_learnings: [],
+        draft_learnings: [],
+        graduated_prompts: [],
+      };
       byPath.set(r.path, node);
     }
     if (r.learning_id && r.learning_body && r.learning_status) {
@@ -1172,6 +1205,28 @@ app.get('/wiki/tree', async (c) => {
       if (r.learning_status === 'durable') node.durable_learnings.push(learning);
       else node.draft_learnings.push(learning);
     }
+  }
+  for (const r of promptRows) {
+    // Fallback init covers the rare case where a node carries prompts but
+    // never appeared in the learnings query (shouldn't happen since the
+    // first query LEFT JOINs every node, but defense-in-depth).
+    let node = byPath.get(r.path);
+    if (!node) {
+      node = {
+        path: r.path,
+        body_md: '',
+        durable_learnings: [],
+        draft_learnings: [],
+        graduated_prompts: [],
+      };
+      byPath.set(r.path, node);
+    }
+    node.graduated_prompts.push({
+      id: r.prompt_id,
+      template: r.template,
+      topic: r.topic,
+      reuse_count: r.reuse_count,
+    });
   }
 
   const res: WikiTreeResponse = { nodes: Array.from(byPath.values()) };
