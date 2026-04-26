@@ -365,8 +365,8 @@ async function getStrongExample(args: {
 // the rule. This wording is the canonical one referenced in the directive.
 function renderLibraryBanner(overall: number): string {
   return (
-    `Your prompt scored ${overall}/10 and joined your team's library; ` +
-    `future prompts in this folder will be coached against it.`
+    `### ✅ Your prompt scored **${overall}/10** and joined your team's library\n` +
+    `_Future prompts in this folder will be coached against it._`
   );
 }
 
@@ -547,6 +547,7 @@ app.post('/coach', async (c) => {
           originalDimensions: originalDims,
           reason: 'skip',
           summary,
+          overall: overallScore(originalDims),
         })
       : '';
     const res: CoachResponse = {
@@ -610,6 +611,8 @@ app.post('/coach', async (c) => {
       targetScore: scoreResult.dimensions[lowest],
       strongExample: strong.example,
       tip: strong.tip,
+      dimensions: scoreResult.dimensions,
+      overall,
     });
     const nextState: RoundState = {
       original_prompt: body.prompt,
@@ -727,6 +730,7 @@ app.post('/coach', async (c) => {
           reason: 'no_progress',
           noProgressDim: previousLowest ?? undefined,
           summary,
+          overall: overallScore(originalDims),
         })
       : '';
     const res: CoachResponse = {
@@ -799,6 +803,8 @@ app.post('/coach', async (c) => {
         previousLowest && previousLowest !== lowest ? previousLowest : undefined,
       acknowledgment,
       tip: strong.tip,
+      dimensions: scoreResult.dimensions,
+      overall,
     });
     const nextState: RoundState = {
       original_prompt: originalPrompt,

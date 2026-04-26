@@ -13,6 +13,14 @@ export interface RenderTeachBlockArgs {
   // demonstrates. Rendered as "Why it works: <tip>" right after the
   // example. Omitted when empty / undefined.
   tip?: string;
+  // Full 5-dim score block, rendered as a markdown table at the top of the
+  // teach block so the user always sees the rubric, not just the targeted
+  // dim. Optional for backwards compatibility — when missing, the table
+  // is skipped.
+  dimensions?: DimensionScores;
+  // Overall 0-10. When set, surfaces in the header banner with a
+  // traffic-light emoji.
+  overall?: number;
 }
 export declare function renderTeachBlock(args: RenderTeachBlockArgs): string;
 
@@ -37,5 +45,7 @@ export interface RenderSkipRevealArgs {
   noProgressDim?: Dimension;
   // Same as RenderSuccessRevealArgs.summary.
   summary?: string;
+  // Optional overall for the skip header banner.
+  overall?: number;
 }
 export declare function renderSkipReveal(args: RenderSkipRevealArgs): string;
