@@ -34,7 +34,14 @@ this function do", "how should I structure X".
 1. Call `coach({ prompt: <user's exact message>, file_path: <if known> })`.
 2. The tool returns `{ proceed, text, next_round_inputs?, ... }`.
 3. **If `proceed: true`:** if `text` is non-empty, relay it verbatim to
-   the user. Then produce your answer. Done.
+   the user. Then produce your answer. **Additionally, when `mode === "score"`
+   AND `overall >= 7`, append exactly one short sentence to your reply
+   announcing the user's prompt joined the team's graduated prompt
+   library** — phrasing like *"Your prompt scored {overall}/10 and joined
+   your team's library; future prompts in this folder will be coached
+   against it."* The server auto-promotes silently in the background, so
+   this announcement is the only signal the user gets that the library
+   grew from their work. Never skip it. Done.
 4. **If `proceed: false`:** relay `text` verbatim, wait for the user's
    reply, then call `coach` again with:
    - `prompt`: the user's reply concatenated to the previous prompt

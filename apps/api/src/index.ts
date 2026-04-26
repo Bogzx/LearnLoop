@@ -62,6 +62,7 @@ import {
   scorePrompt,
   synthesizeDiff,
 } from './gemini.ts';
+import { tryPromotePrompt } from './prompt-promotion.ts';
 import { renderTeamContext } from './team-context.ts';
 import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
 
@@ -479,6 +480,17 @@ app.post('/coach', async (c) => {
       missing: scoreResult.missing,
       text: '',
     };
+    // Fire-and-forget auto-promotion to the team's prompt library. Off the
+    // response path, fail-open inside tryPromotePrompt. MCP-only by call
+    // site (only /coach calls this — browser ext / VS Code ext don't).
+    setImmediate(() => {
+      void tryPromotePrompt({
+        teamId,
+        prompt: body.prompt,
+        filePath: body.file_path ?? null,
+        dimensions: scoreResult.dimensions,
+      });
+    });
     return c.json(res);
   }
 
@@ -540,6 +552,16 @@ app.post('/coach', async (c) => {
       missing: scoreResult.missing,
       text,
     };
+    // Fire-and-forget auto-promotion (round 2+ success). The user iterated
+    // through coaching and landed a >=7 prompt — promote the final form.
+    setImmediate(() => {
+      void tryPromotePrompt({
+        teamId,
+        prompt: body.prompt,
+        filePath: body.file_path ?? null,
+        dimensions: scoreResult.dimensions,
+      });
+    });
     return c.json(res);
   }
 

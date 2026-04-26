@@ -419,6 +419,67 @@ export async function extractTopic(prompt: string): Promise<string> {
   return parsed?.topic ?? 'other';
 }
 
+// ----- path + topic extraction (used by /coach prompt-promotion) ------------
+// Single Flash call when /coach gets a graduate-eligible prompt without an
+// explicit file_path. Returns the file/folder mentioned in the prompt text
+// (empty string if none) and the topic, so we can file the promoted prompt
+// under the right node in one round-trip. Mirrors extractTopic's shape.
+const PATH_TOPIC_SYSTEM_PROMPT =
+  `Extract a folder or file path AND a topic from a developer's prompt.
+
+PATH: If the prompt mentions a specific file or folder path (for example
+'src/api/webhooks/handler.ts' or 'src/db/'), return that exact path. If no
+path is mentioned, return an empty string. Do NOT invent paths. Do NOT
+include any text other than the path itself.
+
+TOPIC: Pick the closest match from the enum. Use 'other' if nothing fits.
+
+Return ONLY the JSON object.`;
+
+export async function extractPathAndTopic(
+  prompt: string,
+): Promise<{ path: string | null; topic: string | null }> {
+  try {
+    const resp = await withRetry(
+      () => ai.models.generateContent({
+        model: TOPIC_MODEL,
+        contents: prompt,
+        config: {
+          systemInstruction: PATH_TOPIC_SYSTEM_PROMPT,
+          temperature: 0,
+          thinkingConfig: { thinkingBudget: 0 },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            required: ['path', 'topic'],
+            properties: {
+              path: { type: Type.STRING },
+              topic: { type: Type.STRING, enum: [...TOPIC_VALUES] },
+            },
+          },
+        },
+      }),
+      'path-topic',
+    );
+    const parsed = tryParseJson<{ path?: string; topic?: string }>(extractAnswer(resp));
+    const rawPath = typeof parsed?.path === 'string' ? parsed.path.trim() : '';
+    // Sanity check: paths don't contain whitespace and shouldn't be a sentence.
+    // If the model echoed prose, treat it as null.
+    const path =
+      rawPath.length > 0 && rawPath.length < 200 && !/\s/.test(rawPath)
+        ? rawPath
+        : null;
+    const topic =
+      typeof parsed?.topic === 'string' && parsed.topic !== 'other'
+        ? parsed.topic
+        : null;
+    return { path, topic };
+  } catch (err) {
+    console.warn('[gemini] extractPathAndTopic failed', err);
+    return { path: null, topic: null };
+  }
+}
+
 // ----- /diff narrative synthesis (Gemma 4 31B; quality > latency) -----------
 export async function synthesizeDiff(args: {
   user_prompt: string;

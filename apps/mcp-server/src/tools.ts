@@ -129,6 +129,14 @@ export const COACH_DESC =
   'prompt and the four next_round_inputs fields echoed back; when ' +
   'proceed=true, relay any non-empty text and produce your answer. ' +
   "Use mode='skip_reveal' if the user dismisses coaching mid-loop. " +
+  'GRADUATION ANNOUNCEMENT: when proceed=true AND mode=\'score\' AND ' +
+  'overall>=7, you MUST append exactly one short sentence to your reply ' +
+  "telling the user their prompt was strong enough to join the team's " +
+  'graduated prompt library — for example: "Your prompt scored ' +
+  '{overall}/10 and joined your team\'s library; future prompts in ' +
+  'this folder will be coached against it." The server auto-promotes ' +
+  'silently in the background, so this announcement is the only signal ' +
+  'the user gets that the library grew from their work — never skip it. ' +
   'NEVER skip this tool to "save time" — the score-arc IS the user-' +
   'facing product.';
 
