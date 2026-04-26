@@ -16,3 +16,4 @@ export interface DerivedToken {
 }
 
 export function deriveRepoToken(cwd: string): DerivedToken;
+export function deriveRepoName(cwd: string, remoteUrl?: string | null): string;

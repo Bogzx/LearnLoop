@@ -1,16 +1,3 @@
 {
-  "mcpServers": {
-    "trailhead": {
-      "command": "npx",
-      "args": [
-        "--yes",
-        "tsx",
-        "C:/Users/Bogdan/Documents/Polihackwinners/apps/mcp-server/src/index.ts"
-      ],
-      "env": {
-        "TRAILHEAD_API_URL": "https://trailheadapi-production.up.railway.app",
-        "TRAILHEAD_TEAM_TOKEN": "repo_9d01c258a4bebb37"
-      }
-    }
-  }
+  "mcpServers": {}
 }

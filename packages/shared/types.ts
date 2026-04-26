@@ -145,6 +145,11 @@ export interface WikiTreeResponse { nodes: WikiTreeNode[]; }
 export interface OnboardRepoRequest {
   paths: string[];                              // e.g., ['src/api/', 'src/db/', ...]
   initial_rules?: Record<string, string>;       // path → markdown body for body_md
+  // Human-readable repo name (e.g. "Polihackwinners") to set as teams.name.
+  // The token stays a stable hash; this is what the dashboard / popup show.
+  // Server only updates teams.name when it currently looks like the
+  // 'team:<token-prefix>' placeholder, so explicit renames stick.
+  team_name?: string;
 }
 export interface OnboardRepoResponse {
   nodes_created: number;
@@ -169,6 +174,9 @@ export interface OnboardRepoFullRequest {
   initial_rules?: Record<string, string>;         // CLAUDE.md / copilot-instructions seed (root only by convention)
   manifests?: Record<string, string>;             // 'package.json' / 'Cargo.toml' / etc → raw content for tech-stack pass
   force?: boolean;                                // overwrite body_source='bootstrap' rows; manual edits still preserved
+  // Human-readable repo name (e.g. "Polihackwinners") to set as teams.name.
+  // Same semantics as OnboardRepoRequest.team_name.
+  team_name?: string;
 }
 export interface OnboardRepoFullResponse {
   job_id: string;
@@ -283,12 +291,15 @@ export interface CoachResponse {
   missing_dims?: string[];
 }
 
-// GET /teams — list every team in the database (id, name, token).
+// GET /teams — list every team in the database (name, token).
 // Unauthenticated so the popup can populate a Select-team dropdown
 // before any token is configured. Demo simplicity: no per-user
 // permission filter (the user explicitly asked for "all teams").
+//
+// Token is the team's primary key (the value the client sends as
+// X-Team-Token). There is no separate UUID id since the
+// 2026-04-26 token-as-team-key refactor.
 export interface TeamSummary {
-  id: string;
   name: string;
   token: string;
 }
