@@ -1,13 +1,51 @@
-# Trailhead / LearnLoop
+# LearnLoop
 
-A team-wide prompting coach. Every prompt you send through Claude.ai, VS Code,
+A team-wide prompting coach. Every prompt sent through Claude.ai, VS Code,
 Claude Code, or Copilot Chat is scored on five dimensions in real time. Weak
-prompts trigger a short teaching loop. Strong prompts feed the team wiki, which
-is then injected back into the next person's context — so a team's "way of
+prompts trigger a short teaching loop. Strong prompts feed a team wiki, which
+gets injected back into the next person's context — so a team's "way of
 prompting" compounds without anyone writing docs.
 
-Trailhead is the engineering codename across the codebase; **LearnLoop** is the
-product name on the marketing site.
+> Trailhead is the engineering codename inside the repo; **LearnLoop** is the
+> product name on the marketing site.
+
+- **Landing page / waitlist:** <https://learnloop-gules.vercel.app/>
+- **Demo video (3 min walkthrough):** <https://www.youtube.com/watch?v=kD6nnJAmRK8>
+
+[![Watch the demo](https://img.youtube.com/vi/kD6nnJAmRK8/maxresdefault.jpg)](https://www.youtube.com/watch?v=kD6nnJAmRK8 "LearnLoop — 3 minute walkthrough")
+
+### Screenshots
+
+<table>
+<tr>
+<td width="40%" valign="top">
+<img src="docs/images/extension.jpeg" alt="LearnLoop browser-extension popup — Coaching toggle, team picker, and active context path" />
+<br />
+<sub><b>Browser-extension popup.</b> Toggle coaching, pick the team, scope scoring to a wiki node so the rubric reads against that subtree's conventions.</sub>
+</td>
+<td width="60%" valign="top">
+<img src="docs/images/chat_feedback.jpeg" alt="In-chat Coach output — overall 2/10 with per-dimension scores and a constraint-articulation explanation" />
+<br />
+<sub><b>Coach output inside Claude Code.</b> Five dimensions, a per-dimension breakdown, and a teaching paragraph for the weakest one — surfaced through the MCP <code>coach</code> tool before the prompt is sent.</sub>
+</td>
+</tr>
+</table>
+
+---
+
+## The 5-dimension rubric
+
+Every prompt is scored 0–10 on:
+
+1. `goal_clarity` — what outcome is being asked for
+2. `specificity` — concrete files, functions, errors named
+3. `context_loading` — relevant code/docs/examples attached
+4. `constraint_articulation` — what *must not* change, perf/style limits
+5. `output_specification` — desired shape of the response
+
+`overall = mean of the five dims`. Below 7 triggers coaching; ≥ 7 lands
+silently. The rubric is concrete enough that a human reviewer could apply it —
+the LLM is the implementation, not the product.
 
 ---
 
@@ -20,24 +58,24 @@ backend, all sharing the same TypeScript contract.
 
 Single source of truth. Multi-tenant by `X-Team-Token` header, with optional
 auto-creation of new teams on unknown tokens (`TRAILHEAD_AUTO_CREATE_TEAMS`).
-Endpoints actually implemented in `apps/api/src/index.ts`:
+Endpoints implemented in `apps/api/src/index.ts`:
 
 | Method + Path | What it does |
 |---|---|
 | `GET  /` | Health + endpoint catalog (unauth) |
 | `GET  /teams` | List all teams with tokens (unauth, drives the dashboard team picker) |
 | `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
-| `POST /coach` | Stateless 3-round teach→reveal coaching loop (educational pipeline) |
+| `POST /coach` | Stateless 3-round teach→reveal coaching loop |
 | `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
 | `POST /wiki/propose` | Normalize + dedup an insight on `(node_id, body_normalized)`, increment `reinforcement_count`, promote `draft → durable` at ≥ 3 |
-| `GET  /context?path=` | HCL ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
+| `GET  /context?path=` | Ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
 | `GET  /examples?path=` | Top graduated prompts for an ancestor of a file path |
 | `GET  /wiki/recent?since=ISO` | Polling endpoint for the VS Code wiki-toast surface |
-| `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, and asks Gemini Pro to narrate the difference |
+| `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, asks Gemini Pro to narrate the difference |
 | `POST /improve` | Multi-turn Gemini-driven prompt rewrite, capped at 5 user replies |
 | `GET  /skill-arc` | Time-series of per-dimension scores (powers the dashboard hero chart) |
 | `GET  /team/metrics` | Snapshot: avg overall, reuse rate, durable count, draft count, active users |
-| `GET  /wiki/tree` | Full node + learnings tree (powers the dashboard wiki page) |
+| `GET  /wiki/tree` | Full node + learnings tree |
 | `POST /onboard/repo` | Bulk-upsert one node per path, idempotent, optional `initial_rules[path]` for seeding `body_md` |
 | `POST /onboard/repo/full` | Async rich bootstrap: accepts a folder + file bundle (capped at 16 MB / 2 000 files / 32 KB per file), enqueues a `wiki_jobs` row, three-pass Gemini fan-out via `setImmediate` |
 | `GET  /onboard/jobs/:id` | Per-path progress for a rich-bootstrap job |
@@ -45,6 +83,11 @@ Endpoints actually implemented in `apps/api/src/index.ts`:
 
 LLM work runs through `apps/api/src/gemini.ts`: Gemini 2.5 Flash for scoring
 (JSON-schema mode), Gemini 2.5 Pro for diff narration and rich bootstrap.
+
+Every Gemini call is instrumented with **Langfuse** when
+`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set — one trace per HTTP
+request, one nested generation per LLM call, with token usage and latency.
+Tracing silently no-ops when keys are missing.
 
 ### `apps/browser-ext` — Chrome MV3 extension for Claude.ai
 
@@ -118,7 +161,7 @@ Pages (`src/app/`):
 
 Single static `index.html` + JSX components loaded at runtime via Babel
 standalone. Tailwind via CDN. Sections: hero, problem, solution, features,
-demo, footer.
+demo, footer. Deployed at <https://learnloop-gules.vercel.app/>.
 
 ### Packages
 
@@ -147,9 +190,9 @@ Eight tables in `packages/db/schema.sql`:
   30 s dedup window
 - `wiki_jobs` + `wiki_job_paths` — async rich-bootstrap state
 
-The demo team (`Acme Fintech`, token `trailhead_demo_acme_2026`) is
-hardcoded into the schema with a fixed UUID so every surface can reference
-it without a lookup.
+The demo team (`Acme Fintech`, token `trailhead_demo_acme_2026`) is hardcoded
+into the schema with a fixed UUID so every surface can reference it without a
+lookup.
 
 ---
 
@@ -172,21 +215,6 @@ docs/
   superpowers/specs/   Design specs
   roadmaps/            Per-surface 24h build roadmaps
 ```
-
----
-
-## The 5-dimension rubric
-
-Every prompt is scored 0–10 on:
-
-1. `goal_clarity` — what outcome is being asked for
-2. `specificity` — concrete files, functions, errors named
-3. `context_loading` — relevant code/docs/examples attached
-4. `constraint_articulation` — what *must not* change, perf/style limits
-5. `output_specification` — desired shape of the response
-
-`overall = mean of the five dims`. Below 7 triggers coaching; ≥ 7 lands
-silently.
 
 ---
 
@@ -258,6 +286,9 @@ Single root `.env.example` — every surface reads from the same set.
 |---|---|---|
 | `DATABASE_URL` | api | Postgres connection string, `sslmode=require` |
 | `GEMINI_API_KEY` | api | Gemini 2.5 Flash + 2.5 Pro |
+| `LANGFUSE_PUBLIC_KEY` | api | Optional. Hosted Langfuse public key (`pk-lf-…`) |
+| `LANGFUSE_SECRET_KEY` | api | Optional. Hosted Langfuse secret key (`sk-lf-…`) |
+| `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
 | `TEAM_TOKEN` | clients | Demo single-tenant secret, sent as `X-Team-Token` |
 | `PORT` | api | Defaults to 3000; Railway injects automatically |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | api | `false` to disable on-the-fly team creation |
@@ -275,6 +306,8 @@ Single root `.env.example` — every surface reads from the same set.
   with healthcheck on `/`.
 - **Dashboard** → Vercel. Set `NEXT_PUBLIC_API_URL` and
   `NEXT_PUBLIC_TEAM_TOKEN`, then `vercel --prod` from `apps/dashboard/`.
+- **Landing page** → Vercel — already live at
+  <https://learnloop-gules.vercel.app/>.
 - **Browser extension** → loaded unpacked from `apps/browser-ext/dist/`.
 - **VS Code extension** → `vsce package` from `apps/vscode-ext/`.
 - **MCP server** → distributed via `npx trailhead-mcp init` (per-repo wiring,
@@ -321,7 +354,7 @@ The project was specced before it was built. Source of truth for *why*:
 - `docs/superpowers/specs/2026-04-26-trailhead-educational-loop-design.md` —
   the teach → reveal coaching loop
 - `docs/superpowers/specs/2026-04-26-wiki-bootstrap-rich-design.md` — async
-  Karpathy-style rich bootstrap
+  rich bootstrap
 - `docs/superpowers/specs/2026-04-26-improve-widget-design.md` — multi-turn
   improve widget
 - `docs/roadmaps/` — per-surface 24-hour build plans
@@ -337,9 +370,11 @@ contracts, builds, and tests.
 - **DB:** Postgres on Neon, no ORM
 - **LLMs:** Gemini 2.5 Flash (scoring, JSON-schema mode), Gemini 2.5 Pro
   (diff narration, rich bootstrap)
+- **Observability:** Langfuse (hosted) — one trace per request, one
+  generation per LLM call
 - **Frontend:** Next.js 15 + Tailwind + Recharts + SWR (dashboard); vanilla
   TS + esbuild (extensions); React via CDN (landing page)
 - **MCP:** `@modelcontextprotocol/sdk`, STDIO transport
 - **Build:** npm workspaces; per-package `tsc` / `esbuild`
-- **Hosts:** Railway (API), Vercel (dashboard), per-repo MCP install via
-  `npx trailhead-mcp`
+- **Hosts:** Railway (API), Vercel (dashboard + landing page), per-repo MCP
+  install via `npx trailhead-mcp`
