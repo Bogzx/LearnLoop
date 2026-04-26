@@ -127,6 +127,7 @@ app.get('/', (c) =>
       'POST /wiki/propose',
       'GET  /context?path=',
       'GET  /examples?path=',
+      'GET  /search?q=&scope=',
       'GET  /wiki/recent?since=ISO',
       'POST /diff',
       'POST /improve',
@@ -811,6 +812,54 @@ app.get('/examples', async (c) => {
     node_path: r.node_path,
   })) };
   return c.json(res);
+});
+
+// ----- GET /search?q=&scope= -------------------------------------------------
+// Free-text substring search across the team's wiki: rules (nodes.body_md),
+// durable learnings (learnings.body), and graduated prompts (prompts.template).
+// Optional `scope` constrains results to the ancestor paths of a file/folder
+// (same shape as /context). Used by the wiki_lookup MCP tool when the caller
+// passes only `query`, or `query` + `file_path` for a path-scoped search.
+app.get('/search', async (c) => {
+  const query = (c.req.query('q') ?? '').trim();
+  if (!query) return c.json({ error: 'missing_q' }, 400);
+  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') ?? 50)));
+  const scope = c.req.query('scope');
+  // ILIKE wildcards from user input shouldn't bleed into the pattern. Escape
+  // %, _, and the escape char itself so a search for "100%" matches the
+  // literal substring rather than "100<anything>".
+  const escaped = query.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  const pattern = `%${escaped}%`;
+  const teamId = c.get('team_id');
+  const ancestors = scope ? ancestorPaths(scope) : null;
+
+  const rows = await q<{ kind: 'rule' | 'learning' | 'prompt'; body: string; node_path: string }>(
+    `SELECT 'rule'::text AS kind, n.body_md AS body, n.path AS node_path
+       FROM nodes n
+      WHERE n.team_id = $1
+        AND n.body_md ILIKE $2
+        AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
+     UNION ALL
+     SELECT 'learning'::text AS kind, l.body AS body, n.path AS node_path
+       FROM learnings l
+       JOIN nodes n ON n.id = l.node_id
+      WHERE n.team_id = $1
+        AND l.status = 'durable'
+        AND l.body ILIKE $2
+        AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
+     UNION ALL
+     SELECT 'prompt'::text AS kind, p.template AS body, n.path AS node_path
+       FROM prompts p
+       JOIN nodes n ON n.id = p.node_id
+      WHERE n.team_id = $1
+        AND p.status = 'graduated'
+        AND p.template ILIKE $2
+        AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
+      LIMIT $4`,
+    [teamId, pattern, ancestors, limit],
+  );
+
+  return c.json({ items: rows });
 });
 
 // ----- GET /wiki/recent?since=ISO --------------------------------------------
