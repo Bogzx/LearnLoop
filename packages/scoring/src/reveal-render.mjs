@@ -86,7 +86,7 @@ export function renderTeachBlock({
 
 // =============================================================================
 // renderSuccessReveal — fires when round >= 2 AND overall >= 7, OR when the
-// pipeline forcibly exits at round 3 (set `maxRoundsHit: true`).
+// pipeline forcibly exits at COACH_MAX_ROUNDS (set `maxRoundsHit: true`).
 // =============================================================================
 
 export function renderSuccessReveal({
