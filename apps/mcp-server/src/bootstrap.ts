@@ -121,9 +121,48 @@ export interface DiscoverOptions {
   ignore?: Set<string>;    // override DEFAULT_IGNORE
 }
 
-// Walk cwd and return repo-relative folder paths (trailing-slash) that
-// contain at least one code file. Sorted shallow → deep, alphabetically
-// within each depth.
+// Sort comparator shared by discoverPaths / discoverFiles / expandAncestorFolders:
+// shallow → deep, then alphabetical within each depth. Stable across the
+// folder/file/ancestor lists so the bundle reads consistently and the
+// dashboard tree renders root → leaf in the order the user expects.
+function sortByDepthThenName(a: string, b: string): number {
+  const da = a.split('/').length;
+  const db = b.split('/').length;
+  if (da !== db) return da - db;
+  return a.localeCompare(b);
+}
+
+// Expand a set of folder paths to include every ancestor folder along the
+// way to root. The dashboard's tree renderer (apps/dashboard/src/components/
+// wiki-tree.tsx::buildTree → Tree2D::place) walks parent→child edges via
+// path-segment splitting and only renders nodes that exist as `nodes` rows.
+// If a leaf like `apps/web/src/` is bootstrapped without ancestors `apps/`
+// and `apps/web/`, those subtrees become orphans the renderer can't reach
+// from root, and the user sees a near-empty graph.
+//
+// Input/output paths are slash-terminated, repo-relative, forward-slashed.
+// The empty-string root is intentionally NOT emitted — bootstrap creates
+// the root node via the root pass, not as a folder entry.
+//
+// Idempotent: feeding an already-expanded list back through is a no-op.
+export function expandAncestorFolders(paths: Iterable<string>): string[] {
+  const out = new Set<string>();
+  for (const p of paths) {
+    if (!p) continue;
+    out.add(p);
+    const stripped = p.replace(/\/$/, '');
+    const parts = stripped.split('/').filter(Boolean);
+    for (let i = 1; i < parts.length; i++) {
+      out.add(`${parts.slice(0, i).join('/')}/`);
+    }
+  }
+  return [...out].sort(sortByDepthThenName);
+}
+
+// Walk cwd and return repo-relative folder paths (trailing-slash). Includes
+// every folder that contains at least one direct code file PLUS every
+// ancestor of such a folder (see expandAncestorFolders for the why). Sorted
+// shallow → deep, alphabetically within each depth.
 //
 // Hidden directories (`.foo`) are skipped — even if not in the ignore set —
 // because they almost never contain user-authored source.
@@ -175,12 +214,7 @@ export function discoverPaths(cwd: string, opts: DiscoverOptions = {}): string[]
 
   walk(cwd, 0);
 
-  return [...found].sort((a, b) => {
-    const da = a.split('/').length;
-    const db = b.split('/').length;
-    if (da !== db) return da - db;
-    return a.localeCompare(b);
-  });
+  return expandAncestorFolders(found);
 }
 
 // Best-effort heuristic for "the team's existing top-level conventions" —
@@ -231,7 +265,12 @@ export async function runBootstrap(
   opts: BootstrapOptions = {},
 ): Promise<BootstrapResult> {
   const cwd = opts.cwd ?? process.cwd();
-  const paths = opts.paths && opts.paths.length ? opts.paths : discoverPaths(cwd);
+  // Expand user-supplied --paths to include ancestor folders so the wiki
+  // tree stays connected; auto-discovered paths are already expanded by
+  // discoverPaths itself. Idempotent — re-expanding is a no-op.
+  const paths = opts.paths && opts.paths.length
+    ? expandAncestorFolders(opts.paths)
+    : discoverPaths(cwd);
 
   if (!paths.length) {
     throw new Error(
@@ -324,12 +363,7 @@ export function discoverFiles(cwd: string, opts: DiscoverOptions = {}): string[]
   walk(cwd, 0);
   // Stable ordering: shallow → deep, alphabetical within each depth. Matches
   // discoverPaths' shape so the bundle reads consistently.
-  return found.sort((a, b) => {
-    const da = a.split('/').length;
-    const db = b.split('/').length;
-    if (da !== db) return da - db;
-    return a.localeCompare(b);
-  });
+  return found.sort(sortByDepthThenName);
 }
 
 // Read top-level manifest files (package.json / Cargo.toml / pyproject.toml /
@@ -449,14 +483,19 @@ export function buildRichBundle(opts: BuildRichBundleOptions = {}): RichBundle {
     maxDepth: opts.discoverOpts?.maxDepth ?? RICH_DEFAULTS.maxDepth,
     ignore:   opts.discoverOpts?.ignore,
   };
-  const folders = opts.folders ?? discoverPaths(cwd, discoverOpts);
+  // Expand user-supplied folders to include ancestors (auto-discovery already
+  // handles this inside discoverPaths). Keep the original list for the file-
+  // scope filter below — expanding there would broaden the bundle to files
+  // in ancestor folders the user didn't ask for.
+  const userFolders = opts.folders;
+  const folders = userFolders ? expandAncestorFolders(userFolders) : discoverPaths(cwd, discoverOpts);
   let allFiles = opts.files ?? discoverFiles(cwd, discoverOpts);
   // When the caller passed an explicit folder list (e.g. `--paths "packages/db/"`),
   // restrict files to those whose parent folder is in the list. Otherwise
   // a `--paths` invocation would still ship every file in the repo to the
   // server, defeating the point of scoping.
-  if (opts.folders && opts.folders.length) {
-    const folderPrefixes = opts.folders.map((p) => (p.endsWith('/') ? p : `${p}/`));
+  if (userFolders && userFolders.length) {
+    const folderPrefixes = userFolders.map((p) => (p.endsWith('/') ? p : `${p}/`));
     allFiles = allFiles.filter((f) => folderPrefixes.some((prefix) => f.startsWith(prefix)));
   }
 
