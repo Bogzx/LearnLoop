@@ -49,6 +49,14 @@ const MAX_OUTPUT_TOKENS_ROOT = 5_000;
 // incident). One long Gemini call hanging shouldn't take down the job.
 const PER_CALL_TIMEOUT_MS = 90_000;
 
+// Cap on raw source we embed in a file node's body_md. The team-context
+// bundle injected into Claude.ai sends concatenates body_md across every
+// node in the picked subtree — at 3000 chars/file, a 20-file folder
+// produces a ~60 KB context blob, which is comfortable in Claude.ai's
+// window and Gemini's 1M one. Larger files get head/tail truncation with
+// an "[N chars omitted]" marker so the LLM knows the middle is missing.
+const MAX_SOURCE_CHARS = 3000;
+
 // ============================================================================
 // Public entry
 // ============================================================================
@@ -145,7 +153,7 @@ export async function runJob(jobId: string, teamId: string, bundle: JobBundle): 
         const folder = idx === -1 ? '' : `${file.path.slice(0, idx)}/`;
         const folderNarrative = folderNarratives.get(folder) ?? '';
         const out = await callFilePass(file, folder, folderNarrative);
-        await writeFileNode(teamId, file.path, out, bundle.force);
+        await writeFileNode(teamId, file, out, bundle.force);
         await markPathDone(jobId, file.path);
       } catch (e) {
         const msg = errMsg(e);
@@ -366,9 +374,59 @@ async function writeFolderNode(teamId: string, path: string, out: FolderPassOutp
   for (const insight of out.gotchas)     await proposeLearning(teamId, path, insight);
 }
 
-async function writeFileNode(teamId: string, path: string, out: FilePassOutput, force: boolean): Promise<void> {
-  await upsertBootstrapNode(teamId, path, out.narrative_md, force);
-  for (const insight of out.conventions) await proposeLearning(teamId, path, insight);
+async function writeFileNode(
+  teamId: string,
+  file: OnboardRepoFullFile,
+  out: FilePassOutput,
+  force: boolean,
+): Promise<void> {
+  // body_md = source first, summary second. The team-context bundle
+  // (apps/api/src/team-context.ts) feeds body_md straight to Claude.ai
+  // and Gemini, so this is the difference between the LLM seeing real
+  // code vs. just a description of the file. Source goes first so that
+  // when the bundle is truncated downstream, the most concrete material
+  // is what survives.
+  const cappedSource = capSource(file.content, MAX_SOURCE_CHARS);
+  const lang = langFor(file.path);
+  const truncatedNote = file.truncated || cappedSource !== file.content
+    ? ' (truncated)'
+    : '';
+  const bodyMd =
+    `## Source${truncatedNote}\n\`\`\`${lang}\n${cappedSource}\n\`\`\`\n\n` +
+    `## Summary\n${out.narrative_md}`;
+  await upsertBootstrapNode(teamId, file.path, bodyMd, force);
+  for (const insight of out.conventions) await proposeLearning(teamId, file.path, insight);
+}
+
+// Head/tail truncation that keeps both ends of the file. Picks half the
+// budget for the head and half for the tail with an explicit "[N chars
+// omitted]" marker so the LLM knows the middle is missing and can hedge.
+function capSource(content: string, maxChars: number): string {
+  if (content.length <= maxChars) return content;
+  const half = Math.floor(maxChars / 2) - 50;
+  const head = content.slice(0, half);
+  const tail = content.slice(-half);
+  const omitted = content.length - 2 * half;
+  return `${head}\n\n... [${omitted} chars omitted] ...\n\n${tail}`;
+}
+
+// Best-effort language hint for the markdown code fence — purely cosmetic
+// (helps the LLM pattern-match the dialect). Falls back to '' which renders
+// as a plain code fence.
+function langFor(path: string): string {
+  const dot = path.lastIndexOf('.');
+  if (dot === -1) return '';
+  const ext = path.slice(dot + 1).toLowerCase();
+  const map: Record<string, string> = {
+    ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx', mjs: 'javascript', cjs: 'javascript',
+    py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', swift: 'swift',
+    c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', hpp: 'cpp', cs: 'csharp', php: 'php',
+    sql: 'sql', sh: 'bash', bash: 'bash', zsh: 'bash', ps1: 'powershell',
+    md: 'markdown', json: 'json', yml: 'yaml', yaml: 'yaml', toml: 'toml', xml: 'xml',
+    html: 'html', css: 'css', scss: 'scss', vue: 'vue', svelte: 'svelte',
+    dart: 'dart', ex: 'elixir', exs: 'elixir', erl: 'erlang',
+  };
+  return map[ext] ?? '';
 }
 
 async function writeRootNode(
