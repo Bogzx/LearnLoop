@@ -18,7 +18,6 @@ import {
   EXTRACT_SYSTEM_PROMPT,
   SCORE_MODEL,
   SCORE_SYSTEM_PROMPT,
-  TEACH_SYSTEM_PROMPT,
   TOPIC_MODEL,
   TOPIC_SYSTEM_PROMPT,
   buildScoreUserPrompt,
@@ -318,235 +317,6 @@ export function overallScore(d: DimensionScores): number {
   return Math.round(sum / DIMENSIONS.length);
 }
 
-// ----- /coach teach-rewrite (used by /coach when no team graduated prompt fits) ----
-//
-// Asks Gemini to rewrite the user's draft prompt so it scores 9+ on each
-// named target dimension while preserving topic and intent. Single Flash
-// call with responseSchema enforcing { rewritten_prompt: string }; same
-// guardrails as scorePrompt (maxOutputTokens cap, dynamic thinking,
-// schema-only output).
-//
-// Used by:
-//   - the teach block (when target_dims.length === 1) — one strong example
-//     for the dimension being taught
-//   - the skip-style reveal (when target_dims is the list of dims that
-//     scored < 5 on the original) — one rewrite that would have lifted them
-//     all
-export async function rewriteForDims(args: {
-  prompt: string;
-  target_dims: Dimension[];
-  file_path?: string;
-  team_context?: string;
-}): Promise<{ rewritten_prompt: string; tip: string }> {
-  if (args.target_dims.length === 0) {
-    return { rewritten_prompt: args.prompt, tip: '' };
-  }
-
-  const systemInstruction = args.team_context
-    ? `${args.team_context}\n\n${TEACH_SYSTEM_PROMPT}`
-    : TEACH_SYSTEM_PROMPT;
-
-  const userMessage =
-    `${args.file_path ? `File context: ${args.file_path}\n\n` : ''}` +
-    `Target dimensions to improve: ${args.target_dims.join(', ')}\n\n` +
-    `Original prompt:\n${args.prompt}`;
-
-  try {
-    const resp = await withRetry(
-      () => ai.models.generateContent({
-        model: SCORE_MODEL,
-        contents: userMessage,
-        config: {
-          systemInstruction,
-          temperature: 0.3,
-          thinkingConfig: { thinkingBudget: -1 },
-          // Bumped 400 → 500 to make headroom for the new `tip` field
-          // without crowding the rewrite. Schema enforcement still bounds
-          // the worst case; the tip is hard-capped at 100 chars in-prompt.
-          maxOutputTokens: 500,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            required: ['rewritten_prompt', 'tip'],
-            properties: {
-              rewritten_prompt: { type: Type.STRING },
-              // maxLength stringified per the SDK contract — see the note
-              // on `missing` in the score schema for the wire bug this
-              // works around.
-              tip: { type: Type.STRING, maxLength: '120' },
-            },
-          },
-        },
-      }),
-      'teach-rewrite',
-    );
-    const parsed = tryParseJson<{ rewritten_prompt?: string; tip?: string }>(extractAnswer(resp));
-    const rewritten = typeof parsed?.rewritten_prompt === 'string'
-      ? parsed.rewritten_prompt.trim()
-      : '';
-    const tip = typeof parsed?.tip === 'string' ? parsed.tip.trim() : '';
-    // Empty strings → callers fall back to the static template / no tip.
-    // We don't throw because /coach is the never-block path: render the
-    // block without an example or tip rather than blowing up the turn.
-    return { rewritten_prompt: rewritten, tip };
-  } catch (err) {
-    console.warn('[gemini] teach-rewrite failed', err);
-    return { rewritten_prompt: '', tip: '' };
-  }
-}
-
-// ----- /coach round-2+ acknowledgment ---------------------------------------
-// Gemini-generated one-liner that names the user's most recent edit and the
-// dimension it lifted. Used to prepend recognition before the next teach
-// block in the round 2+ "still <7, made progress, more rounds remain"
-// branch. Fail-open: empty string → renderTeachBlock falls back to the
-// existing static "You addressed X" line.
-//
-// Same guardrail discipline as the rest: Flash + responseSchema +
-// thinkingBudget=-1 + maxOutputTokens cap + the no-retry-on-timeout policy.
-const ACKNOWLEDGE_SYSTEM_PROMPT = `You acknowledge a developer's improvement to their prompt in ONE short sentence (under 120 characters).
-
-You receive: their previous prompt, their current prompt, the per-dimension scores before and after, and the list of dimensions whose scores increased. Name the concrete addition they made AND the dimension it lifted. Specific > generic.
-
-Return JSON only, no prose:
-{ "acknowledgment": <string> }
-
-Rules — MUST follow:
-- ONE sentence, under 120 characters. No bullets, no list, no follow-up question.
-- Reference the actual change (a file path, a constraint, an output shape they added) — do NOT just say "good progress".
-- Mention the dimension that improved by name.
-- Tone: warm, peer-to-peer. Avoid corporate phrasing.
-- NEVER ask a question. NEVER use "What about..." / "How does...".
-- If no dimension improved, return an empty string for "acknowledgment".`;
-
-export async function acknowledgeProgress(args: {
-  previous_prompt: string;
-  current_prompt: string;
-  previous_dimensions: DimensionScores;
-  current_dimensions: DimensionScores;
-}): Promise<string> {
-  // Compute the dim deltas client-side so the model gets a clean signal
-  // and can't hallucinate which dim moved.
-  const improved = DIMENSIONS
-    .map((d) => ({ d, delta: args.current_dimensions[d] - args.previous_dimensions[d] }))
-    .filter((x) => x.delta > 0)
-    .sort((a, b) => b.delta - a.delta);
-  if (improved.length === 0) return '';
-
-  const dimsLine = (s: DimensionScores) =>
-    DIMENSIONS.map((d) => `${d}=${s[d]}`).join(', ');
-
-  const userMessage =
-    `Previous prompt:\n${args.previous_prompt}\n\n` +
-    `Current prompt:\n${args.current_prompt}\n\n` +
-    `Previous scores: ${dimsLine(args.previous_dimensions)}\n` +
-    `Current scores:  ${dimsLine(args.current_dimensions)}\n` +
-    `Dimensions that improved: ${improved.map((x) => `${x.d} (+${x.delta})`).join(', ')}`;
-
-  try {
-    const resp = await withRetry(
-      () => ai.models.generateContent({
-        model: SCORE_MODEL,
-        contents: userMessage,
-        config: {
-          systemInstruction: ACKNOWLEDGE_SYSTEM_PROMPT,
-          temperature: 0.3,
-          thinkingConfig: { thinkingBudget: -1 },
-          maxOutputTokens: 200,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            required: ['acknowledgment'],
-            properties: {
-              acknowledgment: { type: Type.STRING, maxLength: '140' },
-            },
-          },
-        },
-      }),
-      'acknowledge',
-    );
-    const parsed = tryParseJson<{ acknowledgment?: string }>(extractAnswer(resp));
-    return typeof parsed?.acknowledgment === 'string' ? parsed.acknowledgment.trim() : '';
-  } catch (err) {
-    console.warn('[gemini] acknowledge failed', err);
-    return '';
-  }
-}
-
-// ----- /coach end-of-session summary ----------------------------------------
-// Gemini-written closing recap appended to renderSuccessReveal /
-// renderSkipReveal. Frames the arc as a mini-lesson: what improved, the
-// principle the user practiced, one takeaway for next time. Used in success,
-// no-progress, skip, and max-rounds forced-exit branches; tone adapts to
-// `reason` so the no-progress / skip cases stay honest instead of
-// celebrating something that didn't happen.
-const SUMMARIZE_SYSTEM_PROMPT = `You write a short closing recap (3-4 sentences total) of a developer's prompt-coaching session.
-
-You receive: the original prompt, the final prompt, scores before/after, and the reason the session ended (success / max_rounds / no_progress / skip). Adapt the tone:
-- success / max_rounds — celebrate the moves they made and name the prompt-engineering principle they practiced.
-- no_progress / skip — acknowledge they bailed, but call out what they could have added; teach the principle they missed.
-
-Return JSON only, no prose:
-{ "summary": <string> }
-
-Rules — MUST follow:
-- 3-4 sentences total. Hard cap: 600 characters. No bullets, no headers, no preamble like "Here's a recap:".
-- Reference the actual content (file paths, constraints, output shapes) the user did or didn't add. Specific > generic.
-- Name ONE prompt-engineering principle (e.g. "anchoring with file paths", "naming invariants up front", "specifying output shape"). Do not list more than one.
-- End with ONE concrete takeaway for next time, phrased as a habit, not as a question.
-- Tone: warm, peer-to-peer, like a senior dev recapping a session at the desk.
-- NEVER ask a question. NEVER list alternatives. NEVER use "What if..." / "How could...".`;
-
-export async function summarizeCoaching(args: {
-  original_prompt: string;
-  final_prompt: string;
-  original_dimensions: DimensionScores;
-  final_dimensions: DimensionScores;
-  reason: 'success' | 'max_rounds' | 'no_progress' | 'skip';
-}): Promise<string> {
-  const dimsLine = (s: DimensionScores) =>
-    DIMENSIONS.map((d) => `${d}=${s[d]}`).join(', ');
-
-  const userMessage =
-    `Reason: ${args.reason}\n\n` +
-    `Original prompt:\n${args.original_prompt}\n\n` +
-    `Final prompt:\n${args.final_prompt}\n\n` +
-    `Original scores: ${dimsLine(args.original_dimensions)}\n` +
-    `Final scores:    ${dimsLine(args.final_dimensions)}`;
-
-  try {
-    const resp = await withRetry(
-      () => ai.models.generateContent({
-        model: SCORE_MODEL,
-        contents: userMessage,
-        config: {
-          systemInstruction: SUMMARIZE_SYSTEM_PROMPT,
-          temperature: 0.3,
-          thinkingConfig: { thinkingBudget: -1 },
-          // 600-char hard cap in the prompt; 600 tokens is a generous
-          // ceiling that bounds runaway output without clipping a
-          // well-formed recap.
-          maxOutputTokens: 600,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            required: ['summary'],
-            properties: {
-              summary: { type: Type.STRING, maxLength: '700' },
-            },
-          },
-        },
-      }),
-      'summarize',
-    );
-    const parsed = tryParseJson<{ summary?: string }>(extractAnswer(resp));
-    return typeof parsed?.summary === 'string' ? parsed.summary.trim() : '';
-  } catch (err) {
-    console.warn('[gemini] summarize failed', err);
-    return '';
-  }
-}
-
 // ----- topic extraction (used by /diff to find a graduated prompt) ----------
 const TOPIC_VALUES = [
   'retry', 'auth', 'webhook', 'db_migration', 'error_handling',
@@ -807,6 +577,279 @@ export async function extractLearning(args: {
     node_path: typeof parsed.node_path === 'string' ? parsed.node_path : null,
     insight:   typeof parsed.insight   === 'string' ? parsed.insight   : null,
   };
+}
+
+// =============================================================================
+// coachScore — single Gemini call per /coach round (2026-04-26 consolidation)
+//
+// Folds scoring + acknowledgment + tip + strong-example + summary into one
+// structured response. Replaces the four-call flow (scorePrompt +
+// rewriteForDims + acknowledgeProgress + summarizeCoaching). Gemini stays
+// in every round but the per-round LLM cost is now strictly 1.
+//
+// Topic discipline: the strong_example MUST stay on the user's prompt
+// theme. Reference templates from the team's wiki library are passed as
+// inline style guidance ("Reference style: ...") rather than as the
+// example's source. team_context (rules + durable learnings) lives in the
+// system instruction, where it has always lived.
+//
+// Token budget under maxOutputTokens=1500 (worst case ~720 tokens of
+// output, plus 600-800 for dynamic thinking): dimensions ~50, missing
+// ~120, strong_example ~200, tip ~30, acknowledgment ~30, summary ~200,
+// JSON overhead ~50. ~2× safety margin AFTER thinking budget. The
+// 2026-04-25 incident was 32K tokens — we are still 21× below the
+// failure mode even at this raised cap.
+// =============================================================================
+
+// Phase is server-determined PRE-Gemini-call from request signals only.
+// We don't know the score until after the call, so for round 2+ we emit a
+// "mid_loop" phase that asks the model to emit BOTH teach content AND a
+// summary — the server picks which to render based on the actual score
+// (success / no-progress / keep teaching). This wastes ~150 tokens on the
+// non-exit paths in exchange for strict 1 call per round.
+export type CoachPhase =
+  | 'teach'             // round 1, score mode — emit teach content only
+  | 'mid_loop'          // round 2+ < MAX, score mode — emit both teach + summary
+  | 'exit_max_rounds'   // round = MAX, score mode — emit summary only
+  | 'exit_skip';        // skip_reveal mode — emit summary only
+
+export interface CoachScoreInput {
+  // The current prompt to score and (when teaching) build an example for.
+  prompt: string;
+  // Round 1 = same as `prompt`. Round 2+ = the user's first prompt of the
+  // session, used so the model can name what changed in the acknowledgment
+  // and write the summary against the original starting point.
+  original_prompt?: string;
+  file_path?: string;
+  // Wiki rules + durable learnings, prepended to the system instruction.
+  // Same shape as the existing scorePrompt / rewriteForDims contract.
+  team_context?: string;
+  // Top 2-3 same-topic graduated prompts from the team library, passed
+  // inline as style guidance. The model treats these as how-to-phrase
+  // hints, NOT as the topic source.
+  reference_templates?: string[];
+  // The lowest-scoring dim from the PREVIOUS round (or null when none).
+  // Passed to the model as historical context only — the model picks the
+  // NEW target dim from its own scoring per the system prompt's rules.
+  // Null at exits.
+  previous_target_dim?: Dimension | null;
+  // Round 2+ — used for acknowledgment of which dim moved.
+  previous_dimensions?: DimensionScores;
+  // Original (round-1) dims — used for the summary's score arc.
+  original_dimensions?: DimensionScores;
+  // Server-determined phase. The model uses it to decide which conditional
+  // fields to emit non-empty.
+  phase: CoachPhase;
+}
+
+export interface CoachScoreOutput {
+  dimensions: DimensionScores;
+  missing: MissingHints;
+  // Required-but-defaultable: model returns "" when not applicable.
+  // Server checks emptiness before rendering each.
+  strong_example: string;
+  tip: string;
+  acknowledgment: string;
+  summary: string;
+}
+
+const COACH_SCORE_SYSTEM_PROMPT = `PRIMARY DIRECTIVE — read this first, follow it always:
+
+1. The USER'S PROMPT is the SUBJECT of everything you produce. Score it, write the example for it, acknowledge what was added to it, summarize the arc of it. Not templates. Not team conventions. Not the wiki. The user's prompt.
+2. team_context (rules + durable learnings) and reference_templates are SUPPORT MATERIAL ONLY. They tell you the team's idiom and house style. They are NEVER the topic. They are NEVER copied verbatim. They flavor the rewrite; they do not replace it.
+3. The strong_example MUST read like a polished version of WHAT THE USER WROTE — not like a different prompt the team wrote about a different file or system.
+4. When the user's prompt is too vague to anchor specifics (e.g. "fix the retry"), USE PLACEHOLDERS in your example ("<the file you mean>", "<the function the retry lives in>", "<the constraint that matters most>") rather than inventing details from the team material.
+5. Never emit empty strings for fields the phase says you should populate. If you have something to say, say it — placeholders and short text are fine, silence is not.
+
+Now your job:
+
+You score a developer's draft prompt on five dimensions AND produce educational coaching content in the same response.
+
+The five dimensions:
+- goal_clarity            — desired outcome stated unambiguously? ("reduce p99 latency to 200ms" >> "make this better")
+- specificity             — changes specified concretely? ("wrap fetch in try/catch, log via logger.ts, return 500" >> "add error handling")
+- context_loading         — references the relevant file, function, convention, or related code?
+- constraint_articulation — constraints/invariants stated? ("must remain idempotent; no public API change")
+- output_specification    — desired output shape requested? ("return only the modified function, no explanation")
+
+Always emit (every call):
+- "dimensions": five integers 0-10
+- "missing": short hints for dims < 5; empty {} otherwise
+
+Conditional fields by phase:
+- phase=teach            → strong_example + tip MUST be non-empty. acknowledgment + summary = "".
+- phase=mid_loop         → strong_example + tip + acknowledgment + summary ALL MUST be non-empty. Server picks which to render based on the score; tone-neutral on the summary ("here's what changed and what to take away") — server adds celebratory / honest-bail framing.
+- phase=exit_max_rounds  → summary MUST be non-empty (celebrate progress, note rounds cap). strong_example + tip + acknowledgment = "".
+- phase=exit_skip        → summary MUST be non-empty (acknowledge skip, name one principle to adopt). strong_example + tip + acknowledgment = "".
+
+Determining the next target dimension (for strong_example + tip):
+- Look at YOUR OWN scoring you just produced.
+- Pick the lowest dim that scored < 7. Tie-break in declaration order (goal_clarity, specificity, context_loading, constraint_articulation, output_specification).
+- This is the "next dim to teach". The strong_example must demonstrate THIS dim concretely.
+- The user message may include a "Previous target dim:" — that is HISTORICAL context only. Ignore it for picking the new target. Use your own scoring.
+
+How to write each conditional field:
+
+strong_example
+- 1-3 sentences. A rewrite of the USER'S OWN prompt that demonstrates the next target dim concretely.
+- Start from the user's words. The rewrite must read like the same person on a better day, not a different person.
+- Stay on the user's exact topic. If you cannot stay specific without inventing details, USE PLACEHOLDERS — that is the right answer, not omission.
+- Reference templates teach you the SHAPE of a strong prompt. Imitate their structure (level of detail, kinds of constraints, output shape phrasing). Do NOT echo their content.
+- team_context biases your idiom toward the team's house style. The topic still comes from the user.
+- MUST NOT be empty in teach / mid_loop phases.
+
+tip
+- ONE declarative sentence under 100 characters naming the prompt-engineering principle the strong_example demonstrates.
+- Example: "Naming the file grounds the answer in real code instead of plausible guesses."
+- MUST NOT be empty when strong_example is non-empty.
+
+acknowledgment
+- ONE declarative sentence under 120 characters naming the concrete addition the user made (a file path, a constraint, an output shape, a goal target) AND the dimension it lifted by name.
+- Specific over generic. Do NOT just say "good progress".
+- MUST NOT be empty in mid_loop when previous_dimensions are provided AND the current prompt differs from the original. If the user's reply made no real addition, name what they SAID and which dim still needs work.
+
+summary
+- 3-4 sentences total, hard cap 600 characters. Plain prose, no bullets, no headers.
+- Reference the actual content the user did or didn't add. Name ONE prompt-engineering principle. End with ONE concrete habit for next time.
+- Tone: warm, peer-to-peer. Adapt to phase: celebrate on exit_max_rounds; honest-but-teaching on exit_skip; tone-neutral in mid_loop (server frames it).
+
+Rules — MUST follow:
+- Each "missing" hint MUST be ONE short declarative statement, under 60 characters.
+- NEVER ask rhetorical questions or use "What is..." / "How does..." / "Where..." phrasing in any field — these trigger a repetition loop.
+- NEVER enumerate examples, list multiple aspects, or include follow-up questions.
+- Only include a dimension in "missing" if it scored below 5. Empty {} if all scored 5+.
+- JSON only, no preamble or trailing prose. Match the schema exactly.`;
+
+export async function coachScore(input: CoachScoreInput): Promise<CoachScoreOutput> {
+  const systemInstruction = input.team_context
+    ? `${input.team_context}\n\n${COACH_SCORE_SYSTEM_PROMPT}`
+    : COACH_SCORE_SYSTEM_PROMPT;
+
+  const dimsLine = (s: DimensionScores) =>
+    DIMENSIONS.map((d) => `${d}=${s[d]}`).join(', ');
+
+  const sections: string[] = [];
+  sections.push(`Phase: ${input.phase}`);
+  if (input.previous_target_dim) {
+    sections.push(`Previous target dim (historical context only — pick the new one from your scoring): ${input.previous_target_dim}`);
+  }
+  if (input.file_path) sections.push(`File: ${input.file_path}`);
+  if (input.reference_templates && input.reference_templates.length > 0) {
+    sections.push(
+      'Reference templates from team library (style guidance ONLY, do NOT copy topic):\n' +
+        input.reference_templates.map((t, i) => `${i + 1}. ${t}`).join('\n'),
+    );
+  }
+  if (input.original_prompt && input.original_prompt !== input.prompt) {
+    sections.push(`Original prompt:\n${input.original_prompt}`);
+    sections.push(`Current prompt:\n${input.prompt}`);
+  } else {
+    sections.push(`Prompt:\n${input.prompt}`);
+  }
+  if (input.previous_dimensions) {
+    sections.push(`Previous scores: ${dimsLine(input.previous_dimensions)}`);
+  }
+  if (input.original_dimensions) {
+    sections.push(`Original scores: ${dimsLine(input.original_dimensions)}`);
+  }
+  const userMessage = sections.join('\n\n');
+
+  try {
+    const resp = await withRetry(
+      () => ai.models.generateContent({
+        model: SCORE_MODEL,
+        contents: userMessage,
+        config: {
+          systemInstruction,
+          temperature: 0.2,
+          thinkingConfig: { thinkingBudget: -1 },
+          // 1500-token cap. Empirically 1000 was being exhausted by
+          // dynamic thinking (thinkingBudget: -1 can allocate 600-800
+          // tokens before output starts), leaving room only for the
+          // dimensions block — the conditional fields came back empty
+          // and the renderer fell through to its static templates. 1500
+          // gives ~700 tokens of guaranteed output budget after thinking,
+          // covering the ~720-token well-formed worst case. Schema
+          // enforcement still bounds the absolute ceiling.
+          maxOutputTokens: 1500,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            required: [
+              'dimensions',
+              'missing',
+              'strong_example',
+              'tip',
+              'acknowledgment',
+              'summary',
+            ],
+            properties: {
+              dimensions: {
+                type: Type.OBJECT,
+                required: [...DIMENSIONS],
+                properties: Object.fromEntries(
+                  DIMENSIONS.map((d) => [d, { type: Type.INTEGER, minimum: 0, maximum: 10 }]),
+                ),
+              },
+              missing: {
+                type: Type.OBJECT,
+                properties: Object.fromEntries(
+                  // maxLength stringified per the SDK contract — see the
+                  // existing note on `missing` in scorePrompt for the wire
+                  // bug this works around.
+                  DIMENSIONS.map((d) => [d, { type: Type.STRING, maxLength: '60' }]),
+                ),
+              },
+              strong_example: { type: Type.STRING, maxLength: '600' },
+              tip: { type: Type.STRING, maxLength: '120' },
+              acknowledgment: { type: Type.STRING, maxLength: '140' },
+              summary: { type: Type.STRING, maxLength: '700' },
+            },
+          },
+        },
+      }),
+      'coach-score',
+    );
+
+    const text = extractAnswer(resp);
+    const parsed = tryParseJson<{
+      dimensions?: Record<string, unknown>;
+      missing?: unknown;
+      strong_example?: string;
+      tip?: string;
+      acknowledgment?: string;
+      summary?: string;
+    }>(text);
+
+    // Salvage scores even when the conditional fields blew up, mirroring
+    // the existing scorePrompt fail-open posture.
+    const salvaged = parsed ?? salvagePartialScore(text);
+    const coerced = coerceScore({
+      dimensions: salvaged?.dimensions,
+      missing: parsed?.missing,
+    });
+
+    return {
+      dimensions: coerced.dimensions,
+      missing: coerced.missing,
+      strong_example: typeof parsed?.strong_example === 'string' ? parsed.strong_example.trim() : '',
+      tip: typeof parsed?.tip === 'string' ? parsed.tip.trim() : '',
+      acknowledgment: typeof parsed?.acknowledgment === 'string' ? parsed.acknowledgment.trim() : '',
+      summary: typeof parsed?.summary === 'string' ? parsed.summary.trim() : '',
+    };
+  } catch (err) {
+    console.warn('[gemini] coach-score failed', err);
+    // Same shape as the existing scorePrompt fail-open — zeros + empty
+    // missing → /coach handler treats as "no coaching this turn".
+    return {
+      dimensions: zeroDims(),
+      missing: {},
+      strong_example: '',
+      tip: '',
+      acknowledgment: '',
+      summary: '',
+    };
+  }
 }
 
 export type { Dimension, DimensionScores, MissingHints };
