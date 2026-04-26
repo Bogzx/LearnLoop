@@ -8,7 +8,7 @@
 //   4. random token + write sentinel      (machine-local, persisted, gitignored)
 //
 // Derivation from the git remote URL means everyone on the same repo gets
-// the same team_id without coordination. The sentinel fallback keeps
+// the same team token without coordination. The sentinel fallback keeps
 // repos-without-remotes (scratch projects, pre-publication work) working
 // without polluting another team's data — at the cost that team members
 // can't share unless they share the token explicitly.
@@ -16,7 +16,7 @@
 import { execSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 export const SENTINEL_FILENAME = '.trailhead-team';
 
@@ -77,6 +77,24 @@ export function ensureGitignore(cwd, line) {
 
 export function generateRandomToken() {
   return `repo_local_${randomBytes(8).toString('hex')}`;
+}
+
+// Human-readable repo name for the team's display label. Pulled from the
+// last path segment of the git remote URL (so `git@github.com:user/Polihack.git`
+// becomes "Polihack"), falling back to the cwd's basename for repos with no
+// remote. Used by bootstrap to set teams.name; the token stays a hash for
+// uniqueness, but the displayed name reflects the repo.
+export function deriveRepoName(cwd, remoteUrl) {
+  if (remoteUrl) {
+    let s = String(remoteUrl).trim().replace(/\/$/, '');
+    if (s.endsWith('.git')) s = s.slice(0, -4);
+    const lastSep = Math.max(s.lastIndexOf('/'), s.lastIndexOf(':'));
+    if (lastSep >= 0 && lastSep < s.length - 1) {
+      const tail = s.slice(lastSep + 1).trim();
+      if (tail) return tail;
+    }
+  }
+  return basename(resolve(cwd));
 }
 
 // Returns: { token, source, remoteUrl? }

@@ -1,6 +1,6 @@
 // `trailhead-mcp init` — idempotent installer for Claude Code AND Copilot.
 //
-// Writes per-repo MCP config so each repo can use its own team_id —
+// Writes per-repo MCP config so each repo can use its own team token —
 // "auto-switch the wiki for the repo I'm in." Specifically:
 //
 //   - Claude Code:  ./.mcp.json (project-scoped) — always written.
