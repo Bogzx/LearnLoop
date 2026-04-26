@@ -10,6 +10,8 @@
 import type {
   CaptureRequest,
   CaptureResponse,
+  CoachRequest,
+  CoachResponse,
   DiffRequest,
   DiffResponse,
   ImproveRequest,
@@ -22,7 +24,7 @@ import { API_URL, FETCH_TIMEOUT_MS, TRAILHEAD_ERROR_TAG } from './config.ts';
 import { getTeamToken } from './team-state.ts';
 import { getContextPath } from './context-state.ts';
 
-type EndpointKey = 'score' | 'capture' | 'diff' | 'wiki' | 'improve';
+type EndpointKey = 'score' | 'capture' | 'diff' | 'wiki' | 'improve' | 'coach';
 const inflight = new Map<EndpointKey, AbortController>();
 
 function abortPrev(key: EndpointKey): AbortController {
@@ -98,6 +100,35 @@ export async function diff(body: DiffRequest): Promise<DiffResponse | null> {
 export async function wikiRecent(sinceIso: string): Promise<WikiRecentResponse | null> {
   const q = new URLSearchParams({ since: sinceIso }).toString();
   return call<WikiRecentResponse>('wiki', `/wiki/recent?${q}`, { method: 'GET' });
+}
+
+// /coach drives the multi-round educational score arc (curated DIMENSION_TEACH
+// blocks, no-progress detection, success/skip reveals). The browser-ext's
+// improve widget calls this in place of /improve so its coaching matches the
+// MCP server's polished pattern. Same long-timeout policy as /improve since a
+// single round runs a Gemini score + render.
+export async function coach(body: CoachRequest): Promise<CoachResponse | null> {
+  const contextPath = body.context_path ?? getContextPath() ?? undefined;
+  const enriched: CoachRequest = contextPath ? { ...body, context_path: contextPath } : body;
+  const ac = new AbortController();
+  const stop = setTimeout(() => ac.abort(), 25_000);
+  try {
+    const res = await fetch(`${API_URL}/coach`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify(enriched),
+      signal: ac.signal,
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as CoachResponse;
+  } catch (err) {
+    if (!(err instanceof DOMException && err.name === 'AbortError')) {
+      console.warn(`${TRAILHEAD_ERROR_TAG} /coach failed`, err);
+    }
+    return null;
+  } finally {
+    clearTimeout(stop);
+  }
 }
 
 // /improve calls take much longer than other endpoints (Gemini round-trip

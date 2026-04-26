@@ -391,13 +391,17 @@ export const TRAILHEAD_CSS = `
  * ============================================================ */
 #trailhead-toast-stack {
   position: fixed;
-  top: 16px;
+  /* Sits below the context pill (top: 16px). On narrow Claude layouts the
+   * pill drifts close to the viewport right edge; 64px keeps the toast
+   * stack clear of it. On wide layouts the pill is centered with the chat
+   * column, far from the right edge — the 48px extra inset is harmless. */
+  top: 64px;
   right: 16px;
-  z-index: 2147483646;
+  z-index: 2147483646;        /* below browser chrome, above everything else */
   display: flex;
   flex-direction: column;
   gap: 10px;
-  pointer-events: none;
+  pointer-events: none;       /* clicks fall through gaps; toasts re-enable */
   max-width: 380px;
   width: max-content;
 }
@@ -782,23 +786,33 @@ export const TRAILHEAD_CSS = `
 }
 
 /* ============================================================
- * #trailhead-context-pill — sticky reminder above the composer.
+ * #trailhead-context-pill — sticky reminder of the active wiki
+ * context. Mounted on document.body with position: fixed; top: 16px.
+ * The right value is set INLINE by context-pill.ts on mount and via
+ * a ResizeObserver, computed from the composer's bounding rect so
+ * the pill always lines up with the right edge of the visible chat
+ * column (independent of sidebar state, window width, or Claude.ai
+ * layout variant).
  * ============================================================ */
 #trailhead-context-pill {
-  display: inline-flex;
+  position: fixed;
+  top: 310px;
+  /* right is set inline by JS — see context-pill.ts updateRightOffset. */
+  z-index: 2147483645;        /* one below the toast stack */
+  display: flex;
   align-items: center;
   gap: 8px;
-  width: fit-content;
   max-width: 360px;
-  margin: 8px 0 0 auto;
-  padding: 5px 6px 5px 12px;
+  padding: 6px 8px 6px 12px;
   border-radius: var(--th-radius-pill);
   background: var(--th-accent-bg);
   border: 1px solid var(--th-accent-border);
   color: var(--text-primary, #e5e7ee);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 12px;
-  box-shadow: 0 2px 8px rgba(74,107,255,0.15);
+  box-shadow: 0 4px 14px rgba(74,107,255,0.22), 0 1px 3px rgba(0,0,0,0.20);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   transition: background 150ms var(--th-ease), border-color 150ms var(--th-ease);
 }
 #trailhead-context-pill:hover {
