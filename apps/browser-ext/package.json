@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Trailhead browser extension — live 5-dimension score-card on Claude.ai",
+  "description": "LearnLoop browser extension — live 5-dimension score-card on Claude.ai",
   "scripts": {
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",

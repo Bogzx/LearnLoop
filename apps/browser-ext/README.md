@@ -1,4 +1,4 @@
-# browser-ext — Trailhead extension for Claude.ai
+# browser-ext — LearnLoop extension for Claude.ai
 
 The demo headline (spec §2). Live 5-dimension score-card under Claude.ai's
 textarea, four widgets injected into the conversation surface, Socratic-mode
