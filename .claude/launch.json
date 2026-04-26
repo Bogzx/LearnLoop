@@ -1,0 +1,21 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["../../node_modules/next/dist/bin/next", "dev"],
+      "cwd": "apps/dashboard",
+      "port": 3001,
+      "autoPort": true
+    },
+    {
+      "name": "landing-page",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "serve", ".", "-l", "4000"],
+      "cwd": "apps/landing-page",
+      "port": 4000,
+      "autoPort": true
+    }
+  ]
+}
