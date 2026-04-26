@@ -53,8 +53,13 @@ function asError(e: unknown) {
 // the embed is a frozen snapshot from bootstrap time and inflates response
 // size by 5-10× without adding new signal. Removed at render so we don't
 // have to re-bootstrap to get the win.
+//
+// (^|\n) anchor handles BOTH "## Source" at the start of body_md (file
+// nodes always lead with it) and mid-body Source headers in folder/root
+// narratives. Lookahead preserves the trailing \n before the next ## so
+// adjacent sections stay separated after the strip.
 function stripSourceEmbed(md: string): string {
-  return md.replace(/\n## Source[\s\S]*?(?=\n## |$)/g, '');
+  return md.replace(/(?:^|\n)## Source[\s\S]*?(?=\n## |$)/g, '');
 }
 
 // Trim the layered HCL bundle to the requested depth. 'file' → only the
