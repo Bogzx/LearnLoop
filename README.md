@@ -1,59 +1,155 @@
-# Trailhead
+# Trailhead / LearnLoop
 
-> A prompt-skill coach that uses your team's actual work as the curriculum.
-> The team wiki is the engine that keeps the curriculum fresh, automatically.
+A team-wide prompting coach. Every prompt you send through Claude.ai, VS Code,
+Claude Code, or Copilot Chat is scored on five dimensions in real time. Weak
+prompts trigger a short teaching loop. Strong prompts feed the team wiki, which
+is then injected back into the next person's context — so a team's "way of
+prompting" compounds without anyone writing docs.
 
-Built for **PoliHack 2026** — *AI Adoption for Engineers*. Trailhead targets the
-**L1 → L2 transition** (opportunistic prompting → systematized, team-shared
-prompting), the gap the brief calls "the hardest." It makes the rubric for a
-strong prompt visible to every engineer, on every send, on the surface they
-already use (Claude.ai, VS Code, Claude Code, Copilot Chat).
-
-The marketing site brands the product as **LearnLoop**.
+Trailhead is the engineering codename across the codebase; **LearnLoop** is the
+product name on the marketing site.
 
 ---
 
-## What ships
+## What's actually implemented
 
-Trailhead is a monorepo with five engineering surfaces and one backend. Every
-client talks to the same Hono API; the API owns Postgres and is the only
-service with a database connection.
+The repo is a working npm-workspaces monorepo. Six surfaces, all wired to one
+backend, all sharing the same TypeScript contract.
 
-```
-┌─ Thin clients ────────────────────────────────────────┐
-│  apps/browser-ext   Score-card overlay on Claude.ai   │
-│  apps/vscode-ext    VS Code sidebar + articulation    │
-│  apps/mcp-server    MCP for Claude Code + Copilot     │
-│  apps/dashboard     Next.js skill-arc / wiki view     │
-│  apps/landing-page  LearnLoop marketing site (static) │
-└─────────────────────┬─────────────────────────────────┘
-                      │ HTTPS, X-Team-Token header
-                      ▼
-┌─ apps/api ────────────────────────────────────────────┐
-│  Hono on Railway. Endpoints: /score /coach /capture   │
-│  /context /examples /diff /wiki/propose /onboard/...  │
-└─────────────────────┬─────────────────────────────────┘
-                      ▼
-┌─ Postgres (Neon) ─────────────────────────────────────┐
-│  6 tables: teams, nodes, learnings, prompts,          │
-│  captures, skill_observations (+ wiki_jobs for async) │
-└───────────────────────────────────────────────────────┘
-```
+### `apps/api` — Hono backend (TypeScript, Node 22, Postgres)
 
-### The 5-dimension rubric
+Single source of truth. Multi-tenant by `X-Team-Token` header, with optional
+auto-creation of new teams on unknown tokens (`TRAILHEAD_AUTO_CREATE_TEAMS`).
+Endpoints actually implemented in `apps/api/src/index.ts`:
 
-Every prompt is scored on:
+| Method + Path | What it does |
+|---|---|
+| `GET  /` | Health + endpoint catalog (unauth) |
+| `GET  /teams` | List all teams with tokens (unauth, drives the dashboard team picker) |
+| `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
+| `POST /coach` | Stateless 3-round teach→reveal coaching loop (educational pipeline) |
+| `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
+| `POST /wiki/propose` | Normalize + dedup an insight on `(node_id, body_normalized)`, increment `reinforcement_count`, promote `draft → durable` at ≥ 3 |
+| `GET  /context?path=` | HCL ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
+| `GET  /examples?path=` | Top graduated prompts for an ancestor of a file path |
+| `GET  /wiki/recent?since=ISO` | Polling endpoint for the VS Code wiki-toast surface |
+| `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, and asks Gemini Pro to narrate the difference |
+| `POST /improve` | Multi-turn Gemini-driven prompt rewrite, capped at 5 user replies |
+| `GET  /skill-arc` | Time-series of per-dimension scores (powers the dashboard hero chart) |
+| `GET  /team/metrics` | Snapshot: avg overall, reuse rate, durable count, draft count, active users |
+| `GET  /wiki/tree` | Full node + learnings tree (powers the dashboard wiki page) |
+| `POST /onboard/repo` | Bulk-upsert one node per path, idempotent, optional `initial_rules[path]` for seeding `body_md` |
+| `POST /onboard/repo/full` | Async rich bootstrap: accepts a folder + file bundle (capped at 16 MB / 2 000 files / 32 KB per file), enqueues a `wiki_jobs` row, three-pass Gemini fan-out via `setImmediate` |
+| `GET  /onboard/jobs/:id` | Per-path progress for a rich-bootstrap job |
+| `DELETE /team/data` | Wipes the requesting team's data; demo team is protected unless `TRAILHEAD_ALLOW_DEMO_RESET=true` |
 
-1. `goal_clarity` — what outcome is being asked for
-2. `specificity` — concrete files, functions, errors named
-3. `context_loading` — relevant code/docs/examples attached
-4. `constraint_articulation` — what *must not* change, perf/style limits
-5. `output_specification` — desired shape of the response
+LLM work runs through `apps/api/src/gemini.ts`: Gemini 2.5 Flash for scoring
+(JSON-schema mode), Gemini 2.5 Pro for diff narration and rich bootstrap.
 
-A prompt scoring `< 7` triggers a 5-second nudge with *Have Claude clarify* /
-*Send as-is*; `≥ 7` lands silently. Each `/score` write produces one
-`skill_observation` per dimension — that's what powers the live skill arc on
-the dashboard.
+### `apps/browser-ext` — Chrome MV3 extension for Claude.ai
+
+Vanilla TypeScript + esbuild. Manifest declares `https://claude.ai/*` as the
+content-script host and pre-allowlists the deployed Railway API.
+
+Implemented widgets (`src/widgets/`):
+
+- **Score card** under the textarea — debounced 250 ms hits to `/score`,
+  per-dimension bars, missing-dimension hints
+- **Score badge** on each user bubble
+- **Prompt diff panel** — "Compare to team" expands a `/diff` view inline
+- **Outcome rating** chips on each assistant bubble (👍 / 🤷 / 👎 → `/capture`)
+- **Wiki toast** — drops in when `/wiki/recent` polling sees a new learning
+- **Improve chat** — multi-turn rewrite using `/improve`
+- **Context pill + popup** — pick a wiki node to bias scoring
+- **Send-intercept** — on send: `≥ 7` lets the native send fire; `< 7` shows a
+  5-second nudge with *Have Claude clarify* / *Send as-is*; auto-sends as-is on
+  timeout. Fail-open on every API error.
+
+Kill-switch: `chrome.storage.local.set({ 'trailhead.disabled': true })` halts
+the extension on next page load.
+
+### `apps/vscode-ext` — VS Code extension
+
+Sidebar webview registered under the `trailhead` activity bar. Settings expose
+`trailhead.apiUrl`, `trailhead.teamToken`, `trailhead.userId`. Same 5-dimension
+score-card render as the browser extension, plus a wiki-diff polling loop that
+toasts when `/wiki/recent` reports a new insight.
+
+### `apps/mcp-server` — MCP server for Claude Code + Copilot Chat
+
+STDIO MCP server distributed via `npx trailhead-mcp …`. Four hero tools
+deliberately collapsed from a previous seven-tool surface so Copilot's tool
+selector picks reliably:
+
+| Tool | Routes to |
+|---|---|
+| `coach` | `POST /coach` — server-side teach→reveal cycle returns `proceed: true/false` and a rendered `text` block; the directive is a thin "relay text, follow `proceed`" loop |
+| `wiki_lookup` | `GET /context` + `GET /examples` (file-path based) and/or `GET /search` (query) |
+| `wiki_save` | `POST /wiki/propose` with server-side dedup |
+| `wiki_bootstrap` | `POST /onboard/repo` (skeleton) or `POST /onboard/repo/full` (rich, LLM-populated) |
+
+Plus a `ping` for health checks.
+
+CLI subcommands (`bin/cli.mjs`):
+
+- `trailhead-mcp init` — per-repo install. Writes `.mcp.json` + `CLAUDE.md`
+  for Claude Code and `.vscode/mcp.json` + `.github/copilot-instructions.md`
+  for Copilot. Idempotent. Token derivation order: `--team-token` →
+  `TRAILHEAD_TEAM_TOKEN` → `.trailhead-team` sentinel → SHA-256 of
+  `git remote get-url origin` → random `repo_local_*` token written to
+  `.trailhead-team` and added to `.gitignore`.
+- `trailhead-mcp bootstrap` — walks the cwd, bundles source files, posts to
+  `/onboard/repo/full`. Default rich mode shows a live progress bar. Flags:
+  `--minimal`, `--paths`, `--force`, `--dry-run`, `--yes`.
+- `trailhead-mcp reset` — wipes the team's wiki/captures/observations.
+
+### `apps/dashboard` — Next.js 15 dashboard (Vercel)
+
+App router, server components for the team list, SWR for the live charts.
+Pages (`src/app/`):
+
+- `/` — team picker (lists every team returned by `/teams`)
+- `/skill-arc?team=…` — per-dimension team chart driven by `/skill-arc`,
+  polls every 2 s during the demo
+- `/team?team=…` — L1→L2 metric cards from `/team/metrics`
+- `/wiki?team=…` — node tree + durable learnings from `/wiki/tree`
+
+### `apps/landing-page` — LearnLoop marketing site
+
+Single static `index.html` + JSX components loaded at runtime via Babel
+standalone. Tailwind via CDN. Sections: hero, problem, solution, features,
+demo, footer.
+
+### Packages
+
+- `packages/shared` — TypeScript types for every API request/response. Every
+  surface imports from here so wire shapes can't drift.
+- `packages/scoring` — Locked Gemini prompt templates (score, augment, teach,
+  topic, extract) and pure helpers (`buildAugmentation`, `normalize`,
+  `normalizePath`, `ancestorPaths`, the teach/skip/success reveal renderers).
+- `packages/score-card` — Pure-DOM render function for the 5-dimension card.
+  Used by the browser extension and the VS Code webview.
+- `packages/db` — `schema.sql` (idempotent, every `CREATE` uses `IF NOT
+  EXISTS`), `migrate.mjs`, `check.mjs`, and `seed.mjs` for the Acme Fintech
+  demo data.
+
+### Database (Postgres on Neon)
+
+Eight tables in `packages/db/schema.sql`:
+
+- `teams` — tenancy
+- `nodes` — one row per folder or file path; carries `body_md`
+- `learnings` — accumulated insights with normalize-based dedup, counter,
+  and `draft | durable` status
+- `prompts` — graduated prompt templates with `topic` and `reuse_count`
+- `captures` — stored conversations with outcome
+- `skill_observations` — per-dimension score writes; `prompt_hash` backs the
+  30 s dedup window
+- `wiki_jobs` + `wiki_job_paths` — async rich-bootstrap state
+
+The demo team (`Acme Fintech`, token `trailhead_demo_acme_2026`) is
+hardcoded into the schema with a fixed UUID so every surface can reference
+it without a lookup.
 
 ---
 
@@ -62,45 +158,55 @@ the dashboard.
 ```
 apps/
   api/           Hono + TypeScript backend (Railway)
-  browser-ext/   Chrome extension for Claude.ai
+  browser-ext/   Chrome MV3 extension for Claude.ai
   vscode-ext/    VS Code IDE extension
-  mcp-server/    MCP server (Claude Code + Copilot Chat)
+  mcp-server/    MCP server (Claude Code + Copilot Chat) + CLI
   dashboard/     Next.js 15 dashboard (Vercel)
   landing-page/  Static marketing site (LearnLoop)
-
 packages/
   shared/        TypeScript types — single source of truth for API shapes
-  scoring/       Locked Gemini prompt templates (score, augment, teach, ...)
-  score-card/    Pure-DOM render of the 5-dimension card (used by ext + ide)
+  scoring/       Locked Gemini prompt templates + pure helpers
+  score-card/    Pure-DOM render of the 5-dimension card
   db/            Postgres schema, migrations, seed data
-
 docs/
-  superpowers/specs/   Design specs (architecture, roadmaps, demo plan)
+  superpowers/specs/   Design specs
   roadmaps/            Per-surface 24h build roadmaps
 ```
 
-Each app and package has its own README with its specific contract, build, and
-deploy story. Start there for surface-specific work.
+---
+
+## The 5-dimension rubric
+
+Every prompt is scored 0–10 on:
+
+1. `goal_clarity` — what outcome is being asked for
+2. `specificity` — concrete files, functions, errors named
+3. `context_loading` — relevant code/docs/examples attached
+4. `constraint_articulation` — what *must not* change, perf/style limits
+5. `output_specification` — desired shape of the response
+
+`overall = mean of the five dims`. Below 7 triggers coaching; ≥ 7 lands
+silently.
 
 ---
 
-## Quick start (local)
+## Quick start
 
 Prerequisites:
+
 - Node `>= 22.6`
-- A Postgres database (Neon recommended — the `DATABASE_URL` must include
-  `sslmode=require`)
+- A Postgres database (Neon — `DATABASE_URL` must include `sslmode=require`)
 - A Gemini API key from <https://aistudio.google.com/apikey>
 
 ```bash
 # 1. Install workspace dependencies
 npm install
 
-# 2. Create your env file
+# 2. Configure environment
 cp .env.example .env
 # Edit .env — fill in DATABASE_URL and GEMINI_API_KEY
 
-# 3. Apply the schema (idempotent)
+# 3. Apply the schema (idempotent, safe to re-run)
 psql "$DATABASE_URL" -f packages/db/schema.sql
 
 # 4. (optional) Seed the Acme Fintech demo data
@@ -111,7 +217,7 @@ npm run dev
 # → http://localhost:3000
 ```
 
-The API will refuse to boot without `DATABASE_URL` and `GEMINI_API_KEY`.
+The API refuses to boot without `DATABASE_URL` and `GEMINI_API_KEY`.
 
 ### Run individual surfaces
 
@@ -121,12 +227,12 @@ NEXT_PUBLIC_API_URL=http://localhost:3000 \
 NEXT_PUBLIC_TEAM_TOKEN=trailhead_demo_acme_2026 \
   npm --workspace=apps/dashboard run dev
 
-# Browser extension (build, then load apps/browser-ext/dist as unpacked)
+# Browser extension — build, then load apps/browser-ext/dist as unpacked
 npm --workspace=@trailhead/browser-ext run build
+# chrome://extensions → Developer mode → Load unpacked → apps/browser-ext/dist/
 
-# VS Code extension (run via the Extension Development Host)
+# VS Code extension — build, then F5 with apps/vscode-ext as the workspace
 npm --workspace=apps/vscode-ext run build
-# → F5 in VS Code with apps/vscode-ext as the workspace
 
 # MCP server — install into a target repo
 cd /path/to/your/repo
@@ -144,24 +250,22 @@ npm run build        # build all workspaces that expose a build script
 
 ---
 
-## Environment
+## Environment variables
 
-The root `.env.example` is the canonical template — every surface reads from
-the same set of variables.
+Single root `.env.example` — every surface reads from the same set.
 
 | Var | Used by | Notes |
-|-----|---------|-------|
+|---|---|---|
 | `DATABASE_URL` | api | Postgres connection string, `sslmode=require` |
-| `GEMINI_API_KEY` | api | Gemini 2.5 Flash (score) + 2.5 Pro (diff) |
-| `TEAM_TOKEN` | api, clients | Demo single-tenant secret. `X-Team-Token` header on every request |
-| `PORT` | api | Defaults to `3000`; Railway injects automatically |
+| `GEMINI_API_KEY` | api | Gemini 2.5 Flash + 2.5 Pro |
+| `TEAM_TOKEN` | clients | Demo single-tenant secret, sent as `X-Team-Token` |
+| `PORT` | api | Defaults to 3000; Railway injects automatically |
+| `TRAILHEAD_AUTO_CREATE_TEAMS` | api | `false` to disable on-the-fly team creation |
+| `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
 | `NEXT_PUBLIC_API_URL` | dashboard | Where the dashboard fetches |
 | `NEXT_PUBLIC_TEAM_TOKEN` | dashboard | Team token surfaced to the browser |
-| `TRAILHEAD_AUTO_CREATE_TEAMS` | api | `false` to disable on-the-fly team creation |
-| `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `reset` on the demo team |
-
-Production-grade auth is intentionally out of scope — the spec calls for
-swapping in Clerk before any non-demo deploy.
+| `trailhead.apiUrl` / `.teamToken` / `.userId` | vscode-ext | VS Code settings |
+| `TRAILHEAD_API_URL` / `TRAILHEAD_TEAM_TOKEN` | mcp-server | Per-repo MCP config |
 
 ---
 
@@ -170,82 +274,72 @@ swapping in Clerk before any non-demo deploy.
 - **API** → Railway. `railway.json` declares `npm --workspace=apps/api start`
   with healthcheck on `/`.
 - **Dashboard** → Vercel. Set `NEXT_PUBLIC_API_URL` and
-  `NEXT_PUBLIC_TEAM_TOKEN` in the project settings, then `vercel --prod` from
-  `apps/dashboard/`.
-- **Browser extension** → loaded unpacked from `apps/browser-ext/dist/` for the
-  demo. Pin a specific Chrome build via `apps/browser-ext/PINNED_CHROME.txt`.
+  `NEXT_PUBLIC_TEAM_TOKEN`, then `vercel --prod` from `apps/dashboard/`.
+- **Browser extension** → loaded unpacked from `apps/browser-ext/dist/`.
 - **VS Code extension** → `vsce package` from `apps/vscode-ext/`.
 - **MCP server** → distributed via `npx trailhead-mcp init` (per-repo wiring,
   multi-tenant token derivation from the git remote).
 
 ---
 
-## How the pieces fit (the demo)
+## How the pieces fit
 
-1. Engineer types a prompt in Claude.ai. The browser extension debounces
-   250 ms and `POST /score`s it. The score-card mounts under the textarea
-   showing 5 per-dimension bars and missing-dimension hints.
-2. Below 7 → 5-second *Have Claude clarify* nudge. Each `/score` writes 5
-   `skill_observation` rows; the dashboard's `/skill-arc` chart polls every 2
-   seconds, so the rightmost bucket climbs as the user prompts.
-3. In Claude Code (or Copilot Chat), the MCP server registers four tools:
-   `coach`, `wiki_lookup`, `wiki_save`, `wiki_bootstrap`. The host LLM is
-   instructed to call `coach` before answering any code task — it returns a
-   `proceed` flag plus a teach-block, and the LLM relays it. Three rounds max,
-   then a reveal block shows the score arc and prompt diff.
+1. Engineer types a prompt. Browser extension debounces 250 ms and hits
+   `/score`. The card mounts under the textarea with five per-dimension bars
+   and missing-dimension hints.
+2. Below 7 → 5-second *Have Claude clarify* nudge, or fall back to *Send
+   as-is*. Each `/score` writes 5 `skill_observation` rows; the dashboard's
+   `/skill-arc` chart polls every 2 s, so the rightmost bucket climbs as the
+   user prompts.
+3. In Claude Code or Copilot Chat, the MCP server's `coach` tool is called
+   first. Server returns `proceed: false` plus a teach-block when the score
+   is low; the host LLM relays the block, gathers a reply, calls back. Three
+   rounds max, then a reveal block shows the score arc and prompt diff.
 4. When the user states a teamwide convention, `wiki_save` calls
    `POST /wiki/propose`. Server-side normalize + dedup means repeated calls
    reinforce the same draft instead of duplicating; `reinforcement_count >= 3`
-   promotes draft → durable. The VS Code extension polls and toasts the wiki
-   update — visible proof of the autonomous loop.
-5. The dashboard layers real `/score` writes from the live demo on top of the
-   seeded base data, so the closing tick is genuinely live.
-
-The whole thing is designed so the demo is **L1 → L2** in motion: an
-individual prompt becomes a versioned, reusable team artifact without anyone
-filing a PR.
+   promotes `draft → durable`. The VS Code extension polls `/wiki/recent` and
+   toasts the update — visible proof of the autonomous loop.
+5. Next prompt the same engineer (or a teammate) types in the same path
+   triggers `/score` again, but now `context_path` pulls the team's HCL
+   bundle into Gemini's system prompt, so the rubric is calibrated against
+   the team's own conventions.
 
 ---
 
-## Specs and design docs
+## Specs
 
-The project was specced before it was built. The specs are the source of
-truth for *why* — read them before changing surface contracts.
+The project was specced before it was built. Source of truth for *why*:
 
-- `docs/superpowers/specs/2026-04-25-trailhead-design.md` — master spec (24 h
-  scope, schema, endpoints, demo storyboard, risk register)
+- `docs/superpowers/specs/2026-04-25-trailhead-design.md` — master spec
 - `docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md` — MCP install
   story and four-tool surface
 - `docs/superpowers/specs/2026-04-25-trailhead-browser-ext-design.md` —
   Claude.ai content-script architecture
-- `docs/superpowers/specs/2026-04-25-demo-completion-design.md` — dashboard,
-  seeding, demo close beats
+- `docs/superpowers/specs/2026-04-25-demo-completion-design.md` — dashboard
+  and seeding plan
 - `docs/superpowers/specs/2026-04-26-trailhead-educational-loop-design.md` —
   the teach → reveal coaching loop
 - `docs/superpowers/specs/2026-04-26-wiki-bootstrap-rich-design.md` — async
-  Karpathy-style wiki bootstrap
-- `docs/superpowers/specs/2026-04-26-improve-widget-design.md` — prompt
-  improvement widget
+  Karpathy-style rich bootstrap
+- `docs/superpowers/specs/2026-04-26-improve-widget-design.md` — multi-turn
+  improve widget
 - `docs/roadmaps/` — per-surface 24-hour build plans
 
-The hackathon brief itself is in `AI_Adoption_for_Engineers.md`.
+Each app and package also has its own `README.md` covering surface-specific
+contracts, builds, and tests.
 
 ---
 
 ## Tech stack
 
-- **Backend:** Hono, TypeScript, Node 22, `@hono/node-server`, Railway
-- **DB:** Postgres (Neon), no ORM — raw SQL via `pg`
-- **LLMs:** Gemini 2.5 Flash (scoring, JSON schema mode), Gemini 2.5 Pro
-  (diff synthesis, rich bootstrap)
-- **Frontend:** Next.js 15, Tailwind, Recharts, SWR (dashboard);
-  vanilla TS + esbuild (extensions); React via CDN (landing page)
+- **Backend:** Hono, TypeScript, Node 22, `@hono/node-server`, raw `pg`
+- **DB:** Postgres on Neon, no ORM
+- **LLMs:** Gemini 2.5 Flash (scoring, JSON-schema mode), Gemini 2.5 Pro
+  (diff narration, rich bootstrap)
+- **Frontend:** Next.js 15 + Tailwind + Recharts + SWR (dashboard); vanilla
+  TS + esbuild (extensions); React via CDN (landing page)
 - **MCP:** `@modelcontextprotocol/sdk`, STDIO transport
 - **Build:** npm workspaces; per-package `tsc` / `esbuild`
-
----
-
-## License
-
-Hackathon project — no license declared. Treat as all-rights-reserved until
-explicitly relicensed.
+- **Hosts:** Railway (API), Vercel (dashboard), per-repo MCP install via
+  `npx trailhead-mcp`
