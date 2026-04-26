@@ -10,6 +10,7 @@ import './env.ts';
 // the learning-extractor helper below, where latency is tolerable.
 
 import { GoogleGenAI, Type } from '@google/genai';
+import { currentTrace } from './langfuse.ts';
 import type { Dimension, DimensionScores, MissingHints } from '@trailhead/shared';
 import { DIMENSIONS } from '@trailhead/shared';
 import {
@@ -29,6 +30,59 @@ if (!process.env.GEMINI_API_KEY) {
 }
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// Langfuse-instrumented wrapper around ai.models.generateContent.
+// Emits one generation per Gemini call, hung off the per-request trace
+// stored in AsyncLocalStorage by the Hono middleware. No-op when no
+// trace is active (e.g. background jobs that don't run inside a request).
+type GenContentParams = Parameters<typeof ai.models.generateContent>[0];
+type GenContentResp = Awaited<ReturnType<typeof ai.models.generateContent>>;
+
+async function tracedGenerate(params: GenContentParams): Promise<GenContentResp> {
+  const trace = currentTrace();
+  const gen = trace?.generation({
+    name: params.model,
+    model: params.model,
+    input: {
+      contents: params.contents,
+      systemInstruction: params.config?.systemInstruction,
+    },
+    modelParameters: {
+      temperature: params.config?.temperature ?? null,
+      maxOutputTokens: params.config?.maxOutputTokens ?? null,
+      thinkingBudget: params.config?.thinkingConfig?.thinkingBudget ?? null,
+    },
+  });
+  try {
+    const resp = await tracedGenerate(params);
+    if (gen) {
+      const u = (resp as unknown as {
+        usageMetadata?: {
+          promptTokenCount?: number;
+          candidatesTokenCount?: number;
+          totalTokenCount?: number;
+        };
+      }).usageMetadata;
+      gen.end({
+        output: extractAnswer(resp as GenResp),
+        usage: u
+          ? {
+              input: u.promptTokenCount,
+              output: u.candidatesTokenCount,
+              total: u.totalTokenCount,
+            }
+          : undefined,
+      });
+    }
+    return resp;
+  } catch (err) {
+    gen?.end({
+      level: 'ERROR',
+      statusMessage: String((err as { message?: string }).message ?? err),
+    });
+    throw err;
+  }
+}
 
 // Retry policy:
 //
@@ -185,7 +239,7 @@ export async function scorePrompt(args: {
 
   if (SCORE_MODEL.startsWith('gemini-')) {
     const resp = await withRetry(
-      () => ai.models.generateContent({
+      () => tracedGenerate({
         model: SCORE_MODEL,
         contents: buildScoreUserPrompt(args),
         config: {
@@ -264,7 +318,7 @@ export async function scorePrompt(args: {
   // packages/scoring/src/models.mjs to a Gemma-family model that has no
   // schema enforcement. Single attempt; same fail-closed posture.
   const resp = await withRetry(
-    () => ai.models.generateContent({
+    () => tracedGenerate({
       model: SCORE_MODEL,
       contents:
         `${systemInstruction}\n\n${buildScoreUserPrompt(args)}\n\n` +
@@ -383,7 +437,7 @@ export async function rewriteForDims(args: {
 
   try {
     const resp = await withRetry(
-      () => ai.models.generateContent({
+      () => tracedGenerate({
         model: SCORE_MODEL,
         contents: userMessage,
         config: {
@@ -475,7 +529,7 @@ export async function acknowledgeProgress(args: {
 
   try {
     const resp = await withRetry(
-      () => ai.models.generateContent({
+      () => tracedGenerate({
         model: SCORE_MODEL,
         contents: userMessage,
         config: {
@@ -546,7 +600,7 @@ export async function summarizeCoaching(args: {
 
   try {
     const resp = await withRetry(
-      () => ai.models.generateContent({
+      () => tracedGenerate({
         model: SCORE_MODEL,
         contents: userMessage,
         config: {
@@ -586,7 +640,7 @@ const TOPIC_VALUES = [
 
 export async function extractTopic(prompt: string): Promise<string> {
   const resp = await withRetry(
-    () => ai.models.generateContent({
+    () => tracedGenerate({
       model: TOPIC_MODEL,
       contents: prompt,
       config: {
@@ -631,7 +685,7 @@ export async function extractPathAndTopic(
 ): Promise<{ path: string | null; topic: string | null }> {
   try {
     const resp = await withRetry(
-      () => ai.models.generateContent({
+      () => tracedGenerate({
         model: TOPIC_MODEL,
         contents: prompt,
         config: {
@@ -679,7 +733,7 @@ export async function synthesizeDiff(args: {
 }): Promise<string> {
   const dimsLine = (s: DimensionScores) => DIMENSIONS.map((d) => `${d}=${s[d]}`).join(', ');
   const resp = await withRetry(
-    () => ai.models.generateContent({
+    () => tracedGenerate({
       model: DIFF_MODEL,
       contents:
         `Compare these two prompts on the five Trailhead dimensions.\n\n` +
@@ -759,7 +813,7 @@ export async function improveCoach(input: ImproveCoachInput): Promise<ImproveCoa
     : IMPROVE_SYSTEM_PROMPT;
 
   const resp = await withRetry(
-    () => ai.models.generateContent({
+    () => tracedGenerate({
       model: SCORE_MODEL,
       contents: userMessage,
       config: {
@@ -820,7 +874,7 @@ export async function extractLearning(args: {
   assistant_response: string;
 }): Promise<ExtractResult> {
   const resp = await withRetry(
-    () => ai.models.generateContent({
+    () => tracedGenerate({
       model: EXTRACT_MODEL,
       contents:
         `${EXTRACT_SYSTEM_PROMPT}\n\n` +

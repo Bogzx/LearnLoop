@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Trailhead — Before vs After</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #0a0a0a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #cccccc;
+    padding: 40px 32px 48px;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  .deck { max-width: 1480px; margin: 0 auto; }
+
+  .pitch-eyebrow {
+    text-align: center;
+    color: #8b8b8b;
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    font-weight: 600;
+  }
+  .pitch-headline {
+    text-align: center;
+    color: #f0f0f0;
+    font-size: 28px;
+    font-weight: 600;
+    margin-bottom: 38px;
+    letter-spacing: -0.015em;
+    line-height: 1.3;
+  }
+  .pitch-headline strong { color: #4daafc; font-weight: 700; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+    align-items: start;
+  }
+
+  /* ───── Copilot panel chrome ───── */
+  .copilot {
+    background: #1f1f1f;
+    border: 1px solid #2b2b2b;
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 12px 40px rgba(0,0,0,.45);
+  }
+
+  .copilot-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 14px 9px 16px;
+    border-bottom: 1px solid #2b2b2b;
+    background: #181818;
+  }
+  .copilot-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #cccccc;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .copilot-header-right { display: flex; align-items: center; gap: 6px; }
+  .model-pill {
+    background: #2b2b2b;
+    border: 1px solid #3c3c3c;
+    color: #cccccc;
+    font-size: 12px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: inherit;
+  }
+  .model-pill::after { content: "▾"; color: #858585; font-size: 10px; }
+  .icon-btn {
+    background: transparent;
+    border: none;
+    color: #858585;
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: default;
+  }
+
+  .messages {
+    padding: 18px 18px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .msg { display: flex; gap: 10px; }
+  .msg-avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .msg-avatar.user {
+    background: #6e40c9;
+    color: #ffffff;
+  }
+  .msg-avatar.copilot {
+    background: #1f1f1f;
+    border: 1px solid #3c3c3c;
+    color: #cccccc;
+  }
+  .msg-content { flex: 1; min-width: 0; }
+  .msg-author {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e6e6e6;
+    margin-bottom: 6px;
+    line-height: 1.2;
+  }
+  .msg-body {
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: #cccccc;
+  }
+  .msg-body p { margin: 0 0 8px; }
+  .msg-body p:last-child { margin-bottom: 0; }
+
+  /* ───── Tool call card ───── */
+  .tool-call {
+    background: #252526;
+    border: 1px solid #3c3c3c;
+    border-radius: 6px;
+    margin: 9px 0;
+    overflow: hidden;
+  }
+  .tool-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid #2b2b2b;
+  }
+  .tool-call.compact .tool-head { border-bottom: none; }
+  .tool-icon {
+    width: 14px;
+    height: 14px;
+    color: #4daafc;
+    flex-shrink: 0;
+  }
+  .tool-name {
+    font-family: "SF Mono", Consolas, "Courier New", monospace;
+    font-size: 12px;
+    color: #d4d4d4;
+    font-weight: 500;
+  }
+  .tool-name .pkg { color: #858585; }
+  .tool-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: #3fb950;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 500;
+  }
+  .tool-status.warn { color: #d29922; }
+  .tool-status.danger { color: #f85149; }
+  .tool-body {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #b0b0b0;
+    background: #1e1e1e;
+    line-height: 1.5;
+  }
+  .tool-body .tool-row {
+    display: flex;
+    gap: 8px;
+    padding: 1px 0;
+  }
+  .tool-body .tool-key {
+    color: #858585;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 11.5px;
+    min-width: 52px;
+  }
+  .tool-body .tool-val { color: #cccccc; }
+  .tool-body .tool-val code {
+    color: #ce9178;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 11.5px;
+  }
+  .tool-body ul {
+    list-style: none;
+    margin-top: 2px;
+  }
+  .tool-body ul li {
+    padding-left: 14px;
+    position: relative;
+    font-size: 12px;
+    color: #d4d4d4;
+    line-height: 1.55;
+  }
+  .tool-body ul li::before {
+    content: "▸";
+    position: absolute;
+    left: 0;
+    color: #d29922;
+  }
+  .tool-body ul li code {
+    color: #4daafc;
+    background: rgba(77,170,252,0.08);
+    padding: 0 5px;
+    border-radius: 3px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 11.5px;
+  }
+
+  /* ───── Markdown-rendered coach output (verbatim relay of tool.text) ───── */
+  .md {
+    margin: 8px 0 4px;
+    color: #cccccc;
+  }
+  .md h3 {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #f0f0f0;
+    margin: 6px 0 8px;
+    line-height: 1.4;
+  }
+  .md p { font-size: 12.5px; margin: 6px 0; line-height: 1.55; }
+  .md em { color: #9ea7ad; font-style: italic; }
+  .md strong { color: #e6edf3; font-weight: 600; }
+  .md .arrow-q {
+    margin-top: 6px;
+    color: #d2a8ff;
+    font-size: 12.5px;
+  }
+
+  /* dim table — matches reveal-render.mjs format exactly */
+  .dim-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11.5px;
+    margin: 6px 0 6px;
+    background: #161616;
+    border: 1px solid #2b2b2b;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .dim-table th {
+    text-align: left;
+    font-weight: 600;
+    color: #858585;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 5px 9px;
+    background: #181818;
+    border-bottom: 1px solid #2b2b2b;
+  }
+  .dim-table td {
+    padding: 4px 9px;
+    color: #cccccc;
+    border-bottom: 1px solid #232323;
+    font-size: 12px;
+  }
+  .dim-table tbody tr:last-child td { border-bottom: none; }
+  .dim-table td.score {
+    text-align: right;
+    font-family: "SF Mono", Consolas, monospace;
+    color: #d4d4d4;
+    font-size: 11.5px;
+    width: 50px;
+  }
+  .dim-table td.score-delta {
+    text-align: center;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 11.5px;
+    width: 38px;
+    color: #3fb950;
+  }
+  .dim-table td.indicator {
+    text-align: center;
+    width: 28px;
+    font-size: 11.5px;
+  }
+  .dim-table tr.highlight td:first-child strong { color: #f0c674; }
+  .dim-table tr.highlight { background: rgba(240,198,116,0.05); }
+
+  /* the canonical graduation banner — rendered verbatim from coach.text */
+  .library-banner {
+    margin: 10px 0;
+    padding: 10px 12px 8px;
+    background: rgba(63,185,80,0.10);
+    border-left: 3px solid #3fb950;
+    border-radius: 0 4px 4px 0;
+  }
+  .library-banner h3 {
+    color: #aff5b4;
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    line-height: 1.4;
+  }
+  .library-banner h3 .check { color: #3fb950; }
+  .library-banner p {
+    font-size: 11.5px;
+    color: #8ab592;
+    font-style: italic;
+    margin: 0;
+  }
+
+  /* ───── Code block ───── */
+  .code-block {
+    background: #1e1e1e;
+    border: 1px solid #2b2b2b;
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 9px 0;
+  }
+  .code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px 5px 12px;
+    background: #181818;
+    border-bottom: 1px solid #2b2b2b;
+  }
+  .code-lang {
+    font-size: 11.5px;
+    color: #858585;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .code-actions { display: flex; gap: 4px; }
+  .code-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #cccccc;
+    font-size: 11.5px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+  }
+  .code-btn.primary {
+    background: #0e639c;
+    color: #ffffff;
+    border-color: #1177bb;
+  }
+  pre {
+    font-family: "SF Mono", Consolas, "Courier New", monospace;
+    font-size: 11.8px;
+    line-height: 1.6;
+    overflow-x: auto;
+    color: #d4d4d4;
+    padding: 12px 14px;
+    white-space: pre;
+  }
+  .kw  { color: #c586c0; }
+  .ctl { color: #569cd6; }
+  .fn  { color: #dcdcaa; }
+  .str { color: #ce9178; }
+  .num { color: #b5cea8; }
+  .par { color: #9cdcfe; }
+
+  .danger, .verdict {
+    margin-top: 9px;
+    padding: 9px 12px;
+    border-radius: 5px;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .danger {
+    background: rgba(248, 81, 73, 0.10);
+    border-left: 3px solid #f85149;
+    color: #ffa198;
+  }
+  .danger strong { color: #f85149; font-weight: 700; }
+  .verdict {
+    background: rgba(63, 185, 80, 0.10);
+    border-left: 3px solid #3fb950;
+    color: #aff5b4;
+  }
+  .verdict strong { color: #3fb950; font-weight: 700; }
+
+  .copilot-input {
+    border-top: 1px solid #2b2b2b;
+    padding: 10px 12px;
+    background: #1f1f1f;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .copilot-input .fake-input {
+    flex: 1;
+    background: #2b2b2b;
+    border: 1px solid #3c3c3c;
+    border-radius: 6px;
+    padding: 7px 10px;
+    color: #858585;
+    font-size: 12.5px;
+  }
+  .send-btn {
+    background: #0e639c;
+    border: none;
+    color: #ffffff;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .panel-wrapper { position: relative; }
+  .panel-wrapper .panel-tag {
+    position: absolute;
+    top: -28px;
+    left: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .panel-wrapper.before .panel-tag { color: #f85149; }
+  .panel-wrapper.after  .panel-tag { color: #3fb950; }
+</style>
+</head>
+<body>
+  <div class="deck">
+    <div class="pitch-eyebrow">Trailhead</div>
+    <div class="pitch-headline">We standardise prompts using your team's <strong>shared knowledge</strong></div>
+
+    <div class="grid">
+
+      <!-- ═════════════════════ BEFORE ═════════════════════ -->
+      <div class="panel-wrapper before">
+        <div class="panel-tag">✕ Without Trailhead</div>
+        <div class="copilot before">
+
+          <div class="copilot-header">
+            <div class="copilot-header-left">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.998 0C3.578 0 0 3.578 0 7.998c0 3.535 2.292 6.526 5.47 7.583.4.075.547-.172.547-.385 0-.19-.007-.693-.01-1.36-2.226.483-2.695-1.073-2.695-1.073-.364-.924-.89-1.17-.89-1.17-.726-.497.056-.486.056-.486.803.057 1.225.825 1.225.825.714 1.224 1.873.87 2.33.665.072-.518.28-.871.508-1.072-1.777-.202-3.644-.888-3.644-3.953 0-.873.313-1.587.823-2.146-.083-.202-.357-1.016.077-2.118 0 0 .672-.215 2.2.82.638-.178 1.323-.266 2.003-.27.68.004 1.364.092 2.003.27 1.527-1.035 2.198-.82 2.198-.82.435 1.102.16 1.916.078 2.118.512.559.822 1.273.822 2.146 0 3.073-1.87 3.748-3.653 3.946.287.247.543.735.543 1.482 0 1.07-.01 1.933-.01 2.195 0 .215.144.464.55.385C13.71 14.522 16 11.532 16 7.998 16 3.578 12.422 0 7.998 0z"/></svg>
+              <span>Chat</span>
+            </div>
+            <div class="copilot-header-right">
+              <div class="model-pill">Claude Sonnet 4.5</div>
+              <button class="icon-btn">⋯</button>
+            </div>
+          </div>
+
+          <div class="messages">
+
+            <div class="msg">
+              <div class="msg-avatar user">B</div>
+              <div class="msg-content">
+                <div class="msg-author">bogzx</div>
+                <div class="msg-body">add retries to the payment service</div>
+              </div>
+            </div>
+
+            <div class="msg">
+              <div class="msg-avatar copilot">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.998 0C3.578 0 0 3.578 0 7.998c0 3.535 2.292 6.526 5.47 7.583.4.075.547-.172.547-.385 0-.19-.007-.693-.01-1.36-2.226.483-2.695-1.073-2.695-1.073-.364-.924-.89-1.17-.89-1.17-.726-.497.056-.486.056-.486.803.057 1.225.825 1.225.825.714 1.224 1.873.87 2.33.665.072-.518.28-.871.508-1.072-1.777-.202-3.644-.888-3.644-3.953 0-.873.313-1.587.823-2.146-.083-.202-.357-1.016.077-2.118 0 0 .672-.215 2.2.82.638-.178 1.323-.266 2.003-.27.68.004 1.364.092 2.003.27 1.527-1.035 2.198-.82 2.198-.82.435 1.102.16 1.916.078 2.118.512.559.822 1.273.822 2.146 0 3.073-1.87 3.748-3.653 3.946.287.247.543.735.543 1.482 0 1.07-.01 1.933-.01 2.195 0 .215.144.464.55.385C13.71 14.522 16 11.532 16 7.998 16 3.578 12.422 0 7.998 0z"/></svg>
+              </div>
+              <div class="msg-content">
+                <div class="msg-author">GitHub Copilot</div>
+                <div class="msg-body">
+                  <p>Here's a retry wrapper with exponential backoff:</p>
+
+                  <div class="code-block">
+                    <div class="code-header">
+                      <span class="code-lang">payments/charge.ts</span>
+                      <div class="code-actions">
+                        <button class="code-btn">Copy</button>
+                        <button class="code-btn primary">Apply</button>
+                      </div>
+                    </div>
+<pre><span class="ctl">async</span> <span class="kw">function</span> <span class="fn">chargeCustomer</span>(<span class="par">amount</span>, <span class="par">customerId</span>) {
+  <span class="ctl">for</span> (<span class="kw">let</span> attempt = <span class="num">0</span>; attempt &lt; <span class="num">3</span>; attempt++) {
+    <span class="ctl">try</span> {
+      <span class="ctl">return await</span> stripe.charges.<span class="fn">create</span>({
+        amount,
+        customer: customerId,
+      });
+    } <span class="ctl">catch</span> (err) {
+      <span class="ctl">if</span> (attempt === <span class="num">2</span>) <span class="ctl">throw</span> err;
+      <span class="ctl">await</span> <span class="fn">sleep</span>(<span class="num">1000</span> * <span class="num">2</span> ** attempt);
+    }
+  }
+}</pre>
+                  </div>
+
+                  <div class="danger">
+                    <strong>Ships duplicate charges.</strong> No idempotency key, retries on 4xx, no metric — looks reviewable, fails at 3am.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="copilot-input">
+            <div class="fake-input">Ask Copilot...</div>
+            <button class="send-btn">↑</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═════════════════════ AFTER ═════════════════════ -->
+      <div class="panel-wrapper after">
+        <div class="panel-tag">✓ With Trailhead</div>
+        <div class="copilot after">
+
+          <div class="copilot-header">
+            <div class="copilot-header-left">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.998 0C3.578 0 0 3.578 0 7.998c0 3.535 2.292 6.526 5.47 7.583.4.075.547-.172.547-.385 0-.19-.007-.693-.01-1.36-2.226.483-2.695-1.073-2.695-1.073-.364-.924-.89-1.17-.89-1.17-.726-.497.056-.486.056-.486.803.057 1.225.825 1.225.825.714 1.224 1.873.87 2.33.665.072-.518.28-.871.508-1.072-1.777-.202-3.644-.888-3.644-3.953 0-.873.313-1.587.823-2.146-.083-.202-.357-1.016.077-2.118 0 0 .672-.215 2.2.82.638-.178 1.323-.266 2.003-.27.68.004 1.364.092 2.003.27 1.527-1.035 2.198-.82 2.198-.82.435 1.102.16 1.916.078 2.118.512.559.822 1.273.822 2.146 0 3.073-1.87 3.748-3.653 3.946.287.247.543.735.543 1.482 0 1.07-.01 1.933-.01 2.195 0 .215.144.464.55.385C13.71 14.522 16 11.532 16 7.998 16 3.578 12.422 0 7.998 0z"/></svg>
+              <span>Chat</span>
+            </div>
+            <div class="copilot-header-right">
+              <div class="model-pill">Claude Sonnet 4.5</div>
+              <button class="icon-btn">⋯</button>
+            </div>
+          </div>
+
+          <div class="messages">
+
+            <!-- Round 1: vague prompt -->
+            <div class="msg">
+              <div class="msg-avatar user">B</div>
+              <div class="msg-content">
+                <div class="msg-author">bogzx</div>
+                <div class="msg-body">add retries to the payment service</div>
+              </div>
+            </div>
+
+            <!-- Copilot: coach round 1 + teach block -->
+            <div class="msg">
+              <div class="msg-avatar copilot">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.998 0C3.578 0 0 3.578 0 7.998c0 3.535 2.292 6.526 5.47 7.583.4.075.547-.172.547-.385 0-.19-.007-.693-.01-1.36-2.226.483-2.695-1.073-2.695-1.073-.364-.924-.89-1.17-.89-1.17-.726-.497.056-.486.056-.486.803.057 1.225.825 1.225.825.714 1.224 1.873.87 2.33.665.072-.518.28-.871.508-1.072-1.777-.202-3.644-.888-3.644-3.953 0-.873.313-1.587.823-2.146-.083-.202-.357-1.016.077-2.118 0 0 .672-.215 2.2.82.638-.178 1.323-.266 2.003-.27.68.004 1.364.092 2.003.27 1.527-1.035 2.198-.82 2.198-.82.435 1.102.16 1.916.078 2.118.512.559.822 1.273.822 2.146 0 3.073-1.87 3.748-3.653 3.946.287.247.543.735.543 1.482 0 1.07-.01 1.933-.01 2.195 0 .215.144.464.55.385C13.71 14.522 16 11.532 16 7.998 16 3.578 12.422 0 7.998 0z"/></svg>
+              </div>
+              <div class="msg-content">
+                <div class="msg-author">GitHub Copilot</div>
+                <div class="msg-body">
+
+                  <div class="tool-call">
+                    <div class="tool-head">
+                      <svg class="tool-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zm.75 4.75a.75.75 0 0 0-1.5 0v3.5c0 .414.336.75.75.75h3.5a.75.75 0 0 0 0-1.5h-2.75v-2.75z"/></svg>
+                      <span class="tool-name"><span class="pkg">trailhead·</span>coach</span>
+                      <span class="tool-status danger">● 4/10 · proceed=false</span>
+                    </div>
+                    <div class="tool-body">
+                      <div class="tool-row"><span class="tool-key">prompt</span><span class="tool-val"><code>"add retries to the payment service"</code></span></div>
+                      <div class="tool-row"><span class="tool-key">mode</span><span class="tool-val"><code>"score"</code> · round 1</span></div>
+                    </div>
+                  </div>
+
+                  <!-- Verbatim relay of coach.text — markdown rendered -->
+                  <div class="md">
+                    <h3>🔴 Coach — overall 4/10</h3>
+                    <table class="dim-table">
+                      <thead>
+                        <tr><th>Dimension</th><th style="text-align:right">Score</th><th></th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td>Goal clarity</td><td class="score">6/10</td><td class="indicator">🟡</td></tr>
+                        <tr><td>Specificity</td><td class="score">3/10</td><td class="indicator">🔴</td></tr>
+                        <tr><td>Context loading</td><td class="score">2/10</td><td class="indicator">🔴</td></tr>
+                        <tr class="highlight"><td><strong>Constraint articulation</strong></td><td class="score">2/10</td><td class="indicator">🔴</td></tr>
+                        <tr><td>Output specification</td><td class="score">5/10</td><td class="indicator">🟡</td></tr>
+                      </tbody>
+                    </table>
+                    <p><strong>Constraint articulation</strong> (yours: 2/10) — name what must hold: which errors retry, attempt cap, idempotency requirement.</p>
+                    <p class="arrow-q">👉 Which failures should retry? Is idempotency required, and what's the attempt cap?</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- User reply -->
+            <div class="msg">
+              <div class="msg-avatar user">B</div>
+              <div class="msg-content">
+                <div class="msg-author">bogzx</div>
+                <div class="msg-body">charge endpoint. Stripe Idempotency-Key from txn ID. Retry only network &amp; 5xx, max 3 (1s/2s/4s backoff). Emit <code style="font-family:'SF Mono',Consolas,monospace;background:rgba(255,255,255,0.06);padding:1px 5px;border-radius:3px;font-size:12.5px;color:#ce9178">payments.retry</code> per attempt.</div>
+              </div>
+            </div>
+
+            <!-- Copilot: coach round 2 + library banner + wiki_lookup + code -->
+            <div class="msg">
+              <div class="msg-avatar copilot">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.998 0C3.578 0 0 3.578 0 7.998c0 3.535 2.292 6.526 5.47 7.583.4.075.547-.172.547-.385 0-.19-.007-.693-.01-1.36-2.226.483-2.695-1.073-2.695-1.073-.364-.924-.89-1.17-.89-1.17-.726-.497.056-.486.056-.486.803.057 1.225.825 1.225.825.714 1.224 1.873.87 2.33.665.072-.518.28-.871.508-1.072-1.777-.202-3.644-.888-3.644-3.953 0-.873.313-1.587.823-2.146-.083-.202-.357-1.016.077-2.118 0 0 .672-.215 2.2.82.638-.178 1.323-.266 2.003-.27.68.004 1.364.092 2.003.27 1.527-1.035 2.198-.82 2.198-.82.435 1.102.16 1.916.078 2.118.512.559.822 1.273.822 2.146 0 3.073-1.87 3.748-3.653 3.946.287.247.543.735.543 1.482 0 1.07-.01 1.933-.01 2.195 0 .215.144.464.55.385C13.71 14.522 16 11.532 16 7.998 16 3.578 12.422 0 7.998 0z"/></svg>
+              </div>
+              <div class="msg-content">
+                <div class="msg-author">GitHub Copilot</div>
+                <div class="msg-body">
+
+                  <div class="tool-call">
+                    <div class="tool-head">
+                      <svg class="tool-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/></svg>
+                      <span class="tool-name"><span class="pkg">trailhead·</span>coach</span>
+                      <span class="tool-status">✓ 8/10 · proceed=true</span>
+                    </div>
+                    <div class="tool-body">
+                      <div class="tool-row"><span class="tool-key">mode</span><span class="tool-val"><code>"score"</code> · round 2 · graduated</span></div>
+                    </div>
+                  </div>
+
+                  <!-- Verbatim relay of coach.text on round-2 success -->
+                  <div class="md">
+                    <h3>🎉 Coached 4/10 → 8/10</h3>
+                    <table class="dim-table">
+                      <thead>
+                        <tr><th>Dimension</th><th style="text-align:right">Before</th><th style="text-align:right">After</th><th>Δ</th><th></th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td>Goal clarity</td><td class="score">6/10</td><td class="score">8/10</td><td class="score-delta">+2</td><td class="indicator">🟢</td></tr>
+                        <tr><td>Specificity</td><td class="score">3/10</td><td class="score">9/10</td><td class="score-delta">+6</td><td class="indicator">🟢</td></tr>
+                        <tr><td>Context loading</td><td class="score">2/10</td><td class="score">7/10</td><td class="score-delta">+5</td><td class="indicator">🟢</td></tr>
+                        <tr><td>Constraint articulation</td><td class="score">2/10</td><td class="score">9/10</td><td class="score-delta">+7</td><td class="indicator">🟢</td></tr>
+                        <tr><td>Output specification</td><td class="score">5/10</td><td class="score">8/10</td><td class="score-delta">+3</td><td class="indicator">🟢</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <!-- Library banner — exact wording from renderLibraryBanner() -->
+                  <div class="library-banner">
+                    <h3><span class="check">✅</span> Your prompt scored <strong>8/10</strong> and joined your team's library</h3>
+                    <p>Future prompts in this folder will be coached against it.</p>
+                  </div>
+
+                  <div class="tool-call">
+                    <div class="tool-head">
+                      <svg class="tool-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.866 1.5.75.75 0 1 1-1.3.75A2.5 2.5 0 0 1 2 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 0 1 1-1h8z"/></svg>
+                      <span class="tool-name"><span class="pkg">trailhead·</span>wiki_lookup</span>
+                      <span class="tool-status">✓ 3 conventions matched</span>
+                    </div>
+                    <div class="tool-body">
+                      <ul>
+                        <li><code>payments/</code> always pass Stripe Idempotency-Key from the internal txn ID</li>
+                        <li><code>payments/</code> retry only network &amp; 5xx — never 4xx</li>
+                        <li><code>lib/observability</code> emit <code>payments.retry</code> on every attempt</li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  <p>Applying your team's standards:</p>
+
+                  <div class="code-block">
+                    <div class="code-header">
+                      <span class="code-lang">payments/charge.ts</span>
+                      <div class="code-actions">
+                        <button class="code-btn">Copy</button>
+                        <button class="code-btn primary">Apply</button>
+                      </div>
+                    </div>
+<pre><span class="ctl">async</span> <span class="kw">function</span> <span class="fn">chargeCustomer</span>({ <span class="par">amount</span>, <span class="par">customerId</span>, <span class="par">txId</span> }) {
+  <span class="ctl">return</span> <span class="fn">retryable</span>(
+    () =&gt; stripe.charges.<span class="fn">create</span>(
+      { amount, customer: customerId },
+      { idempotencyKey: txId },
+    ),
+    {
+      retryOn:    [<span class="str">'network'</span>, <span class="str">'5xx'</span>],
+      maxAttempts: <span class="num">3</span>,
+      backoff:     [<span class="num">1000</span>, <span class="num">2000</span>, <span class="num">4000</span>],
+      onRetry: ({ attempt, errorClass }) =&gt;
+        metrics.<span class="fn">increment</span>(<span class="str">'payments.retry'</span>, { attempt, errorClass }),
+    },
+  );
+}</pre>
+                  </div>
+
+                  <div class="verdict">
+                    <strong>Idempotent, scoped, observable.</strong> Same starting prompt — Trailhead's coach lifted it to 8/10 and the team's wiki shaped the answer.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="copilot-input">
+            <div class="fake-input">Ask Copilot...</div>
+            <button class="send-btn">↑</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>

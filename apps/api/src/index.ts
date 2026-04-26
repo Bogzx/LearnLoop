@@ -66,6 +66,7 @@ import {
   summarizeCoaching,
   synthesizeDiff,
 } from './gemini.ts';
+import { langfuse, shutdownLangfuse, withTrace } from './langfuse.ts';
 import { tryPromotePrompt } from './prompt-promotion.ts';
 import { renderTeamContext } from './team-context.ts';
 import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
@@ -93,6 +94,24 @@ app.use(
     allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   }),
 );
+
+// Langfuse: one trace per HTTP request, stored in AsyncLocalStorage so
+// gemini.ts can hang generations off it without us having to thread the
+// trace handle through every function signature.
+app.use('*', async (c, next) => {
+  if (c.req.method === 'OPTIONS' || !langfuse) return next();
+  const trace = langfuse.trace({
+    name: `${c.req.method} ${c.req.path}`,
+    metadata: {
+      team_token: c.req.header('x-team-token') ?? null,
+      user_agent: c.req.header('user-agent') ?? null,
+    },
+  });
+  await withTrace(trace, async () => {
+    await next();
+    trace.update({ output: { status: c.res.status } });
+  });
+});
 
 // Auth middleware — multi-tenant. Resolves the X-Team-Token header into a
 // team_token (cached) and attaches it to the request context. Unknown tokens
@@ -1945,4 +1964,11 @@ ensureRecentMigrations()
       console.log(`trailhead-api listening on http://localhost:${info.port}`);
     });
   });
+
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, async () => {
+    await shutdownLangfuse().catch(() => {});
+    process.exit(0);
+  });
+}
 
