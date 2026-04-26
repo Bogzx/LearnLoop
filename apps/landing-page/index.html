@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>LearnLoop — prompting coach + team wiki for AI engineering</title>
+
+<link rel="icon" href="assets/logo-mark.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui'],
+          mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          serif: ['"Instrument Serif"', 'serif'],
+        },
+        colors: {
+          ink:   { 900:'#0E1A1F', 800:'#16262C', 700:'#1E3439', 500:'#3F5A60', 400:'#5C7A80', 300:'#8AA3A8' },
+          paper: { 50:'#FBFCFD', 100:'#F4F7F8', 200:'#E7EDEE', 300:'#D5DEE0' },
+          teal:'#1FA29A', mint:'#2BC68A', deep:'#0E7B7A',
+          orb: { yellow:'#FBE7B5', mint:'#C7EBD9', blue:'#CDE0F0', lilac:'#D9D2EC' },
+        },
+      },
+    },
+  };
+</script>
+
+<style>
+  :root { color-scheme: light; }
+  html, body { background: #FBFCFD; color: #0E1A1F; }
+  body {
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .text-balance { text-wrap: balance; }
+  .text-pretty  { text-wrap: pretty; }
+
+  .grad-brand {
+    background: linear-gradient(90deg, #0E7B7A 0%, #1FA29A 45%, #2BC68A 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+
+  .hairline { border-color: rgba(14,26,31,0.08); }
+  .hairline-strong { border-color: rgba(14,26,31,0.14); }
+
+  .orbs { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+  .orb  { position: absolute; border-radius: 9999px; filter: blur(70px); opacity: 0.7; }
+
+  .paper-card {
+    background: #FFFFFF;
+    border: 1px solid rgba(14,26,31,0.08);
+    border-radius: 14px;
+    box-shadow: 0 1px 0 rgba(14,26,31,0.02), 0 30px 70px -50px rgba(14,26,31,0.18);
+  }
+
+  .meta {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: #5C7A80;
+  }
+
+  .terminal {
+    background: #FFFFFF; border: 1px solid rgba(14,26,31,0.08);
+    border-radius: 12px; overflow: hidden;
+    box-shadow: 0 30px 70px -40px rgba(14,26,31,0.18);
+  }
+  .terminal-bar {
+    height: 32px; display:flex; align-items:center; gap:8px;
+    padding: 0 12px; border-bottom: 1px solid rgba(14,26,31,0.06); background: #F8FAFB;
+  }
+  .dot { width:9px; height:9px; border-radius:99px; }
+
+  .lift { transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease; }
+  .lift:hover { transform: translateY(-2px); box-shadow: 0 22px 60px -30px rgba(14,26,31,0.20); }
+
+  .reveal { opacity: 0; transform: translateY(8px); transition: all 0.7s cubic-bezier(.2,.7,.2,1); }
+  .reveal.in-view { opacity: 1; transform: none; }
+
+  .section-rule {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    color: #5C7A80;
+  }
+  .section-rule::before, .section-rule::after {
+    content:''; height:1px; width: 32px; background: rgba(14,26,31,0.18);
+  }
+
+  .grid-dots {
+    background-image: radial-gradient(rgba(14,26,31,0.08) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+
+  .avatar {
+    width: 88px; height: 88px; border-radius: 9999px;
+    border: 1px solid rgba(14,26,31,0.10);
+    background: linear-gradient(135deg, #F4F7F8, #E7EDEE);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  @media (min-width: 768px) {
+    .avatar { width: 104px; height: 104px; }
+  }
+
+  .pulse-dot { position: relative; }
+  @keyframes pulse-dot {
+    0%,100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.6); opacity: 0.4; }
+  }
+  .pulse-dot::after {
+    content:''; position:absolute; inset:-4px; border-radius:9999px;
+    background: rgba(43,198,138,0.30); animation: pulse-dot 1.6s ease-out infinite;
+  }
+
+  @media (max-width: 768px) {
+    .h-display { font-size: 44px !important; line-height: 1.02 !important; }
+    .h-section { font-size: 36px !important; line-height: 1.05 !important; }
+    .h-card    { font-size: 22px !important; }
+    .stat-num  { font-size: 30px !important; }
+  }
+
+  .codescroll::-webkit-scrollbar { height: 6px; width: 6px; }
+  .codescroll::-webkit-scrollbar-thumb { background: rgba(14,26,31,0.12); border-radius: 999px; }
+
+  .accent-italic { font-style: italic; }
+</style>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+</head>
+<body class="min-h-screen overflow-x-hidden">
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react" src="components/primitives.jsx"></script>
+  <script type="text/babel" data-presets="react" src="components/nav.jsx"></script>
+  <script type="text/babel" data-presets="react" src="components/hero.jsx"></script>
+  <script type="text/babel" data-presets="react" src="components/sections.jsx"></script>
+  <script type="text/babel" data-presets="react" src="components/footer.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app.jsx"></script>
+</body>
+</html>
