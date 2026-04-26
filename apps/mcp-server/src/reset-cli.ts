@@ -51,7 +51,7 @@ overridden. Without --yes, prompts before sending the request.
 
 Wipes: nodes, learnings, prompts, captures, skill_observations.
 Preserves: the teams row itself (so re-running the same token continues to
-land in the same team_id).
+land in the same team).
 `);
   process.exit(0);
 }
@@ -91,7 +91,7 @@ const client = new ApiClient({ apiUrl, teamToken: tokenInfo.token });
 try {
   const res = await client.resetTeam();
   console.log('');
-  console.log(`✓ Team ${res.team_id} wiped:`);
+  console.log(`✓ Team ${res.team_token} wiped:`);
   console.log(`  nodes:        ${res.deleted.nodes}`);
   console.log(`  learnings:    ${res.deleted.learnings}`);
   console.log(`  prompts:      ${res.deleted.prompts}`);

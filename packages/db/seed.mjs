@@ -16,7 +16,7 @@ for (const c of ['.env', '../../.env']) {
   if (existsSync(p)) { process.loadEnvFile(p); break; }
 }
 
-const DEMO_TEAM_ID = '11111111-1111-1111-1111-111111111111';
+const DEMO_TEAM_TOKEN = 'trailhead_demo_acme_2026';
 
 const NODES = [
   { path: '',                  body_md: '# Acme Fintech engineering wiki\n\nReusable rules and patterns. Owned by the team, surfaced by Trailhead.' },
@@ -43,7 +43,7 @@ const PROMPTS = [
     template: 'Add a Stripe webhook handler at src/api/webhooks/stripe.ts that verifies the signature using STRIPE_WEBHOOK_SECRET, ACKs 2xx responses, and routes events to handlers/{type}.ts. Constraint: idempotent on event_id, drop duplicates silently. Return the file contents only.',
     reuse_count: 5 },
   { node_path: 'src/api/auth/', topic: 'auth',
-    template: 'In src/api/auth/issue.ts, generate a 15-minute access token signed with JWT_SECRET. Constraint: payload must include user_id, team_id, iat, exp; algorithm HS256. Return only the issueToken function with its imports.',
+    template: 'In src/api/auth/issue.ts, generate a 15-minute access token signed with JWT_SECRET. Constraint: payload must include user_id, team_token, iat, exp; algorithm HS256. Return only the issueToken function with its imports.',
     reuse_count: 6 },
   { node_path: 'src/api/', topic: 'error_handling',
     template: 'Wrap the route in src/api/orders/list.ts with structured error handling: log via logger.ts, return JSON {error, detail} with the right HTTP status (400/401/404/500). Constraint: never leak stack traces. Return the entire updated route file.',
@@ -58,11 +58,11 @@ try {
   // 1) Nodes
   for (const n of NODES) {
     await client.query(
-      `INSERT INTO nodes (team_id, path, body_md)
+      `INSERT INTO nodes (team_token, path, body_md)
        VALUES ($1, $2, $3)
-       ON CONFLICT (team_id, path) DO UPDATE SET body_md = EXCLUDED.body_md,
+       ON CONFLICT (team_token, path) DO UPDATE SET body_md = EXCLUDED.body_md,
                                                  updated_at = NOW()`,
-      [DEMO_TEAM_ID, n.path, n.body_md],
+      [DEMO_TEAM_TOKEN, n.path, n.body_md],
     );
   }
 
@@ -72,8 +72,8 @@ try {
   for (const l of LEARNINGS) {
     const norm = l.body.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const { rows: nrows } = await client.query(
-      `SELECT id FROM nodes WHERE team_id = $1 AND path = $2`,
-      [DEMO_TEAM_ID, l.node_path],
+      `SELECT id FROM nodes WHERE team_token = $1 AND path = $2`,
+      [DEMO_TEAM_TOKEN, l.node_path],
     );
     const nodeId = nrows[0]?.id;
     if (!nodeId) throw new Error(`missing node ${l.node_path}`);
@@ -101,8 +101,8 @@ try {
   // 3) Prompts — keyed by (node_id, template) for idempotency
   for (const p of PROMPTS) {
     const { rows: nrows } = await client.query(
-      `SELECT id FROM nodes WHERE team_id = $1 AND path = $2`,
-      [DEMO_TEAM_ID, p.node_path],
+      `SELECT id FROM nodes WHERE team_token = $1 AND path = $2`,
+      [DEMO_TEAM_TOKEN, p.node_path],
     );
     const nodeId = nrows[0]?.id;
     if (!nodeId) throw new Error(`missing node ${p.node_path}`);
@@ -128,10 +128,10 @@ try {
   await client.query('COMMIT');
   const counts = await client.query(`
     SELECT
-      (SELECT count(*) FROM nodes      WHERE team_id = $1)                              AS nodes,
-      (SELECT count(*) FROM learnings  WHERE node_id IN (SELECT id FROM nodes WHERE team_id = $1)) AS learnings,
-      (SELECT count(*) FROM prompts    WHERE node_id IN (SELECT id FROM nodes WHERE team_id = $1)) AS prompts
-  `, [DEMO_TEAM_ID]);
+      (SELECT count(*) FROM nodes      WHERE team_token = $1)                              AS nodes,
+      (SELECT count(*) FROM learnings  WHERE node_id IN (SELECT id FROM nodes WHERE team_token = $1)) AS learnings,
+      (SELECT count(*) FROM prompts    WHERE node_id IN (SELECT id FROM nodes WHERE team_token = $1)) AS prompts
+  `, [DEMO_TEAM_TOKEN]);
   console.log('seeded:', counts.rows[0]);
 } catch (e) {
   await client.query('ROLLBACK');

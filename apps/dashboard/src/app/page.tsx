@@ -72,7 +72,7 @@ export default async function HomePage() {
             const qs = `?team=${encodeURIComponent(team.token)}`;
             return (
               <article
-                key={team.id}
+                key={team.token}
                 className="rounded-lg border border-border bg-card p-6 shadow-sm"
               >
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">

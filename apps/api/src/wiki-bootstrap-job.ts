@@ -86,7 +86,7 @@ export function bundleFromRequest(body: OnboardRepoFullRequest): JobBundle {
 // `setImmediate(() => runJob(...))` and immediately returns the job_id.
 // Errors are caught and recorded on the wiki_jobs row; nothing throws to
 // the caller.
-export async function runJob(jobId: string, teamId: string, bundle: JobBundle): Promise<void> {
+export async function runJob(jobId: string, teamToken: string, bundle: JobBundle): Promise<void> {
   const startedAt = new Date();
   try {
     await q(
@@ -120,7 +120,7 @@ export async function runJob(jobId: string, teamId: string, bundle: JobBundle): 
       // on incidental re-runs. The DB write below would have no-op'd
       // anyway via the upsert WHERE clause; this just avoids the wasted
       // LLM round-trip.
-      if (await shouldSkipPath(teamId, folder, bundle.force)) {
+      if (await shouldSkipPath(teamToken, folder, bundle.force)) {
         await markPathDone(jobId, folder);
         return;
       }
@@ -128,7 +128,7 @@ export async function runJob(jobId: string, teamId: string, bundle: JobBundle): 
       try {
         const filesInFolder = filesByFolder.get(folder) ?? [];
         const out = await callFolderPass(folder, filesInFolder);
-        await writeFolderNode(teamId, folder, out, bundle.force);
+        await writeFolderNode(teamToken, folder, out, bundle.force);
         folderNarratives.set(folder, out.narrative_md);
         await markPathDone(jobId, folder);
       } catch (e) {
@@ -146,7 +146,7 @@ export async function runJob(jobId: string, teamId: string, bundle: JobBundle): 
         await markPathFailed(jobId, file.path, 'time_budget_exceeded');
         return;
       }
-      if (await shouldSkipPath(teamId, file.path, bundle.force)) {
+      if (await shouldSkipPath(teamToken, file.path, bundle.force)) {
         await markPathDone(jobId, file.path);
         return;
       }
@@ -156,7 +156,7 @@ export async function runJob(jobId: string, teamId: string, bundle: JobBundle): 
         const folder = idx === -1 ? '' : `${file.path.slice(0, idx)}/`;
         const folderNarrative = folderNarratives.get(folder) ?? '';
         const out = await callFilePass(file, folder, folderNarrative);
-        await writeFileNode(teamId, file, out, bundle.force);
+        await writeFileNode(teamToken, file, out, bundle.force);
         await markPathDone(jobId, file.path);
       } catch (e) {
         const msg = errMsg(e);
@@ -168,7 +168,7 @@ export async function runJob(jobId: string, teamId: string, bundle: JobBundle): 
     // ---- Pass 3: root ----------------------------------------------------
     if (Date.now() > deadline) {
       await markPathFailed(jobId, '', 'time_budget_exceeded');
-    } else if (await shouldSkipPath(teamId, '', bundle.force)) {
+    } else if (await shouldSkipPath(teamToken, '', bundle.force)) {
       await markPathDone(jobId, '');
     } else {
       await markPathRunning(jobId, '');
@@ -178,7 +178,7 @@ export async function runJob(jobId: string, teamId: string, bundle: JobBundle): 
           manifests: bundle.manifests,
           initialRules: bundle.initialRules,
         });
-        await writeRootNode(teamId, out, bundle.initialRules, bundle.force);
+        await writeRootNode(teamToken, out, bundle.initialRules, bundle.force);
         await markPathDone(jobId, '');
       } catch (e) {
         const msg = errMsg(e);
@@ -371,14 +371,14 @@ async function callRootPass(args: {
 // DB writes (idempotency rules per spec §4.1 / §8)
 // ============================================================================
 
-async function writeFolderNode(teamId: string, path: string, out: FolderPassOutput, force: boolean): Promise<void> {
-  await upsertBootstrapNode(teamId, path, out.narrative_md, force);
-  for (const insight of out.conventions) await proposeLearning(teamId, path, insight);
-  for (const insight of out.gotchas)     await proposeLearning(teamId, path, insight);
+async function writeFolderNode(teamToken: string, path: string, out: FolderPassOutput, force: boolean): Promise<void> {
+  await upsertBootstrapNode(teamToken, path, out.narrative_md, force);
+  for (const insight of out.conventions) await proposeLearning(teamToken, path, insight);
+  for (const insight of out.gotchas)     await proposeLearning(teamToken, path, insight);
 }
 
 async function writeFileNode(
-  teamId: string,
+  teamToken: string,
   file: OnboardRepoFullFile,
   out: FilePassOutput,
   force: boolean,
@@ -397,8 +397,8 @@ async function writeFileNode(
   const bodyMd =
     `## Source${truncatedNote}\n\`\`\`${lang}\n${cappedSource}\n\`\`\`\n\n` +
     `## Summary\n${out.narrative_md}`;
-  await upsertBootstrapNode(teamId, file.path, bodyMd, force);
-  for (const insight of out.conventions) await proposeLearning(teamId, file.path, insight);
+  await upsertBootstrapNode(teamToken, file.path, bodyMd, force);
+  for (const insight of out.conventions) await proposeLearning(teamToken, file.path, insight);
 }
 
 // Head/tail truncation that keeps both ends of the file. Picks half the
@@ -433,7 +433,7 @@ function langFor(path: string): string {
 }
 
 async function writeRootNode(
-  teamId: string,
+  teamToken: string,
   out: RootPassOutput,
   initialRules: Record<string, string>,
   force: boolean,
@@ -442,7 +442,7 @@ async function writeRootNode(
   // surfaced verbatim within the LLM-generated overview (the prompt told
   // the model to include it). No separate seed concat here.
   void initialRules;
-  await upsertBootstrapNode(teamId, '', out.narrative_md, force);
+  await upsertBootstrapNode(teamToken, '', out.narrative_md, force);
 }
 
 // Pre-flight skip check (mirror of the WHERE clause in upsertBootstrapNode).
@@ -454,10 +454,10 @@ async function writeRootNode(
 //   - body_source = 'bootstrap', force = true      → never skip (refresh allowed)
 //   - body_source = 'bootstrap', force = false     → SKIP (default re-run is no-op)
 //   - body_source = 'manual',    body_md non-empty → SKIP (manual edits inviolate)
-async function shouldSkipPath(teamId: string, path: string, force: boolean): Promise<boolean> {
+async function shouldSkipPath(teamToken: string, path: string, force: boolean): Promise<boolean> {
   const rows = await q<{ body_md: string; body_source: string }>(
-    `SELECT body_md, body_source FROM nodes WHERE team_id = $1 AND path = $2 LIMIT 1`,
-    [teamId, path],
+    `SELECT body_md, body_source FROM nodes WHERE team_token = $1 AND path = $2 LIMIT 1`,
+    [teamToken, path],
   );
   if (rows.length === 0) return false;        // node doesn't exist → fillable
   const r = rows[0]!;
@@ -472,7 +472,7 @@ async function shouldSkipPath(teamId: string, path: string, force: boolean): Pro
 // generated rows only with force=true. Returns whether a write actually
 // happened.
 async function upsertBootstrapNode(
-  teamId: string,
+  teamToken: string,
   path: string,
   bodyMd: string,
   force: boolean,
@@ -481,10 +481,10 @@ async function upsertBootstrapNode(
   // protection rule below treats it as fillable). Then conditionally update
   // body_md based on the current body_source state.
   await q(
-    `INSERT INTO nodes (team_id, path, body_md, body_source)
+    `INSERT INTO nodes (team_token, path, body_md, body_source)
        VALUES ($1, $2, '', 'manual')
-     ON CONFLICT (team_id, path) DO NOTHING`,
-    [teamId, path],
+     ON CONFLICT (team_token, path) DO NOTHING`,
+    [teamToken, path],
   );
 
   const updated = await q<{ id: string }>(
@@ -492,20 +492,20 @@ async function upsertBootstrapNode(
         SET body_md = $3,
             body_source = 'bootstrap',
             updated_at = NOW()
-      WHERE team_id = $1 AND path = $2
+      WHERE team_token = $1 AND path = $2
         AND (
           body_md = ''
           OR (body_source = 'bootstrap' AND $4::boolean = true)
         )
       RETURNING id`,
-    [teamId, path, bodyMd, force],
+    [teamToken, path, bodyMd, force],
   );
   return updated.length > 0;
 }
 
 // Replicates the /wiki/propose dedup: insert-or-reinforce on
 // (node_id, body_normalized). Promotes to durable at >= 3.
-async function proposeLearning(teamId: string, nodePath: string, insight: string): Promise<void> {
+async function proposeLearning(teamToken: string, nodePath: string, insight: string): Promise<void> {
   const trimmed = insight.trim();
   if (!trimmed) return;
   // Skip pathologically long bullet text — the LLM occasionally returns a
@@ -513,7 +513,7 @@ async function proposeLearning(teamId: string, nodePath: string, insight: string
   // any sane convention; longer entries are likely malformed.
   if (trimmed.length > 400) return;
 
-  const nodeId = await upsertNode(teamId, nodePath);
+  const nodeId = await upsertNode(teamToken, nodePath);
   const norm = normalizeBody(trimmed);
   if (!norm) return;
 

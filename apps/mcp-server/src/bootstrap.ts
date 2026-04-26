@@ -24,6 +24,7 @@ import type {
   OnboardRepoFullResponse,
   OnboardRepoResponse,
 } from '@trailhead/shared';
+import { deriveRepoName, gitRemoteUrl } from './token.mjs';
 
 // Code-file extensions that mark a folder as worth bootstrapping. Lowercased.
 // Conservative list — if a user has Cobol or Erlang they can pass --paths.
@@ -214,6 +215,10 @@ export interface BootstrapOptions {
   paths?: string[];                       // skip discovery if provided
   initialRules?: Record<string, string>;  // override readSeedRules
   seedFromFiles?: boolean;                // default true — read CLAUDE.md etc.
+  // Human-readable team name to send as OnboardRepoRequest.team_name. When
+  // omitted, deriveRepoName(cwd, gitRemoteUrl(cwd)) is used so the API sees
+  // a real repo name instead of the auto-create 'team:<hash>' placeholder.
+  teamName?: string;
 }
 
 export interface BootstrapResult {
@@ -242,9 +247,12 @@ export async function runBootstrap(
     initialRules = { ...seeded, ...initialRules };
   }
 
+  const teamName = opts.teamName ?? deriveRepoName(cwd, gitRemoteUrl(cwd));
+
   const response = await client.onboardRepo({
     paths,
     initial_rules: Object.keys(initialRules).length ? initialRules : undefined,
+    team_name: teamName,
   });
 
   return { paths, response };
@@ -513,6 +521,8 @@ export function buildRichBundle(opts: BuildRichBundleOptions = {}): RichBundle {
 
 export interface RunRichBootstrapOptions extends BuildRichBundleOptions {
   force?: boolean;
+  // Same semantics as BootstrapOptions.teamName.
+  teamName?: string;
 }
 
 export interface RunRichBootstrapResult {
@@ -533,12 +543,16 @@ export async function runRichBootstrap(
       `no source folders/files found under ${opts.cwd ?? process.cwd()}. Either the repo is empty or the discovery filters excluded everything.`,
     );
   }
+  const cwd = opts.cwd ?? process.cwd();
+  const teamName = opts.teamName ?? deriveRepoName(cwd, gitRemoteUrl(cwd));
+
   const req: OnboardRepoFullRequest = {
     folders: bundle.folders,
     files: bundle.files,
     initial_rules: Object.keys(bundle.initialRules).length ? bundle.initialRules : undefined,
     manifests: Object.keys(bundle.manifests).length ? bundle.manifests : undefined,
     force: opts.force ?? false,
+    team_name: teamName,
   };
   const response = await client.onboardRepoFull(req);
   return { bundle, response };

@@ -128,7 +128,7 @@ export class ApiClient {
   }
 
   resetTeam(): Promise<{
-    team_id: string;
+    team_token: string;
     deleted: { nodes: number; learnings: number; prompts: number; captures: number; observations: number };
   }> {
     return this.req('DELETE', '/team/data', { confirm: true });
