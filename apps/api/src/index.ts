@@ -277,9 +277,14 @@ function lowestDimBelow(dims: DimensionScores, threshold: number = 7): Dimension
 }
 
 // Wiki-first lookup: top graduated prompt in the file_path's ancestor nodes.
+// Prefers prompts authored by SOMEONE OTHER than `userId` so the user isn't
+// shown their own prompt back as the strong example. Self-authored rows are
+// still returned when no other-authored alternative exists — keeps the
+// single-user demo posture working.
 async function fetchTopGraduatedForPath(
   teamId: string,
   filePath: string,
+  userId: string,
 ): Promise<string | null> {
   const ancestors = ancestorPaths(filePath);
   if (ancestors.length === 0) return null;
@@ -290,25 +295,28 @@ async function fetchTopGraduatedForPath(
       WHERE n.team_id = $1
         AND n.path = ANY($2::text[])
         AND p.status = 'graduated'
-      ORDER BY p.reuse_count DESC, length(n.path) DESC
+      ORDER BY (p.author_user_id IS NULL OR p.author_user_id <> $3) DESC,
+               p.reuse_count DESC,
+               length(n.path) DESC
       LIMIT 1`,
-    [teamId, ancestors],
+    [teamId, ancestors, userId],
   );
   return rows.length ? rows[0]!.template : null;
 }
 
 // Wiki-first lookup: top graduated prompt across the team. Used when no
-// file_path is available.
-async function fetchTopGraduatedForTeam(teamId: string): Promise<string | null> {
+// file_path is available. Same self-author preference as the path variant.
+async function fetchTopGraduatedForTeam(teamId: string, userId: string): Promise<string | null> {
   const rows = await q<{ template: string }>(
     `SELECT p.template
        FROM prompts p
        JOIN nodes n ON n.id = p.node_id
       WHERE n.team_id = $1
         AND p.status = 'graduated'
-      ORDER BY p.reuse_count DESC
+      ORDER BY (p.author_user_id IS NULL OR p.author_user_id <> $2) DESC,
+               p.reuse_count DESC
       LIMIT 1`,
-    [teamId],
+    [teamId, userId],
   );
   return rows.length ? rows[0]!.template : null;
 }
@@ -326,14 +334,15 @@ async function fetchTopGraduatedForTeam(teamId: string): Promise<string | null> 
 // honestly summarize several principles at once.
 async function getStrongExample(args: {
   teamId: string;
+  userId: string;
   prompt: string;
   file_path?: string;
   target_dims: Dimension[];
   team_context: string | null;
 }): Promise<{ example: string; tip: string }> {
   const wiki = args.file_path
-    ? await fetchTopGraduatedForPath(args.teamId, args.file_path)
-    : await fetchTopGraduatedForTeam(args.teamId);
+    ? await fetchTopGraduatedForPath(args.teamId, args.file_path, args.userId)
+    : await fetchTopGraduatedForTeam(args.teamId, args.userId);
   if (wiki) return { example: wiki, tip: '' };
 
   const fallback = await rewriteForDims({
@@ -346,10 +355,68 @@ async function getStrongExample(args: {
   return { example: fallback.rewritten_prompt, tip: fallback.tip };
 }
 
+// Library banner emitted on every /coach response that triggers prompt
+// promotion (overall >= 7 in mode=score). Lives in `text` so a forgetful
+// host LLM can't drop it — the previous "directive instructs the model to
+// append one sentence" approach was reliable only when the host remembered
+// the rule. This wording is the canonical one referenced in the directive.
+function renderLibraryBanner(overall: number): string {
+  return (
+    `Your prompt scored ${overall}/10 and joined your team's library; ` +
+    `future prompts in this folder will be coached against it.`
+  );
+}
+
+// Round-state token. Compresses the four `next_round_inputs` fields into a
+// single opaque base64url JSON blob. Round 2+ callers can echo only the
+// token instead of all four fields — fewer slots for an LLM to drop. Both
+// shapes are accepted on input; the token wins when both are present.
+type RoundState = {
+  original_prompt: string;
+  original_dimensions: DimensionScores;
+  previous_dimensions: DimensionScores;
+  round: number;
+};
+function encodeRoundToken(state: RoundState): string {
+  return Buffer.from(JSON.stringify(state), 'utf8').toString('base64url');
+}
+function decodeRoundToken(token: string): RoundState | null {
+  try {
+    const json = Buffer.from(token, 'base64url').toString('utf8');
+    const p = JSON.parse(json) as Partial<RoundState>;
+    if (
+      typeof p.original_prompt === 'string' &&
+      typeof p.round === 'number' &&
+      p.original_dimensions && typeof p.original_dimensions === 'object' &&
+      p.previous_dimensions && typeof p.previous_dimensions === 'object'
+    ) {
+      return p as RoundState;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 app.post('/coach', async (c) => {
   const body = await c.req.json<CoachRequest>().catch(() => null);
   if (!body || typeof body.prompt !== 'string' || typeof body.user_id !== 'string') {
     return c.json({ error: 'bad_request' }, 400);
+  }
+
+  // Round-token shorthand. When present, decode and use as authoritative
+  // round state — overrides any individual field the caller also sent.
+  // Invalid tokens fall through to the four-field path with a warning.
+  if (body.round_token) {
+    const decoded = decodeRoundToken(body.round_token);
+    if (decoded) {
+      body.original_prompt = decoded.original_prompt;
+      body.original_dimensions = decoded.original_dimensions;
+      body.previous_dimensions = decoded.previous_dimensions;
+      body.round = decoded.round;
+    } else {
+      console.warn('[coach] received invalid round_token; falling back to explicit fields');
+    }
   }
 
   const mode: CoachMode = body.mode === 'augment' || body.mode === 'skip_reveal'
@@ -457,6 +524,7 @@ app.post('/coach', async (c) => {
     const [strong, summary] = await Promise.all([
       getStrongExample({
         teamId,
+        userId: body.user_id,
         prompt: originalPrompt,
         file_path: body.file_path,
         target_dims: dimsToImprove.length ? dimsToImprove : ['specificity'],
@@ -502,7 +570,11 @@ app.post('/coach', async (c) => {
       overall,
       dimensions: scoreResult.dimensions,
       missing: scoreResult.missing,
-      text: '',
+      // The graduation banner ships in `text` itself so a forgetful host LLM
+      // can't drop the only signal that the team's library grew. Was
+      // previously delegated to a CLAUDE.md "append one sentence" rule that
+      // hosts sometimes ignored.
+      text: renderLibraryBanner(overall),
     };
     // Fire-and-forget auto-promotion to the team's prompt library. Off the
     // response path, fail-open inside tryPromotePrompt. MCP-only by call
@@ -510,6 +582,7 @@ app.post('/coach', async (c) => {
     setImmediate(() => {
       void tryPromotePrompt({
         teamId,
+        userId: body.user_id,
         prompt: body.prompt,
         filePath: body.file_path ?? null,
         dimensions: scoreResult.dimensions,
@@ -522,6 +595,7 @@ app.post('/coach', async (c) => {
   if (isRound1 && lowest) {
     const strong = await getStrongExample({
       teamId,
+      userId: body.user_id,
       prompt: body.prompt,
       file_path: body.file_path,
       target_dims: [lowest],
@@ -533,11 +607,15 @@ app.post('/coach', async (c) => {
       strongExample: strong.example,
       tip: strong.tip,
     });
-    const next: CoachNextRoundInputs = {
+    const nextState: RoundState = {
       original_prompt: body.prompt,
       original_dimensions: scoreResult.dimensions,
       previous_dimensions: scoreResult.dimensions,
       round: 2,
+    };
+    const next: CoachNextRoundInputs = {
+      ...nextState,
+      round_token: encodeRoundToken(nextState),
     };
     const res: CoachResponse = {
       proceed: false,
@@ -568,15 +646,17 @@ app.post('/coach', async (c) => {
       final_dimensions: scoreResult.dimensions,
       reason: 'success',
     });
-    const text = renderSuccessReveal({
-      originalPrompt,
-      finalPrompt: body.prompt,
-      originalOverall,
-      finalOverall: overall,
-      originalDimensions: originalDims,
-      finalDimensions: scoreResult.dimensions,
-      summary,
-    });
+    const text =
+      renderSuccessReveal({
+        originalPrompt,
+        finalPrompt: body.prompt,
+        originalOverall,
+        finalOverall: overall,
+        originalDimensions: originalDims,
+        finalDimensions: scoreResult.dimensions,
+        summary,
+      }) +
+      `\n\n${renderLibraryBanner(overall)}`;
     const res: CoachResponse = {
       proceed: true,
       mode: 'score',
@@ -590,6 +670,7 @@ app.post('/coach', async (c) => {
     setImmediate(() => {
       void tryPromotePrompt({
         teamId,
+        userId: body.user_id,
         prompt: body.prompt,
         filePath: body.file_path ?? null,
         dimensions: scoreResult.dimensions,
@@ -620,6 +701,7 @@ app.post('/coach', async (c) => {
     const [strong, summary] = await Promise.all([
       getStrongExample({
         teamId,
+        userId: body.user_id,
         prompt: originalPrompt,
         file_path: body.file_path,
         target_dims: dimsToImprove.length ? dimsToImprove : [lowest!],
@@ -691,6 +773,7 @@ app.post('/coach', async (c) => {
     const [strong, acknowledgment] = await Promise.all([
       getStrongExample({
         teamId,
+        userId: body.user_id,
         prompt: body.prompt,
         file_path: body.file_path,
         target_dims: [lowest],
@@ -712,11 +795,15 @@ app.post('/coach', async (c) => {
       acknowledgment,
       tip: strong.tip,
     });
-    const next: CoachNextRoundInputs = {
+    const nextState: RoundState = {
       original_prompt: originalPrompt,
       original_dimensions: originalDims,
       previous_dimensions: scoreResult.dimensions,
       round: round + 1,
+    };
+    const next: CoachNextRoundInputs = {
+      ...nextState,
+      round_token: encodeRoundToken(nextState),
     };
     const res: CoachResponse = {
       proceed: false,
@@ -779,6 +866,33 @@ app.post('/capture', async (c) => {
 // to durable at >= 3. Idempotent: repeated calls for the same insight only
 // reinforce the existing draft.
 
+// Bigram-Jaccard similarity over normalized strings. Used as a paraphrase
+// fallback when exact body_normalized match misses — catches "go through" /
+// "flow through" style edits that the lowercase+strip-punct normalize can't
+// collapse. Bigrams (vs unigrams) are deliberate: a polarity flip ("never"
+// inserted into an otherwise identical sentence) drops the bigram score
+// well below the threshold, so opposite-meaning insights stay distinct.
+const PARAPHRASE_THRESHOLD = 0.7;
+
+function bigramSet(normalized: string): Set<string> {
+  const tokens = normalized.split(' ').filter(Boolean);
+  const out = new Set<string>();
+  for (let i = 0; i < tokens.length - 1; i++) {
+    out.add(`${tokens[i]} ${tokens[i + 1]}`);
+  }
+  return out;
+}
+
+function bigramJaccard(a: string, b: string): number {
+  const aBg = bigramSet(a);
+  const bBg = bigramSet(b);
+  if (aBg.size === 0 || bBg.size === 0) return 0;
+  let intersection = 0;
+  for (const bg of aBg) if (bBg.has(bg)) intersection++;
+  const union = aBg.size + bBg.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
 app.post('/wiki/propose', async (c) => {
   const body = await c.req.json<WikiProposeRequest>().catch(() => null);
   if (!body || typeof body.node_path !== 'string' || typeof body.insight !== 'string') {
@@ -790,7 +904,10 @@ app.post('/wiki/propose', async (c) => {
   const nodeId = await upsertNode(c.get('team_id'), path);
   const bodyNormalized = normalize(body.insight);
 
-  const existing = await q<{
+  // Step 1: exact match on body_normalized — the cheap fast path. Hits when
+  // the user (or LLM) sent the same insight verbatim or with only
+  // punctuation/whitespace/case differences.
+  const exact = await q<{
     id: string; reinforcement_count: number; status: 'draft' | 'durable';
   }>(
     `SELECT id, reinforcement_count, status
@@ -800,11 +917,41 @@ app.post('/wiki/propose', async (c) => {
     [nodeId, bodyNormalized],
   );
 
+  let matchId: string | null = null;
+  let matchPriorStatus: 'draft' | 'durable' | null = null;
+  if (exact.length) {
+    matchId = exact[0]!.id;
+    matchPriorStatus = exact[0]!.status;
+  } else {
+    // Step 2: paraphrase fallback. Pull this node's existing learnings and
+    // compute bigram-Jaccard against each. Keeps the wiki from accumulating
+    // near-duplicate drafts that never hit the 3× durability threshold.
+    const candidates = await q<{
+      id: string; body_normalized: string; status: 'draft' | 'durable';
+    }>(
+      `SELECT id, body_normalized, status
+         FROM learnings
+        WHERE node_id = $1`,
+      [nodeId],
+    );
+    let best: { id: string; status: 'draft' | 'durable'; sim: number } | null = null;
+    for (const cand of candidates) {
+      const sim = bigramJaccard(bodyNormalized, cand.body_normalized);
+      if (sim >= PARAPHRASE_THRESHOLD && (!best || sim > best.sim)) {
+        best = { id: cand.id, status: cand.status, sim };
+      }
+    }
+    if (best) {
+      matchId = best.id;
+      matchPriorStatus = best.status;
+    }
+  }
+
   let action: WikiProposeResponse['action'];
   let currentCount: number;
   let promotedToDurable = false;
 
-  if (existing.length === 0) {
+  if (matchId === null) {
     const inserted = await q<{ reinforcement_count: number }>(
       `INSERT INTO learnings (node_id, body, body_normalized)
        VALUES ($1, $2, $3)
@@ -814,7 +961,6 @@ app.post('/wiki/propose', async (c) => {
     action = 'created';
     currentCount = inserted[0]!.reinforcement_count;
   } else {
-    const row = existing[0]!;
     const updated = await q<{ reinforcement_count: number; status: 'draft' | 'durable' }>(
       `UPDATE learnings
           SET reinforcement_count = reinforcement_count + 1,
@@ -822,11 +968,11 @@ app.post('/wiki/propose', async (c) => {
               status = CASE WHEN reinforcement_count + 1 >= 3 THEN 'durable' ELSE status END
         WHERE id = $1
         RETURNING reinforcement_count, status`,
-      [row.id],
+      [matchId],
     );
     const after = updated[0]!;
     currentCount = after.reinforcement_count;
-    promotedToDurable = row.status === 'draft' && after.status === 'durable';
+    promotedToDurable = matchPriorStatus === 'draft' && after.status === 'durable';
     action = promotedToDurable ? 'promoted' : 'reinforced';
   }
 
@@ -939,11 +1085,20 @@ app.get('/search', async (c) => {
   const teamId = c.get('team_id');
   const ancestors = scope ? ancestorPaths(scope) : null;
 
+  // Rule branch matches on body_md OR the node path itself — so a query like
+  // "scoring" surfaces packages/scoring/ even when body_md doesn't repeat the
+  // folder name. Path-only matches return a placeholder body so the renderer
+  // doesn't dump the whole node narrative when the match was structural.
   const rows = await q<{ kind: 'rule' | 'learning' | 'prompt'; body: string; node_path: string }>(
-    `SELECT 'rule'::text AS kind, n.body_md AS body, n.path AS node_path
+    `SELECT 'rule'::text AS kind,
+            CASE
+              WHEN n.body_md ILIKE $2 THEN n.body_md
+              ELSE '(matched on path: ' || n.path || ')'
+            END AS body,
+            n.path AS node_path
        FROM nodes n
       WHERE n.team_id = $1
-        AND n.body_md ILIKE $2
+        AND (n.body_md ILIKE $2 OR n.path ILIKE $2)
         AND ($3::text[] IS NULL OR n.path = ANY($3::text[]))
      UNION ALL
      SELECT 'learning'::text AS kind, l.body AS body, n.path AS node_path
@@ -1686,8 +1841,25 @@ app.onError((err, c) => {
   return c.json({ error: 'internal_error', detail: String((err as { message?: string }).message ?? err) }, 500);
 });
 
+// Lightweight startup migration. The full schema is applied via
+// packages/db/migrate.mjs; this just guarantees columns introduced in
+// recent commits exist before /coach reads or writes them, so a Railway
+// auto-deploy doesn't 500 in the gap between the new image landing and
+// the operator running migrate.mjs. Idempotent — every statement uses
+// IF NOT EXISTS or is a no-op when the column already exists.
+//
+// Keep this list short. Anything beyond column adds belongs in
+// schema.sql and should be applied via migrate.mjs.
+async function ensureRecentMigrations(): Promise<void> {
+  await q(`ALTER TABLE prompts ADD COLUMN IF NOT EXISTS author_user_id TEXT`);
+}
+
 const port = Number(process.env.PORT ?? 3000);
-serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`trailhead-api listening on http://localhost:${info.port}`);
-});
+ensureRecentMigrations()
+  .catch((err) => console.warn('[migrate] startup check failed', err))
+  .finally(() => {
+    serve({ fetch: app.fetch, port }, (info) => {
+      console.log(`trailhead-api listening on http://localhost:${info.port}`);
+    });
+  });
 

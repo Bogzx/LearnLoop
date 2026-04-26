@@ -1,7 +1,7 @@
 import './env.ts';
 // Thin Gemini wrapper. One client, one place to encode model quirks.
 //
-// gemini-2.5-flash supports responseSchema enforcement and thinkingBudget=0
+// gemini-3-flash-preview supports responseSchema enforcement and thinkingBudget=0
 // for fast structured output. We use it for /score and topic extraction.
 //
 // gemma-4-31b-it is a thinking model with no schema enforcement and no
@@ -760,7 +760,7 @@ export async function improveCoach(input: ImproveCoachInput): Promise<ImproveCoa
 
   const resp = await withRetry(
     () => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: SCORE_MODEL,
       contents: userMessage,
       config: {
         systemInstruction,
