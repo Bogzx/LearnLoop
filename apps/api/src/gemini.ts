@@ -18,6 +18,7 @@ import {
   EXTRACT_SYSTEM_PROMPT,
   SCORE_MODEL,
   SCORE_SYSTEM_PROMPT,
+  TEACH_SYSTEM_PROMPT,
   TOPIC_MODEL,
   TOPIC_SYSTEM_PROMPT,
   buildScoreUserPrompt,
@@ -258,6 +259,75 @@ function zeroDims(): DimensionScores {
 export function overallScore(d: DimensionScores): number {
   const sum = DIMENSIONS.reduce((s, k) => s + d[k], 0);
   return Math.round(sum / DIMENSIONS.length);
+}
+
+// ----- /coach teach-rewrite (used by /coach when no team graduated prompt fits) ----
+//
+// Asks Gemini to rewrite the user's draft prompt so it scores 9+ on each
+// named target dimension while preserving topic and intent. Single Flash
+// call with responseSchema enforcing { rewritten_prompt: string }; same
+// guardrails as scorePrompt (maxOutputTokens cap, dynamic thinking,
+// schema-only output).
+//
+// Used by:
+//   - the teach block (when target_dims.length === 1) — one strong example
+//     for the dimension being taught
+//   - the skip-style reveal (when target_dims is the list of dims that
+//     scored < 5 on the original) — one rewrite that would have lifted them
+//     all
+export async function rewriteForDims(args: {
+  prompt: string;
+  target_dims: Dimension[];
+  file_path?: string;
+  team_context?: string;
+}): Promise<{ rewritten_prompt: string }> {
+  if (args.target_dims.length === 0) {
+    return { rewritten_prompt: args.prompt };
+  }
+
+  const systemInstruction = args.team_context
+    ? `${args.team_context}\n\n${TEACH_SYSTEM_PROMPT}`
+    : TEACH_SYSTEM_PROMPT;
+
+  const userMessage =
+    `${args.file_path ? `File context: ${args.file_path}\n\n` : ''}` +
+    `Target dimensions to improve: ${args.target_dims.join(', ')}\n\n` +
+    `Original prompt:\n${args.prompt}`;
+
+  try {
+    const resp = await withRetry(
+      () => ai.models.generateContent({
+        model: SCORE_MODEL,
+        contents: userMessage,
+        config: {
+          systemInstruction,
+          temperature: 0.3,
+          thinkingConfig: { thinkingBudget: -1 },
+          maxOutputTokens: 400,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            required: ['rewritten_prompt'],
+            properties: {
+              rewritten_prompt: { type: Type.STRING },
+            },
+          },
+        },
+      }),
+      'teach-rewrite',
+    );
+    const parsed = tryParseJson<{ rewritten_prompt?: string }>(extractAnswer(resp));
+    const rewritten = typeof parsed?.rewritten_prompt === 'string'
+      ? parsed.rewritten_prompt.trim()
+      : '';
+    // Empty string → caller falls back to a hardcoded line. We don't throw
+    // because /coach is the never-block path: render the block without an
+    // example rather than blowing up the whole coaching turn.
+    return { rewritten_prompt: rewritten };
+  } catch (err) {
+    console.warn('[gemini] teach-rewrite failed', err);
+    return { rewritten_prompt: '' };
+  }
 }
 
 // ----- topic extraction (used by /diff to find a graduated prompt) ----------
