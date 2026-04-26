@@ -49,8 +49,8 @@ function render(enabled: boolean): void {
   switchEl.classList.toggle('is-on', enabled);
   switchEl.setAttribute('aria-checked', String(enabled));
   hintEl.textContent = enabled
-    ? 'When off, the extension stops intercepting sends.'
-    : 'Coaching is off — Claude.ai sends behave as if the extension weren’t installed.';
+    ? 'Trailhead scores every prompt right before you send it. Low-scoring prompts open a coaching panel where you can refine the wording, add missing context, or accept an AI-polished version — all before the message reaches Claude.'
+    : 'Paused. Your messages go straight to Claude with no scoring, no coaching panel, and no wiki context attached — exactly the same as if Trailhead weren’t installed. Flip the switch on to resume coaching.';
 }
 
 async function getStoredToken(): Promise<string> {
