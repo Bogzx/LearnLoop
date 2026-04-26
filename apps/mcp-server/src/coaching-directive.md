@@ -42,7 +42,7 @@ this function do", "how should I structure X".
    - all four fields from `next_round_inputs` (`original_prompt`,
      `original_dimensions`, `previous_dimensions`, `round`) echoed
      back unchanged
-   Loop. The server enforces the cap (3 rounds) and bails on no-progress.
+   Loop. The server enforces the cap (5 rounds) and bails on no-progress.
 
 NEVER skip `coach` to "save time" — the score-arc IS the user-facing
 product. The user is here to learn the rubric; producing an answer

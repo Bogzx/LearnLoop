@@ -243,7 +243,7 @@ export interface CoachRequest {
   original_prompt?: string;
   original_dimensions?: DimensionScores;
   previous_dimensions?: DimensionScores;
-  round?: number;            // 1-indexed; server clamps to [1, 3]
+  round?: number;            // 1-indexed; server clamps to [1, 5]
 
   // Optional team-wiki context, same semantics as ScoreRequest.context_path.
   context_path?: string;

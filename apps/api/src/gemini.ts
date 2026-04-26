@@ -280,9 +280,9 @@ export async function rewriteForDims(args: {
   target_dims: Dimension[];
   file_path?: string;
   team_context?: string;
-}): Promise<{ rewritten_prompt: string }> {
+}): Promise<{ rewritten_prompt: string; tip: string }> {
   if (args.target_dims.length === 0) {
-    return { rewritten_prompt: args.prompt };
+    return { rewritten_prompt: args.prompt, tip: '' };
   }
 
   const systemInstruction = args.team_context
@@ -303,30 +303,190 @@ export async function rewriteForDims(args: {
           systemInstruction,
           temperature: 0.3,
           thinkingConfig: { thinkingBudget: -1 },
-          maxOutputTokens: 400,
+          // Bumped 400 → 500 to make headroom for the new `tip` field
+          // without crowding the rewrite. Schema enforcement still bounds
+          // the worst case; the tip is hard-capped at 100 chars in-prompt.
+          maxOutputTokens: 500,
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
-            required: ['rewritten_prompt'],
+            required: ['rewritten_prompt', 'tip'],
             properties: {
               rewritten_prompt: { type: Type.STRING },
+              // maxLength stringified per the SDK contract — see the note
+              // on `missing` in the score schema for the wire bug this
+              // works around.
+              tip: { type: Type.STRING, maxLength: '120' },
             },
           },
         },
       }),
       'teach-rewrite',
     );
-    const parsed = tryParseJson<{ rewritten_prompt?: string }>(extractAnswer(resp));
+    const parsed = tryParseJson<{ rewritten_prompt?: string; tip?: string }>(extractAnswer(resp));
     const rewritten = typeof parsed?.rewritten_prompt === 'string'
       ? parsed.rewritten_prompt.trim()
       : '';
-    // Empty string → caller falls back to a hardcoded line. We don't throw
-    // because /coach is the never-block path: render the block without an
-    // example rather than blowing up the whole coaching turn.
-    return { rewritten_prompt: rewritten };
+    const tip = typeof parsed?.tip === 'string' ? parsed.tip.trim() : '';
+    // Empty strings → callers fall back to the static template / no tip.
+    // We don't throw because /coach is the never-block path: render the
+    // block without an example or tip rather than blowing up the turn.
+    return { rewritten_prompt: rewritten, tip };
   } catch (err) {
     console.warn('[gemini] teach-rewrite failed', err);
-    return { rewritten_prompt: '' };
+    return { rewritten_prompt: '', tip: '' };
+  }
+}
+
+// ----- /coach round-2+ acknowledgment ---------------------------------------
+// Gemini-generated one-liner that names the user's most recent edit and the
+// dimension it lifted. Used to prepend recognition before the next teach
+// block in the round 2+ "still <7, made progress, more rounds remain"
+// branch. Fail-open: empty string → renderTeachBlock falls back to the
+// existing static "You addressed X" line.
+//
+// Same guardrail discipline as the rest: Flash + responseSchema +
+// thinkingBudget=-1 + maxOutputTokens cap + the no-retry-on-timeout policy.
+const ACKNOWLEDGE_SYSTEM_PROMPT = `You acknowledge a developer's improvement to their prompt in ONE short sentence (under 120 characters).
+
+You receive: their previous prompt, their current prompt, the per-dimension scores before and after, and the list of dimensions whose scores increased. Name the concrete addition they made AND the dimension it lifted. Specific > generic.
+
+Return JSON only, no prose:
+{ "acknowledgment": <string> }
+
+Rules — MUST follow:
+- ONE sentence, under 120 characters. No bullets, no list, no follow-up question.
+- Reference the actual change (a file path, a constraint, an output shape they added) — do NOT just say "good progress".
+- Mention the dimension that improved by name.
+- Tone: warm, peer-to-peer. Avoid corporate phrasing.
+- NEVER ask a question. NEVER use "What about..." / "How does...".
+- If no dimension improved, return an empty string for "acknowledgment".`;
+
+export async function acknowledgeProgress(args: {
+  previous_prompt: string;
+  current_prompt: string;
+  previous_dimensions: DimensionScores;
+  current_dimensions: DimensionScores;
+}): Promise<string> {
+  // Compute the dim deltas client-side so the model gets a clean signal
+  // and can't hallucinate which dim moved.
+  const improved = DIMENSIONS
+    .map((d) => ({ d, delta: args.current_dimensions[d] - args.previous_dimensions[d] }))
+    .filter((x) => x.delta > 0)
+    .sort((a, b) => b.delta - a.delta);
+  if (improved.length === 0) return '';
+
+  const dimsLine = (s: DimensionScores) =>
+    DIMENSIONS.map((d) => `${d}=${s[d]}`).join(', ');
+
+  const userMessage =
+    `Previous prompt:\n${args.previous_prompt}\n\n` +
+    `Current prompt:\n${args.current_prompt}\n\n` +
+    `Previous scores: ${dimsLine(args.previous_dimensions)}\n` +
+    `Current scores:  ${dimsLine(args.current_dimensions)}\n` +
+    `Dimensions that improved: ${improved.map((x) => `${x.d} (+${x.delta})`).join(', ')}`;
+
+  try {
+    const resp = await withRetry(
+      () => ai.models.generateContent({
+        model: SCORE_MODEL,
+        contents: userMessage,
+        config: {
+          systemInstruction: ACKNOWLEDGE_SYSTEM_PROMPT,
+          temperature: 0.3,
+          thinkingConfig: { thinkingBudget: -1 },
+          maxOutputTokens: 200,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            required: ['acknowledgment'],
+            properties: {
+              acknowledgment: { type: Type.STRING, maxLength: '140' },
+            },
+          },
+        },
+      }),
+      'acknowledge',
+    );
+    const parsed = tryParseJson<{ acknowledgment?: string }>(extractAnswer(resp));
+    return typeof parsed?.acknowledgment === 'string' ? parsed.acknowledgment.trim() : '';
+  } catch (err) {
+    console.warn('[gemini] acknowledge failed', err);
+    return '';
+  }
+}
+
+// ----- /coach end-of-session summary ----------------------------------------
+// Gemini-written closing recap appended to renderSuccessReveal /
+// renderSkipReveal. Frames the arc as a mini-lesson: what improved, the
+// principle the user practiced, one takeaway for next time. Used in success,
+// no-progress, skip, and max-rounds forced-exit branches; tone adapts to
+// `reason` so the no-progress / skip cases stay honest instead of
+// celebrating something that didn't happen.
+const SUMMARIZE_SYSTEM_PROMPT = `You write a short closing recap (3-4 sentences total) of a developer's prompt-coaching session.
+
+You receive: the original prompt, the final prompt, scores before/after, and the reason the session ended (success / max_rounds / no_progress / skip). Adapt the tone:
+- success / max_rounds — celebrate the moves they made and name the prompt-engineering principle they practiced.
+- no_progress / skip — acknowledge they bailed, but call out what they could have added; teach the principle they missed.
+
+Return JSON only, no prose:
+{ "summary": <string> }
+
+Rules — MUST follow:
+- 3-4 sentences total. Hard cap: 600 characters. No bullets, no headers, no preamble like "Here's a recap:".
+- Reference the actual content (file paths, constraints, output shapes) the user did or didn't add. Specific > generic.
+- Name ONE prompt-engineering principle (e.g. "anchoring with file paths", "naming invariants up front", "specifying output shape"). Do not list more than one.
+- End with ONE concrete takeaway for next time, phrased as a habit, not as a question.
+- Tone: warm, peer-to-peer, like a senior dev recapping a session at the desk.
+- NEVER ask a question. NEVER list alternatives. NEVER use "What if..." / "How could...".`;
+
+export async function summarizeCoaching(args: {
+  original_prompt: string;
+  final_prompt: string;
+  original_dimensions: DimensionScores;
+  final_dimensions: DimensionScores;
+  reason: 'success' | 'max_rounds' | 'no_progress' | 'skip';
+}): Promise<string> {
+  const dimsLine = (s: DimensionScores) =>
+    DIMENSIONS.map((d) => `${d}=${s[d]}`).join(', ');
+
+  const userMessage =
+    `Reason: ${args.reason}\n\n` +
+    `Original prompt:\n${args.original_prompt}\n\n` +
+    `Final prompt:\n${args.final_prompt}\n\n` +
+    `Original scores: ${dimsLine(args.original_dimensions)}\n` +
+    `Final scores:    ${dimsLine(args.final_dimensions)}`;
+
+  try {
+    const resp = await withRetry(
+      () => ai.models.generateContent({
+        model: SCORE_MODEL,
+        contents: userMessage,
+        config: {
+          systemInstruction: SUMMARIZE_SYSTEM_PROMPT,
+          temperature: 0.3,
+          thinkingConfig: { thinkingBudget: -1 },
+          // 600-char hard cap in the prompt; 600 tokens is a generous
+          // ceiling that bounds runaway output without clipping a
+          // well-formed recap.
+          maxOutputTokens: 600,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            required: ['summary'],
+            properties: {
+              summary: { type: Type.STRING, maxLength: '700' },
+            },
+          },
+        },
+      }),
+      'summarize',
+    );
+    const parsed = tryParseJson<{ summary?: string }>(extractAnswer(resp));
+    return typeof parsed?.summary === 'string' ? parsed.summary.trim() : '';
+  } catch (err) {
+    console.warn('[gemini] summarize failed', err);
+    return '';
   }
 }
 
@@ -377,8 +537,9 @@ export async function synthesizeDiff(args: {
         `Compare these two prompts on the five Trailhead dimensions.\n\n` +
         `USER (${dimsLine(args.user_scores)}):\n${args.user_prompt}\n\n` +
         `TEAM (${dimsLine(args.team_scores)}):\n${args.team_prompt}\n\n` +
-        `Write 2-3 sentences naming the specific dimensions the user fell short on ` +
-        `and what the team prompt did differently. No bullets, no preamble.`,
+        `In 2-3 sentences, name ONE prompt-engineering move the team prompt makes that the user's didn't, ` +
+        `then phrase how to apply that move next time as a habit (not a question). No bullets, no preamble, ` +
+        `no rhetorical "What if..." / "How could..." phrasing.`,
       config: { temperature: 0.2 },
     }),
     'diff',

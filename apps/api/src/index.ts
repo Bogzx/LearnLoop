@@ -55,11 +55,13 @@ import {
 } from '@trailhead/scoring';
 import { DEMO_TEAM_TOKEN, q, teamIdForToken, upsertNode, wipeTeamData } from './db.ts';
 import {
+  acknowledgeProgress,
   extractTopic,
   improveCoach,
   overallScore,
   rewriteForDims,
   scorePrompt,
+  summarizeCoaching,
   synthesizeDiff,
 } from './gemini.ts';
 import { renderTeamContext } from './team-context.ts';
@@ -238,7 +240,7 @@ app.post('/score', async (c) => {
 // next_round_inputs echoed back. Server enforces the round cap and bails
 // on no-progress.
 
-const COACH_MAX_ROUNDS = 3;
+const COACH_MAX_ROUNDS = 5;
 
 function clampRound(n: number | undefined): number {
   if (typeof n !== 'number' || !Number.isFinite(n)) return 1;
@@ -303,17 +305,23 @@ async function fetchTopGraduatedForTeam(teamId: string): Promise<string | null> 
 // graduated team prompt is already strong on most dims and seeing it
 // teaches the user something either way. If the wiki has nothing, fall
 // back to a Gemini rewrite that explicitly targets the named dimensions.
+//
+// Returns the example string AND the optional tip — the wiki path has no
+// tip (we just have the template), the Gemini fallback emits one alongside
+// the rewrite. Callers showing a single-dim teach block render the tip;
+// multi-dim callers (skip / no-progress) ignore it because one tip can't
+// honestly summarize several principles at once.
 async function getStrongExample(args: {
   teamId: string;
   prompt: string;
   file_path?: string;
   target_dims: Dimension[];
   team_context: string | null;
-}): Promise<string> {
+}): Promise<{ example: string; tip: string }> {
   const wiki = args.file_path
     ? await fetchTopGraduatedForPath(args.teamId, args.file_path)
     : await fetchTopGraduatedForTeam(args.teamId);
-  if (wiki) return wiki;
+  if (wiki) return { example: wiki, tip: '' };
 
   const fallback = await rewriteForDims({
     prompt: args.prompt,
@@ -321,7 +329,8 @@ async function getStrongExample(args: {
     file_path: args.file_path,
     team_context: args.team_context ?? undefined,
   });
-  return fallback.rewritten_prompt; // empty string on Gemini failure
+  // Empty strings on Gemini failure — render block falls back accordingly.
+  return { example: fallback.rewritten_prompt, tip: fallback.tip };
 }
 
 app.post('/coach', async (c) => {
@@ -421,18 +430,33 @@ app.post('/coach', async (c) => {
     if (dimsToImprove.length === 0) {
       dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 7);
     }
-    const strongRewrite = await getStrongExample({
-      teamId,
-      prompt: body.original_prompt ?? body.prompt,
-      file_path: body.file_path,
-      target_dims: dimsToImprove.length ? dimsToImprove : ['specificity'],
-      team_context: teamContext,
-    });
-    const text = strongRewrite
+    const originalPrompt = body.original_prompt ?? body.prompt;
+    // Run the rewrite and the closing summary in parallel — both are
+    // independent Gemini calls and the user is already waiting on the
+    // skip-reveal text. Each fails open to '' so a partial outage still
+    // produces a useful (if shorter) reveal.
+    const [strong, summary] = await Promise.all([
+      getStrongExample({
+        teamId,
+        prompt: originalPrompt,
+        file_path: body.file_path,
+        target_dims: dimsToImprove.length ? dimsToImprove : ['specificity'],
+        team_context: teamContext,
+      }),
+      summarizeCoaching({
+        original_prompt: originalPrompt,
+        final_prompt: body.prompt,
+        original_dimensions: originalDims,
+        final_dimensions: scoreResult.dimensions,
+        reason: 'skip',
+      }),
+    ]);
+    const text = strong.example
       ? renderSkipReveal({
-          strongRewrite,
+          strongRewrite: strong.example,
           originalDimensions: originalDims,
           reason: 'skip',
+          summary,
         })
       : '';
     const res: CoachResponse = {
@@ -466,7 +490,7 @@ app.post('/coach', async (c) => {
 
   // Round 1, score <7 → first teach block.
   if (isRound1 && lowest) {
-    const strongExample = await getStrongExample({
+    const strong = await getStrongExample({
       teamId,
       prompt: body.prompt,
       file_path: body.file_path,
@@ -476,7 +500,8 @@ app.post('/coach', async (c) => {
     const text = renderTeachBlock({
       targetDim: lowest,
       targetScore: scoreResult.dimensions[lowest],
-      strongExample,
+      strongExample: strong.example,
+      tip: strong.tip,
     });
     const next: CoachNextRoundInputs = {
       original_prompt: body.prompt,
@@ -506,6 +531,13 @@ app.post('/coach', async (c) => {
 
   // Score crossed 7 → success reveal.
   if (overall >= 7) {
+    const summary = await summarizeCoaching({
+      original_prompt: originalPrompt,
+      final_prompt: body.prompt,
+      original_dimensions: originalDims,
+      final_dimensions: scoreResult.dimensions,
+      reason: 'success',
+    });
     const text = renderSuccessReveal({
       originalPrompt,
       finalPrompt: body.prompt,
@@ -513,6 +545,7 @@ app.post('/coach', async (c) => {
       finalOverall: overall,
       originalDimensions: originalDims,
       finalDimensions: scoreResult.dimensions,
+      summary,
     });
     const res: CoachResponse = {
       proceed: true,
@@ -541,19 +574,32 @@ app.post('/coach', async (c) => {
     if (dimsToImprove.length === 0) {
       dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 7);
     }
-    const strongRewrite = await getStrongExample({
-      teamId,
-      prompt: originalPrompt,
-      file_path: body.file_path,
-      target_dims: dimsToImprove.length ? dimsToImprove : [lowest!],
-      team_context: teamContext,
-    });
-    const text = strongRewrite
+    // Parallel: rewrite + closing recap. Same fail-open posture as the
+    // skip-reveal branch — both helpers return '' on Gemini failure and the
+    // render fallback handles each independently.
+    const [strong, summary] = await Promise.all([
+      getStrongExample({
+        teamId,
+        prompt: originalPrompt,
+        file_path: body.file_path,
+        target_dims: dimsToImprove.length ? dimsToImprove : [lowest!],
+        team_context: teamContext,
+      }),
+      summarizeCoaching({
+        original_prompt: originalPrompt,
+        final_prompt: body.prompt,
+        original_dimensions: originalDims,
+        final_dimensions: scoreResult.dimensions,
+        reason: 'no_progress',
+      }),
+    ]);
+    const text = strong.example
       ? renderSkipReveal({
-          strongRewrite,
+          strongRewrite: strong.example,
           originalDimensions: originalDims,
           reason: 'no_progress',
           noProgressDim: previousLowest ?? undefined,
+          summary,
         })
       : '';
     const res: CoachResponse = {
@@ -567,8 +613,15 @@ app.post('/coach', async (c) => {
     return c.json(res);
   }
 
-  // Round 3 forced exit (still <7, made progress, but rounds exhausted).
+  // Forced exit at COACH_MAX_ROUNDS (still <7, made progress, but rounds exhausted).
   if (round >= COACH_MAX_ROUNDS) {
+    const summary = await summarizeCoaching({
+      original_prompt: originalPrompt,
+      final_prompt: body.prompt,
+      original_dimensions: originalDims,
+      final_dimensions: scoreResult.dimensions,
+      reason: 'max_rounds',
+    });
     const text = renderSuccessReveal({
       originalPrompt,
       finalPrompt: body.prompt,
@@ -577,6 +630,7 @@ app.post('/coach', async (c) => {
       originalDimensions: originalDims,
       finalDimensions: scoreResult.dimensions,
       maxRoundsHit: true,
+      summary,
     });
     const res: CoachResponse = {
       proceed: true,
@@ -591,19 +645,32 @@ app.post('/coach', async (c) => {
 
   // Else: score still <7, made progress, more rounds remain. Keep teaching.
   if (lowest) {
-    const strongExample = await getStrongExample({
-      teamId,
-      prompt: body.prompt,
-      file_path: body.file_path,
-      target_dims: [lowest],
-      team_context: teamContext,
-    });
+    // Parallel: pull a fresh strong example AND ask Gemini to acknowledge
+    // what the user just added. Both feed renderTeachBlock; both fail-open
+    // to '' so the static template still produces a usable block.
+    const [strong, acknowledgment] = await Promise.all([
+      getStrongExample({
+        teamId,
+        prompt: body.prompt,
+        file_path: body.file_path,
+        target_dims: [lowest],
+        team_context: teamContext,
+      }),
+      acknowledgeProgress({
+        previous_prompt: originalPrompt,
+        current_prompt: body.prompt,
+        previous_dimensions: previousDims,
+        current_dimensions: scoreResult.dimensions,
+      }),
+    ]);
     const text = renderTeachBlock({
       targetDim: lowest,
       targetScore: scoreResult.dimensions[lowest],
-      strongExample,
+      strongExample: strong.example,
       previousLowestDim:
         previousLowest && previousLowest !== lowest ? previousLowest : undefined,
+      acknowledgment,
+      tip: strong.tip,
     });
     const next: CoachNextRoundInputs = {
       original_prompt: originalPrompt,

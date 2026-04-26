@@ -221,9 +221,9 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
           .number()
           .int()
           .min(1)
-          .max(3)
+          .max(5)
           .optional()
-          .describe('Round 2+ only. Echoed from next_round_inputs.round. Server clamps to [1, 3].'),
+          .describe('Round 2+ only. Echoed from next_round_inputs.round. Server clamps to [1, 5].'),
       },
       outputSchema: {
         proceed: z.boolean(),
