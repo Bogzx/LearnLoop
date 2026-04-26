@@ -38,5 +38,30 @@
     "prompt": "bootstrap the team wiki for this codebase",
     "expected": "wiki_bootstrap",
     "why": "phrasing variant of the bootstrap request"
+  },
+  {
+    "prompt": "what conventions does the team have for src/api/webhooks/handler.ts",
+    "expected": "wiki_lookup",
+    "why": "convention question scoped to a file — must beat native Read"
+  },
+  {
+    "prompt": "show me how auth is done in this repo",
+    "expected": "wiki_lookup",
+    "why": "exploration question — must beat native Grep/Glob"
+  },
+  {
+    "prompt": "do we have a pattern for db migrations here",
+    "expected": "wiki_lookup",
+    "why": "pattern question — must beat native Grep"
+  },
+  {
+    "prompt": "explain what the score endpoint does",
+    "expected": "coach",
+    "why": "explain code task — coach is mandatory before answering"
+  },
+  {
+    "prompt": "from now on we use zod for all input validation",
+    "expected": "wiki_save",
+    "why": "from-now-on phrasing — explicit teamwide convention"
   }
 ]

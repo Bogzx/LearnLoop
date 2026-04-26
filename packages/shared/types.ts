@@ -215,6 +215,58 @@ export type ImproveResponse =
   | { kind: 'question'; text: string; turn: number }
   | { kind: 'final'; polished: string; rationale?: string };
 
+// POST /coach — MCP-side coaching loop endpoint. Drives the educational
+// teach→reveal cycle described in
+// docs/superpowers/specs/2026-04-26-trailhead-educational-loop-design.md.
+//
+// Stateless: callers (the MCP server) carry round state explicitly.
+// Internally reuses /score's Gemini call so writes one set of
+// skill_observation rows per call (same dedup as /score).
+
+export type CoachMode = 'score' | 'skip_reveal' | 'augment';
+
+export interface CoachNextRoundInputs {
+  original_prompt: string;
+  original_dimensions: DimensionScores;
+  previous_dimensions: DimensionScores;
+  round: number;            // the round number to pass back next call
+}
+
+export interface CoachRequest {
+  prompt: string;
+  user_id: string;
+  file_path?: string;
+  mode?: CoachMode;          // default 'score'
+
+  // Round-state inputs — required from round 2+ for progress tracking, and
+  // from `mode: 'skip_reveal'` for rendering the strong-rewrite reveal.
+  original_prompt?: string;
+  original_dimensions?: DimensionScores;
+  previous_dimensions?: DimensionScores;
+  round?: number;            // 1-indexed; server clamps to [1, 3]
+
+  // Optional team-wiki context, same semantics as ScoreRequest.context_path.
+  context_path?: string;
+}
+
+export interface CoachResponse {
+  proceed: boolean;          // KEY FLAG — directive checks only this
+  mode: CoachMode;
+  overall: number;
+  dimensions: DimensionScores;
+  missing: MissingHints;
+  text: string;              // fully rendered block to relay verbatim, may be ''
+
+  // Populated when proceed=false. Echo the four fields back unchanged on the
+  // next coach() call, with `prompt` set to original + user's reply.
+  next_round_inputs?: CoachNextRoundInputs;
+
+  // Existing augment-mode passthrough (kept for backwards compatibility with
+  // the legacy `coach({ mode: 'augment' })` callers; not used in the new loop).
+  augmented_prompt?: string;
+  missing_dims?: string[];
+}
+
 // GET /teams — list every team in the database (id, name, token).
 // Unauthenticated so the popup can populate a Select-team dropdown
 // before any token is configured. Demo simplicity: no per-user

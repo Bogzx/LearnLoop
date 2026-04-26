@@ -6,6 +6,10 @@ import { logger } from 'hono/logger';
 import type {
   CaptureRequest,
   CaptureResponse,
+  CoachMode,
+  CoachNextRoundInputs,
+  CoachRequest,
+  CoachResponse,
   ContextNode,
   ContextResponse,
   DiffRequest,
@@ -40,9 +44,24 @@ import type {
   WikiTreeResponse,
 } from '@trailhead/shared';
 import { DIMENSIONS } from '@trailhead/shared';
-import { ancestorPaths, normalize, normalizePath } from '@trailhead/scoring';
+import {
+  ancestorPaths,
+  buildAugmentation,
+  normalize,
+  normalizePath,
+  renderSkipReveal,
+  renderSuccessReveal,
+  renderTeachBlock,
+} from '@trailhead/scoring';
 import { DEMO_TEAM_TOKEN, q, teamIdForToken, upsertNode, wipeTeamData } from './db.ts';
-import { extractTopic, improveCoach, overallScore, scorePrompt, synthesizeDiff } from './gemini.ts';
+import {
+  extractTopic,
+  improveCoach,
+  overallScore,
+  rewriteForDims,
+  scorePrompt,
+  synthesizeDiff,
+} from './gemini.ts';
 import { renderTeamContext } from './team-context.ts';
 import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
 
@@ -103,6 +122,7 @@ app.get('/', (c) =>
     auto_create_teams: AUTO_CREATE_TEAMS,
     endpoints: [
       'POST /score',
+      'POST /coach',
       'POST /capture',
       'POST /wiki/propose',
       'GET  /context?path=',
@@ -136,6 +156,42 @@ function simpleHash(s: string): string {
   return h.toString(16);
 }
 
+// Bulk insert one skill_observation row per dimension with the per-(user,
+// dim, prompt-hash) 30s dedup window from spec §19. Shared between /score
+// and /coach so both write to the same rubric stream — the dashboard and
+// skill arc don't care which endpoint produced the row.
+async function writeSkillObservations(
+  teamId: string,
+  userId: string,
+  prompt: string,
+  dimensions: DimensionScores,
+): Promise<void> {
+  const promptHash = simpleHash(prompt);
+  await q(
+    `INSERT INTO skill_observations (team_id, user_id, dimension, score, prompt_hash)
+     SELECT i.team_id, i.user_id, i.dimension, i.score, i.prompt_hash
+       FROM ( VALUES
+         ${DIMENSIONS.map((_, i) =>
+           `($1::uuid, $2::text, $${3 + i * 2}::text, $${4 + i * 2}::int, $13::text)`
+         ).join(',\n         ')}
+       ) AS i(team_id, user_id, dimension, score, prompt_hash)
+      WHERE NOT EXISTS (
+        SELECT 1 FROM skill_observations s
+         WHERE s.team_id     = i.team_id
+           AND s.user_id     = i.user_id
+           AND s.dimension   = i.dimension
+           AND s.prompt_hash = i.prompt_hash
+           AND s.ts          > NOW() - INTERVAL '30 seconds'
+      )`,
+    [
+      teamId,
+      userId,
+      ...DIMENSIONS.flatMap((d) => [d, dimensions[d]]),
+      promptHash,
+    ],
+  );
+}
+
 app.post('/score', async (c) => {
   const body = await c.req.json<ScoreRequest>().catch(() => null);
   if (!body || typeof body.prompt !== 'string' || typeof body.user_id !== 'string') {
@@ -157,38 +213,426 @@ app.post('/score', async (c) => {
   });
   const overall = overallScore(result.dimensions);
 
-  // Skill_observation writes — 5 rows per call, with per-(user, dim,
-  // prompt-hash) 30s dedup per spec §19. Same prompt re-scored within the
-  // window is suppressed; different prompts always write.
-  const promptHash = simpleHash(body.prompt);
-  await q(
-    `INSERT INTO skill_observations (team_id, user_id, dimension, score, prompt_hash)
-     SELECT i.team_id, i.user_id, i.dimension, i.score, i.prompt_hash
-       FROM ( VALUES
-         ${DIMENSIONS.map((_, i) =>
-           `($1::uuid, $2::text, $${3 + i * 2}::text, $${4 + i * 2}::int, $13::text)`
-         ).join(',\n         ')}
-       ) AS i(team_id, user_id, dimension, score, prompt_hash)
-      WHERE NOT EXISTS (
-        SELECT 1 FROM skill_observations s
-         WHERE s.team_id     = i.team_id
-           AND s.user_id     = i.user_id
-           AND s.dimension   = i.dimension
-           AND s.prompt_hash = i.prompt_hash
-           AND s.ts          > NOW() - INTERVAL '30 seconds'
-      )`,
-    [
-      c.get('team_id'),
-      body.user_id,
-      ...DIMENSIONS.flatMap((d) => [d, result.dimensions[d]]),
-      promptHash,
-    ],
+  await writeSkillObservations(
+    c.get('team_id'),
+    body.user_id,
+    body.prompt,
+    result.dimensions,
   );
 
   const res: ScoreResponse = {
     overall,
     dimensions: result.dimensions,
     missing: result.missing,
+  };
+  return c.json(res);
+});
+
+// ----- POST /coach -----------------------------------------------------------
+// Educational coaching loop. Drives the teach→reveal cycle described in
+// docs/superpowers/specs/2026-04-26-trailhead-educational-loop-design.md.
+//
+// Stateless: caller (the MCP server) carries round state explicitly. The
+// `proceed` flag is the directive's only decision input — when false the
+// caller relays `text`, gathers a user reply, and calls /coach again with
+// next_round_inputs echoed back. Server enforces the round cap and bails
+// on no-progress.
+
+const COACH_MAX_ROUNDS = 3;
+
+function clampRound(n: number | undefined): number {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return 1;
+  return Math.max(1, Math.min(COACH_MAX_ROUNDS, Math.floor(n)));
+}
+
+// Pick the lowest-scoring dimension under the threshold (default 7). Stable
+// against tied scores by walking DIMENSIONS in declaration order — same
+// prompt always teaches the same dim.
+function lowestDimBelow(dims: DimensionScores, threshold: number = 7): Dimension | null {
+  let pick: Dimension | null = null;
+  let pickScore = Infinity;
+  for (const d of DIMENSIONS) {
+    const s = dims[d];
+    if (s < threshold && s < pickScore) {
+      pick = d;
+      pickScore = s;
+    }
+  }
+  return pick;
+}
+
+// Wiki-first lookup: top graduated prompt in the file_path's ancestor nodes.
+async function fetchTopGraduatedForPath(
+  teamId: string,
+  filePath: string,
+): Promise<string | null> {
+  const ancestors = ancestorPaths(filePath);
+  if (ancestors.length === 0) return null;
+  const rows = await q<{ template: string }>(
+    `SELECT p.template
+       FROM prompts p
+       JOIN nodes n ON n.id = p.node_id
+      WHERE n.team_id = $1
+        AND n.path = ANY($2::text[])
+        AND p.status = 'graduated'
+      ORDER BY p.reuse_count DESC, length(n.path) DESC
+      LIMIT 1`,
+    [teamId, ancestors],
+  );
+  return rows.length ? rows[0]!.template : null;
+}
+
+// Wiki-first lookup: top graduated prompt across the team. Used when no
+// file_path is available.
+async function fetchTopGraduatedForTeam(teamId: string): Promise<string | null> {
+  const rows = await q<{ template: string }>(
+    `SELECT p.template
+       FROM prompts p
+       JOIN nodes n ON n.id = p.node_id
+      WHERE n.team_id = $1
+        AND p.status = 'graduated'
+      ORDER BY p.reuse_count DESC
+      LIMIT 1`,
+    [teamId],
+  );
+  return rows.length ? rows[0]!.template : null;
+}
+
+// Wiki-first → Gemini fallback. Hackathon simplification: we don't re-score
+// graduated prompts to filter for `target_dims`; the assumption is that a
+// graduated team prompt is already strong on most dims and seeing it
+// teaches the user something either way. If the wiki has nothing, fall
+// back to a Gemini rewrite that explicitly targets the named dimensions.
+async function getStrongExample(args: {
+  teamId: string;
+  prompt: string;
+  file_path?: string;
+  target_dims: Dimension[];
+  team_context: string | null;
+}): Promise<string> {
+  const wiki = args.file_path
+    ? await fetchTopGraduatedForPath(args.teamId, args.file_path)
+    : await fetchTopGraduatedForTeam(args.teamId);
+  if (wiki) return wiki;
+
+  const fallback = await rewriteForDims({
+    prompt: args.prompt,
+    target_dims: args.target_dims,
+    file_path: args.file_path,
+    team_context: args.team_context ?? undefined,
+  });
+  return fallback.rewritten_prompt; // empty string on Gemini failure
+}
+
+app.post('/coach', async (c) => {
+  const body = await c.req.json<CoachRequest>().catch(() => null);
+  if (!body || typeof body.prompt !== 'string' || typeof body.user_id !== 'string') {
+    return c.json({ error: 'bad_request' }, 400);
+  }
+
+  const mode: CoachMode = body.mode === 'augment' || body.mode === 'skip_reveal'
+    ? body.mode
+    : 'score';
+
+  // Same team-context pattern as /score and /improve.
+  const teamId = c.get('team_id');
+  const teamContext = body.context_path
+    ? await renderTeamContext(teamId, body.context_path)
+    : null;
+
+  // 1. Score (always). Failure is fail-open: hand the LLM a "no coaching
+  //    this turn" signal and let it produce its answer with the original
+  //    prompt. Spec §7.
+  let scoreResult: { dimensions: DimensionScores; missing: Record<string, string> };
+  try {
+    const result = await scorePrompt({
+      prompt: body.prompt,
+      file_path: body.file_path,
+      team_context: teamContext ?? undefined,
+    });
+    scoreResult = { dimensions: result.dimensions, missing: result.missing as Record<string, string> };
+  } catch (err) {
+    console.warn('[api] /coach scorePrompt failed', err);
+    const zeros = Object.fromEntries(DIMENSIONS.map((d) => [d, 0])) as DimensionScores;
+    const res: CoachResponse = {
+      proceed: true,
+      mode,
+      overall: 0,
+      dimensions: zeros,
+      missing: {},
+      text: '',
+    };
+    return c.json(res);
+  }
+  const overall = overallScore(scoreResult.dimensions);
+
+  // Fail-open: scorePrompt does NOT throw on Gemini parse failures — it
+  // silently returns zeros + empty missing (see gemini.ts coerceScore).
+  // That signal is indistinguishable from a real all-zero score except by
+  // the empty `missing` object: a real-zero score from Gemini populates
+  // hints for the dims < 5. When we detect the zero+empty fingerprint,
+  // treat it as "Gemini failed, no coaching this turn" rather than
+  // pretending the user wrote a perfectly empty prompt. Spec §7.
+  const allZero = DIMENSIONS.every((d) => scoreResult.dimensions[d] === 0);
+  const noMissing = Object.keys(scoreResult.missing).length === 0;
+  if (allZero && noMissing) {
+    const res: CoachResponse = {
+      proceed: true,
+      mode,
+      overall: 0,
+      dimensions: scoreResult.dimensions,
+      missing: {},
+      text: '',
+    };
+    return c.json(res);
+  }
+
+  // 2. Skill_observation writes (same dedup as /score).
+  await writeSkillObservations(teamId, body.user_id, body.prompt, scoreResult.dimensions);
+
+  // 3. Branch on mode.
+
+  // ---- Augment mode (legacy passthrough) -----------------------------------
+  if (mode === 'augment') {
+    const augmented = buildAugmentation({
+      original: body.prompt,
+      missing: scoreResult.missing,
+    });
+    const res: CoachResponse = {
+      proceed: true,
+      mode: 'augment',
+      overall,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      text: '',
+      augmented_prompt: augmented,
+      missing_dims: Object.keys(scoreResult.missing),
+    };
+    return c.json(res);
+  }
+
+  // ---- Skip reveal mode ----------------------------------------------------
+  if (mode === 'skip_reveal') {
+    const originalDims = body.original_dimensions ?? scoreResult.dimensions;
+    // Dimensions we'd want to lift on the rewrite. Spec §5 picks dims that
+    // scored below 5; if the original is already above that bar, fall back
+    // to dims below 7 so the rewrite still has direction.
+    let dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 5);
+    if (dimsToImprove.length === 0) {
+      dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 7);
+    }
+    const strongRewrite = await getStrongExample({
+      teamId,
+      prompt: body.original_prompt ?? body.prompt,
+      file_path: body.file_path,
+      target_dims: dimsToImprove.length ? dimsToImprove : ['specificity'],
+      team_context: teamContext,
+    });
+    const text = strongRewrite
+      ? renderSkipReveal({
+          strongRewrite,
+          originalDimensions: originalDims,
+          reason: 'skip',
+        })
+      : '';
+    const res: CoachResponse = {
+      proceed: true,
+      mode: 'skip_reveal',
+      overall,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      text,
+    };
+    return c.json(res);
+  }
+
+  // ---- Score mode (the main loop) ------------------------------------------
+  const round = clampRound(body.round);
+  const isRound1 = round === 1 || !body.original_prompt;
+  const lowest = lowestDimBelow(scoreResult.dimensions, 7);
+
+  // Round 1, score >=7 → silent fast path. Power users see no friction.
+  if (isRound1 && overall >= 7) {
+    const res: CoachResponse = {
+      proceed: true,
+      mode: 'score',
+      overall,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      text: '',
+    };
+    return c.json(res);
+  }
+
+  // Round 1, score <7 → first teach block.
+  if (isRound1 && lowest) {
+    const strongExample = await getStrongExample({
+      teamId,
+      prompt: body.prompt,
+      file_path: body.file_path,
+      target_dims: [lowest],
+      team_context: teamContext,
+    });
+    const text = renderTeachBlock({
+      targetDim: lowest,
+      targetScore: scoreResult.dimensions[lowest],
+      strongExample,
+    });
+    const next: CoachNextRoundInputs = {
+      original_prompt: body.prompt,
+      original_dimensions: scoreResult.dimensions,
+      previous_dimensions: scoreResult.dimensions,
+      round: 2,
+    };
+    const res: CoachResponse = {
+      proceed: false,
+      mode: 'score',
+      overall,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      text,
+      next_round_inputs: next,
+    };
+    return c.json(res);
+  }
+
+  // Round >=2 paths. Need original_prompt (we treated round 1 already).
+  const originalPrompt = body.original_prompt!;
+  const originalDims = body.original_dimensions ?? scoreResult.dimensions;
+  const previousDims = body.previous_dimensions ?? originalDims;
+  const previousOverall = overallScore(previousDims);
+  const previousLowest = lowestDimBelow(previousDims, 7);
+  const originalOverall = overallScore(originalDims);
+
+  // Score crossed 7 → success reveal.
+  if (overall >= 7) {
+    const text = renderSuccessReveal({
+      originalPrompt,
+      finalPrompt: body.prompt,
+      originalOverall,
+      finalOverall: overall,
+      originalDimensions: originalDims,
+      finalDimensions: scoreResult.dimensions,
+    });
+    const res: CoachResponse = {
+      proceed: true,
+      mode: 'score',
+      overall,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      text,
+    };
+    return c.json(res);
+  }
+
+  // No-progress detection: the dim we were teaching about (= last round's
+  // lowest) did NOT improve, AND overall did not improve. We test the
+  // previously-targeted dim directly rather than checking `lowest` equality,
+  // because Gemini's tiebreakers can shuffle which 0-scored dim is "lowest"
+  // between rounds even when nothing material changed (this was the original
+  // failing case from the design spec — "fix the retry. it needs to be more
+  // accurate" leaves context_loading at 0 but the lowest tiebreaker drifts).
+  const targetDimDidNotImprove = !!(
+    previousLowest &&
+    scoreResult.dimensions[previousLowest] <= previousDims[previousLowest]
+  );
+  if (targetDimDidNotImprove && overall <= previousOverall) {
+    let dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 5);
+    if (dimsToImprove.length === 0) {
+      dimsToImprove = DIMENSIONS.filter((d) => originalDims[d] < 7);
+    }
+    const strongRewrite = await getStrongExample({
+      teamId,
+      prompt: originalPrompt,
+      file_path: body.file_path,
+      target_dims: dimsToImprove.length ? dimsToImprove : [lowest!],
+      team_context: teamContext,
+    });
+    const text = strongRewrite
+      ? renderSkipReveal({
+          strongRewrite,
+          originalDimensions: originalDims,
+          reason: 'no_progress',
+          noProgressDim: previousLowest ?? undefined,
+        })
+      : '';
+    const res: CoachResponse = {
+      proceed: true,
+      mode: 'score',
+      overall,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      text,
+    };
+    return c.json(res);
+  }
+
+  // Round 3 forced exit (still <7, made progress, but rounds exhausted).
+  if (round >= COACH_MAX_ROUNDS) {
+    const text = renderSuccessReveal({
+      originalPrompt,
+      finalPrompt: body.prompt,
+      originalOverall,
+      finalOverall: overall,
+      originalDimensions: originalDims,
+      finalDimensions: scoreResult.dimensions,
+      maxRoundsHit: true,
+    });
+    const res: CoachResponse = {
+      proceed: true,
+      mode: 'score',
+      overall,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      text,
+    };
+    return c.json(res);
+  }
+
+  // Else: score still <7, made progress, more rounds remain. Keep teaching.
+  if (lowest) {
+    const strongExample = await getStrongExample({
+      teamId,
+      prompt: body.prompt,
+      file_path: body.file_path,
+      target_dims: [lowest],
+      team_context: teamContext,
+    });
+    const text = renderTeachBlock({
+      targetDim: lowest,
+      targetScore: scoreResult.dimensions[lowest],
+      strongExample,
+      previousLowestDim:
+        previousLowest && previousLowest !== lowest ? previousLowest : undefined,
+    });
+    const next: CoachNextRoundInputs = {
+      original_prompt: originalPrompt,
+      original_dimensions: originalDims,
+      previous_dimensions: scoreResult.dimensions,
+      round: round + 1,
+    };
+    const res: CoachResponse = {
+      proceed: false,
+      mode: 'score',
+      overall,
+      dimensions: scoreResult.dimensions,
+      missing: scoreResult.missing,
+      text,
+      next_round_inputs: next,
+    };
+    return c.json(res);
+  }
+
+  // Defensive fallback — shouldn't be reachable (overall < 7 implies a
+  // lowest dim exists). If we land here anyway, exit silently rather than
+  // 500ing the loop.
+  const res: CoachResponse = {
+    proceed: true,
+    mode: 'score',
+    overall,
+    dimensions: scoreResult.dimensions,
+    missing: scoreResult.missing,
+    text: '',
   };
   return c.json(res);
 });
