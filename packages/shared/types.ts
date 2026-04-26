@@ -123,11 +123,18 @@ export interface WikiTreeLearning {
   status: 'draft' | 'durable';
   reinforcement_count: number;
 }
+export interface WikiTreePrompt {
+  id: string;
+  template: string;
+  topic: string | null;
+  reuse_count: number;
+}
 export interface WikiTreeNode {
   path: string;
   body_md: string;
   durable_learnings: WikiTreeLearning[];   // status='durable' only
   draft_learnings: WikiTreeLearning[];     // status='draft' only
+  graduated_prompts: WikiTreePrompt[];     // status='graduated' only, sorted by reuse_count DESC
 }
 export interface WikiTreeResponse { nodes: WikiTreeNode[]; }
 

@@ -2,7 +2,11 @@
 
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import useSWR from 'swr';
-import type { WikiTreeNode, WikiTreeResponse } from '@trailhead/shared';
+import type {
+  WikiTreeNode,
+  WikiTreePrompt,
+  WikiTreeResponse,
+} from '@trailhead/shared';
 import { api } from '@/lib/api';
 
 function normalize(path: string): string {
@@ -313,6 +317,14 @@ function Tree2D({
           const y = pos.y - NODE_H / 2;
           const dur = node ? node.durable_learnings.length : 0;
           const dft = node ? node.draft_learnings.length : 0;
+          const prm = node ? node.graduated_prompts.length : 0;
+          const badges: Array<{ key: string; label: string; fg: string; bg: string }> = [];
+          if (dur > 0) badges.push({ key: 'd', label: `${dur}d`, fg: 'hsl(152 76% 56%)', bg: 'hsla(152 76% 50% / 0.18)' });
+          if (dft > 0) badges.push({ key: 'r', label: `${dft}r`, fg: 'hsl(215 20% 65%)', bg: 'hsla(215 20% 65% / 0.18)' });
+          if (prm > 0) badges.push({ key: 'p', label: `${prm}p`, fg: 'hsl(45 93% 60%)', bg: 'hsla(45 93% 50% / 0.18)' });
+          const BADGE_W = 24;
+          const BADGE_H = 16;
+          const BADGE_GAP = 4;
           const label = nodeName(path);
 
           return (
@@ -368,52 +380,27 @@ function Tree2D({
               >
                 {path || '(root)'}
               </text>
-              {dur > 0 && (
-                <g
-                  transform={`translate(${NODE_W - 14 - (dft > 0 ? 50 : 22)}, ${NODE_H - 22})`}
-                >
-                  <rect
-                    width={dft > 0 ? 26 : 22}
-                    height={16}
-                    rx={8}
-                    ry={8}
-                    fill="hsla(152 76% 50% / 0.18)"
-                  />
-                  <text
-                    x={(dft > 0 ? 26 : 22) / 2}
-                    y={11}
-                    textAnchor="middle"
-                    fill="hsl(152 76% 56%)"
-                    fontFamily="ui-monospace, Menlo, monospace"
-                    fontSize="10"
-                    fontWeight="600"
-                  >
-                    {dur}d
-                  </text>
-                </g>
-              )}
-              {dft > 0 && (
-                <g transform={`translate(${NODE_W - 14 - 22}, ${NODE_H - 22})`}>
-                  <rect
-                    width={22}
-                    height={16}
-                    rx={8}
-                    ry={8}
-                    fill="hsla(215 20% 65% / 0.18)"
-                  />
-                  <text
-                    x={11}
-                    y={11}
-                    textAnchor="middle"
-                    fill="hsl(215 20% 65%)"
-                    fontFamily="ui-monospace, Menlo, monospace"
-                    fontSize="10"
-                    fontWeight="600"
-                  >
-                    {dft}r
-                  </text>
-                </g>
-              )}
+              {badges.map((b, bi) => {
+                // Right-aligned row, leftmost badge first in array.
+                const idxFromRight = badges.length - 1 - bi;
+                const x = NODE_W - 14 - BADGE_W - idxFromRight * (BADGE_W + BADGE_GAP);
+                return (
+                  <g key={b.key} transform={`translate(${x}, ${NODE_H - 22})`}>
+                    <rect width={BADGE_W} height={BADGE_H} rx={8} ry={8} fill={b.bg} />
+                    <text
+                      x={BADGE_W / 2}
+                      y={11}
+                      textAnchor="middle"
+                      fill={b.fg}
+                      fontFamily="ui-monospace, Menlo, monospace"
+                      fontSize="10"
+                      fontWeight="600"
+                    >
+                      {b.label}
+                    </text>
+                  </g>
+                );
+              })}
             </g>
           );
         })}
@@ -468,11 +455,14 @@ function DetailPanel({
     body: string;
     reinforcement_count: number;
   };
+  type TaggedPrompt = WikiTreePrompt & { path: string };
   const durables: Tagged[] = [];
   const drafts: Tagged[] = [];
+  const prompts: TaggedPrompt[] = [];
   for (const n of chain) {
     for (const l of n.durable_learnings) durables.push({ ...l, path: n.path });
     for (const l of n.draft_learnings) drafts.push({ ...l, path: n.path });
+    for (const p of n.graduated_prompts) prompts.push({ ...p, path: n.path });
   }
 
   return (
@@ -511,7 +501,12 @@ function DetailPanel({
               {drafts.length} draft
             </span>
           )}
-          {durables.length === 0 && drafts.length === 0 && (
+          {prompts.length > 0 && (
+            <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-400">
+              {prompts.length} graduated prompt{prompts.length === 1 ? '' : 's'}
+            </span>
+          )}
+          {durables.length === 0 && drafts.length === 0 && prompts.length === 0 && (
             <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
               no learnings yet
             </span>
@@ -611,6 +606,48 @@ function DetailPanel({
                     <span className="font-mono">({l.reinforcement_count}×)</span>{' '}
                     {l.body}
                   </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {prompts.length > 0 && (
+        <div>
+          <div className="mb-3 text-xs uppercase tracking-wider text-amber-400">
+            Graduated prompts
+          </div>
+          <ul className="space-y-3">
+            {prompts.map((p) => {
+              const color = layerColorFor(p.path);
+              return (
+                <li key={`${p.path}-${p.id}`} className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    <span
+                      className="rounded px-1.5 py-0.5 font-mono"
+                      style={{ background: withAlpha(color, 0.22), color }}
+                    >
+                      {p.path || '/'}
+                    </span>
+                    {p.topic && (
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">
+                        {p.topic}
+                      </span>
+                    )}
+                    <span className="font-mono text-muted-foreground">
+                      {p.reuse_count}× reused
+                    </span>
+                  </div>
+                  <pre
+                    className="whitespace-pre-wrap rounded border p-3 text-xs text-foreground"
+                    style={{
+                      background: withAlpha(color, 0.06),
+                      borderColor: withAlpha(color, 0.35),
+                    }}
+                  >
+                    {p.template}
+                  </pre>
                 </li>
               );
             })}
