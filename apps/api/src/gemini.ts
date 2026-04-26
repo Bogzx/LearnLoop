@@ -145,8 +145,14 @@ export async function scorePrompt(args: {
   // 250ms typing debounce.
   //
   // maxOutputTokens is still the hard ceiling that bounds cost in the
-  // worst case. A well-formed response is ~150 tokens; 500 is plenty of
-  // headroom while capping worst-case at ~3x normal.
+  // worst case. The cap covers thoughts + candidate tokens combined; with
+  // dynamic thinking enabled and a team-context bundle in the system
+  // prompt, observed thoughtsTokenCount ranges 300-450, leaving ~50 tokens
+  // for the JSON response when capped at 500 — and the response gets
+  // truncated to "{\n  \"dimensions\": {\n    \"goal_" with finishReason=
+  // MAX_TOKENS. Bumped to 1500 so a well-grounded score has room to think
+  // (~500) AND emit the ~150-token response, while still bounding the
+  // 2026-04-25 runaway-repetition class of bug at 3x of today's normal.
   const systemInstruction = args.team_context
     ? `${args.team_context}\n\n${SCORE_SYSTEM_PROMPT}`
     : SCORE_SYSTEM_PROMPT;
@@ -160,7 +166,7 @@ export async function scorePrompt(args: {
           systemInstruction,
           temperature: 0.2,
           thinkingConfig: { thinkingBudget: -1 },
-          maxOutputTokens: 500,
+          maxOutputTokens: 1500,
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -197,6 +203,10 @@ export async function scorePrompt(args: {
     );
     const text = extractAnswer(resp);
     const parsed = tryParseJson<ScoreModelResult>(text);
+    if (!parsed) {
+      const r = resp as unknown as { candidates?: { finishReason?: string }[] };
+      console.warn(`[gemini] score(flash) parse failed — finishReason=${r.candidates?.[0]?.finishReason}, raw[0..200]=${text.slice(0, 200)}`);
+    }
     // Parse failure → return zeros and let the caller fail-open. NEVER
     // fall through to a second LLM call (the previous fallthrough doubled
     // cost on every bad response, see 2026-04-25 incident).

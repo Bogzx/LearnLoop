@@ -246,6 +246,17 @@ function clampRound(n: number | undefined): number {
   return Math.max(1, Math.min(COACH_MAX_ROUNDS, Math.floor(n)));
 }
 
+// Derive a wiki context_path from a file_path so coach scoring is grounded
+// in the team's subtree without the caller having to know wiki internals.
+// 'src/api/webhooks/handler.ts' → 'src/api/webhooks/' (parent folder).
+// 'src/api/webhooks/'           → 'src/api/webhooks/' (already a folder).
+// 'README.md'                   → ''                  (no parent → no scope).
+// Empty string is treated as "no scope" by renderTeamContext.
+function deriveContextPath(filePath: string): string {
+  const idx = filePath.lastIndexOf('/');
+  return idx < 0 ? '' : filePath.slice(0, idx + 1);
+}
+
 // Pick the lowest-scoring dimension under the threshold (default 7). Stable
 // against tied scores by walking DIMENSIONS in declaration order — same
 // prompt always teaches the same dim.
@@ -335,10 +346,16 @@ app.post('/coach', async (c) => {
     ? body.mode
     : 'score';
 
-  // Same team-context pattern as /score and /improve.
+  // Same team-context pattern as /score and /improve. When the caller does
+  // not pass an explicit context_path, derive one from file_path so the
+  // teach prompts and Gemini's scoring see the team's subtree automatically.
+  // The MCP coach tool only forwards file_path, so this is what makes coach
+  // wiki-aware in practice.
   const teamId = c.get('team_id');
-  const teamContext = body.context_path
-    ? await renderTeamContext(teamId, body.context_path)
+  const contextPath =
+    body.context_path ?? (body.file_path ? deriveContextPath(body.file_path) : '');
+  const teamContext = contextPath
+    ? await renderTeamContext(teamId, contextPath)
     : null;
 
   // 1. Score (always). Failure is fail-open: hand the LLM a "no coaching
