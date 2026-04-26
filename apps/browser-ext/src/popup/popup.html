@@ -2,151 +2,340 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Trailhead</title>
+  <title>LearnLoop</title>
   <style>
-    :root { color-scheme: dark; }
+    :root {
+      color-scheme: dark;
+      --bg: #14161f;
+      --bg-elev: #181b26;
+      --surface-1: rgba(255,255,255,0.04);
+      --surface-2: rgba(255,255,255,0.07);
+      --surface-hover: rgba(255,255,255,0.10);
+      --border: rgba(255,255,255,0.08);
+      --border-strong: rgba(255,255,255,0.14);
+      --text: rgba(255,255,255,0.92);
+      --text-muted: rgba(255,255,255,0.58);
+      --text-faint: rgba(255,255,255,0.40);
+      --accent: #6c8cff;
+      --accent-strong: #4a6bff;
+      --accent-bg: rgba(108,140,255,0.14);
+      --accent-border: rgba(108,140,255,0.42);
+      --good: #74d18c;
+      --good-bg: rgba(116,209,140,0.18);
+      --bad: rgba(255,140,140,0.92);
+      --radius-lg: 12px;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --radius-pill: 999px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.20);
+      --shadow-md: 0 6px 20px rgba(0,0,0,0.28);
+      --ease: cubic-bezier(0.4, 0.0, 0.2, 1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body { background: var(--bg); }
+
     body {
       font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       font-size: 13px;
-      color: #ddd;
-      background: #1a1d29;
+      color: var(--text);
       margin: 0;
-      padding: 14px 16px;
-      min-width: 240px;
+      padding: 0;
+      width: 320px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
-    h1 {
-      font-size: 14px;
-      margin: 0 0 12px;
-      letter-spacing: 0.02em;
-    }
-    .row {
+
+    /* ===== Header ===== */
+    .header {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 6px 0;
+      gap: 12px;
+      padding: 16px 18px 14px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(108,140,255,0.05), transparent);
     }
-    .row label {
-      flex: 1;
-    }
-    button {
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.10);
-      color: inherit;
-      font: inherit;
-      padding: 7px 12px;
-      border-radius: 6px;
-      cursor: pointer;
-      width: 100%;
-      text-align: left;
+    .brand { display: flex; align-items: center; gap: 10px; flex: 1; }
+    .brand-mark {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, #6c8cff 0%, #4a6bff 100%);
+      color: #fff;
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: -0.02em;
+      box-shadow: 0 2px 10px rgba(74,107,255,0.32), inset 0 1px 0 rgba(255,255,255,0.18);
     }
-    button:hover { background: rgba(255,255,255,0.10); }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .soon {
+    .brand-text { display: flex; flex-direction: column; gap: 1px; }
+    .brand-name {
+      font-size: 13.5px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      line-height: 1;
+    }
+    .brand-tag {
       font-size: 10px;
-      opacity: 0.7;
-      padding: 1px 7px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.10);
+      color: var(--text-faint);
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.10em;
+      line-height: 1;
     }
+
+    /* ===== Body ===== */
+    .body {
+      padding: 14px 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .section-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.10em;
+      padding: 0 2px;
+    }
+
+    /* ===== Coaching toggle card ===== */
+    .toggle-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      transition: border-color 200ms var(--ease), background 200ms var(--ease);
+    }
+    .toggle-card:has(.switch.is-on) {
+      border-color: rgba(108,140,255,0.30);
+      background: linear-gradient(135deg, rgba(108,140,255,0.06), var(--surface-1));
+    }
+    .toggle-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .toggle-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .toggle-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text-faint);
+      transition: background 200ms var(--ease), box-shadow 200ms var(--ease);
+    }
+    .toggle-card:has(.switch.is-on) .status-dot {
+      background: var(--good);
+      box-shadow: 0 0 0 4px var(--good-bg);
+    }
+    .toggle-status-text::before { content: 'Paused'; }
+    .toggle-card:has(.switch.is-on) .toggle-status-text::before { content: 'Active'; color: var(--good); }
+
     .switch {
       position: relative;
-      width: 36px;
-      height: 20px;
+      width: 38px;
+      height: 22px;
       background: rgba(255,255,255,0.18);
-      border-radius: 999px;
+      border-radius: var(--radius-pill);
       cursor: pointer;
-      transition: background 0.2s;
+      transition: background 200ms var(--ease);
       flex: 0 0 auto;
+      outline: none;
     }
-    .switch.is-on { background: #4a6bff; }
+    .switch:focus-visible { box-shadow: 0 0 0 3px var(--accent-bg); }
+    .switch.is-on { background: var(--accent-strong); }
     .switch::after {
       content: '';
       position: absolute;
       left: 2px;
       top: 2px;
-      width: 16px;
-      height: 16px;
+      width: 18px;
+      height: 18px;
       border-radius: 50%;
       background: #fff;
-      transition: left 0.2s;
+      transition: left 200ms var(--ease);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.30);
     }
     .switch.is-on::after { left: 18px; }
-    .hint {
-      font-size: 11.5px;
-      opacity: 0.7;
-      margin-top: 8px;
-      padding: 0 2px;
-    }
-    .toast {
-      margin-top: 10px;
-      padding: 6px 8px;
-      background: rgba(74,107,255,0.14);
-      border: 1px solid rgba(74,107,255,0.35);
-      border-radius: 6px;
-      font-size: 11.5px;
-      opacity: 0;
-      transition: opacity 0.2s;
-    }
-    .toast.is-shown { opacity: 1; }
 
+    /* ===== Picker buttons ===== */
+    .row { display: contents; }   /* legacy class kept; layout via flex parent */
+
+    button {
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .picker {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* The two main pickers (team / context) */
+    #select-team-btn,
+    #add-context-btn {
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      width: 100%;
+      text-align: left;
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      transition: background 150ms var(--ease), border-color 150ms var(--ease), transform 80ms var(--ease);
+    }
+    #select-team-btn:hover,
+    #add-context-btn:hover {
+      background: var(--surface-2);
+      border-color: var(--border-strong);
+    }
+    #select-team-btn:active,
+    #add-context-btn:active { transform: translateY(1px); }
+    #select-team-btn:focus-visible,
+    #add-context-btn:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-bg);
+    }
+    #select-team-btn[aria-expanded="true"],
+    #add-context-btn[aria-expanded="true"] {
+      border-color: var(--accent-border);
+      background: var(--accent-bg);
+    }
+
+    .picker-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      color: var(--text-muted);
+      transition: color 150ms var(--ease);
+    }
+    .picker-icon svg { width: 16px; height: 16px; display: block; }
+    #select-team-btn:hover .picker-icon,
+    #add-context-btn:hover .picker-icon,
+    #select-team-btn[aria-expanded="true"] .picker-icon,
+    #add-context-btn[aria-expanded="true"] .picker-icon { color: var(--accent); }
+
+    .picker-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .picker-label {
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--text);
+      line-height: 1.1;
+    }
+    .picker-value {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100%;
+      line-height: 1.2;
+    }
+    .picker-value:empty::before {
+      content: 'None selected';
+      color: var(--text-faint);
+      font-style: italic;
+    }
+    /* Legacy class still emitted by popup.ts on the value span */
     .current-team {
-      font-size: 11px;
-      opacity: 0.7;
-      margin-left: auto;
-      max-width: 130px;
+      max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    .picker-chevron {
+      color: var(--text-faint);
+      font-size: 10px;
+      transition: transform 200ms var(--ease), color 150ms var(--ease);
+      line-height: 1;
+    }
+    #select-team-btn[aria-expanded="true"] .picker-chevron,
+    #add-context-btn[aria-expanded="true"] .picker-chevron {
+      transform: rotate(180deg);
+      color: var(--accent);
+    }
+
+    /* ===== Dropdowns (team list + wiki tree) ===== */
     .team-dropdown {
-      margin-top: 6px;
-      max-height: 220px;
+      max-height: 240px;
       overflow-y: auto;
-      background: rgba(0,0,0,0.18);
-      border: 1px solid rgba(255,255,255,0.10);
-      border-radius: 6px;
+      background: rgba(0,0,0,0.22);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
       padding: 4px;
+      animation: dropdown-in 180ms var(--ease);
     }
     .team-dropdown[hidden] { display: none; }
-    .team-dropdown ul {
-      list-style: none;
-      margin: 0;
-      padding: 0;
+    @keyframes dropdown-in {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
     }
+
+    .team-dropdown ul { list-style: none; margin: 0; padding: 0; }
     .team-dropdown li {
-      padding: 6px 8px;
-      border-radius: 4px;
+      padding: 7px 9px;
+      border-radius: var(--radius-sm);
       cursor: pointer;
       font-size: 12px;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
+      transition: background 120ms var(--ease);
     }
     .team-dropdown li:hover { background: rgba(255,255,255,0.08); }
-    .team-dropdown li.is-current { background: rgba(74,107,255,0.18); }
-    .team-dropdown li .check { color: #4a6bff; font-weight: 700; }
-    .team-dropdown .status {
-      font-size: 11.5px;
-      padding: 6px 8px;
-      opacity: 0.7;
+    .team-dropdown li.is-current {
+      background: var(--accent-bg);
+      color: var(--text);
     }
-    .team-dropdown .status.is-error { color: rgba(255,140,140,0.92); opacity: 1; }
-
-    .tree-li {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .tree-icon {
-      font-size: 11px;
-      opacity: 0.85;
+    .team-dropdown li .check {
+      color: var(--accent);
+      font-weight: 700;
       flex: 0 0 auto;
     }
+    .team-dropdown .status {
+      font-size: 11.5px;
+      padding: 12px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+    .team-dropdown .status.is-error { color: var(--bad); }
+
+    /* Wiki tree rows (popup.ts adds these classes inline) */
+    .tree-li { display: flex; align-items: center; gap: 6px; }
+    .tree-icon { font-size: 11px; opacity: 0.85; flex: 0 0 auto; }
     .tree-label {
       flex: 1;
       overflow: hidden;
@@ -155,48 +344,155 @@
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
       font-size: 11.5px;
     }
-    .tree-li.is-folder .tree-label { font-weight: 600; }
+    .tree-li.is-folder .tree-label { font-weight: 600; color: var(--text); }
+
+    /* "Active context" banner row at top of context dropdown */
     .clear-ctx-btn {
       width: auto;
-      padding: 4px 8px;
-      font-size: 11px;
+      padding: 3px 9px;
+      font-size: 10.5px;
       margin-left: 6px;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.10);
+      background: var(--surface-2);
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      color: var(--text);
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 120ms var(--ease), border-color 120ms var(--ease);
+    }
+    .clear-ctx-btn:hover {
+      background: rgba(255,255,255,0.14);
+      border-color: rgba(255,255,255,0.22);
+    }
+
+    /* Scrollbar polish */
+    .team-dropdown::-webkit-scrollbar { width: 6px; }
+    .team-dropdown::-webkit-scrollbar-track { background: transparent; }
+    .team-dropdown::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.12);
+      border-radius: 3px;
+    }
+    .team-dropdown::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.20); }
+
+    /* ===== Footer hint ===== */
+    .hint {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      padding: 10px 12px;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      line-height: 1.45;
+    }
+
+    /* ===== Toast ===== */
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 12px;
+      transform: translateX(-50%) translateY(8px);
+      padding: 7px 14px;
+      background: rgba(20,22,32,0.96);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-pill);
+      font-size: 11.5px;
+      color: #cfd8ff;
+      box-shadow: var(--shadow-md);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 200ms var(--ease), transform 200ms var(--ease);
+      max-width: calc(100% - 24px);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      z-index: 100;
+    }
+    .toast.is-shown {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 1ms !important;
+        transition-duration: 1ms !important;
+      }
     }
   </style>
 </head>
 <body>
-  <h1>Trailhead</h1>
+  <header class="header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">L</span>
+      <div class="brand-text">
+        <div class="brand-name">LearnLoop</div>
+        <div class="brand-tag">Prompt coach</div>
+      </div>
+    </div>
+  </header>
 
-  <div class="row">
-    <label for="coaching-switch">Coaching</label>
-    <div id="coaching-switch" class="switch" role="switch" aria-checked="true" tabindex="0"></div>
-  </div>
+  <main class="body">
+    <!-- Coaching toggle -->
+    <div class="toggle-card">
+      <div class="toggle-info">
+        <div class="toggle-title">Coaching</div>
+        <span class="toggle-status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span class="toggle-status-text"></span>
+        </span>
+      </div>
+      <div id="coaching-switch" class="switch" role="switch" aria-checked="true" tabindex="0" aria-label="Toggle coaching"></div>
+    </div>
 
-  <div class="row">
-    <button id="add-context-btn" type="button" aria-expanded="false" aria-controls="context-dropdown">
-      <span>Select context</span>
-      <span id="current-context-name" class="current-team"></span>
-    </button>
-  </div>
-  <div id="context-dropdown" class="team-dropdown" hidden>
-    <div id="context-status" class="status">Loading…</div>
-    <ul id="context-tree" hidden></ul>
-  </div>
+    <!-- Workspace pickers -->
+    <section class="section">
+      <div class="section-label">Workspace</div>
+      <div class="picker">
+        <button id="select-team-btn" type="button" aria-expanded="false" aria-controls="team-dropdown">
+          <span class="picker-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+          </span>
+          <span class="picker-text">
+            <span class="picker-label">Team</span>
+            <span id="current-team-name" class="picker-value current-team"></span>
+          </span>
+          <span class="picker-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div id="team-dropdown" class="team-dropdown" hidden>
+          <div id="team-status" class="status">Loading…</div>
+          <ul id="team-list" hidden></ul>
+        </div>
 
-  <div class="row">
-    <button id="select-team-btn" type="button" aria-expanded="false" aria-controls="team-dropdown">
-      <span>Select team</span>
-      <span id="current-team-name" class="current-team"></span>
-    </button>
-  </div>
-  <div id="team-dropdown" class="team-dropdown" hidden>
-    <div id="team-status" class="status">Loading…</div>
-    <ul id="team-list" hidden></ul>
-  </div>
+        <button id="add-context-btn" type="button" aria-expanded="false" aria-controls="context-dropdown">
+          <span class="picker-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+          </span>
+          <span class="picker-text">
+            <span class="picker-label">Context</span>
+            <span id="current-context-name" class="picker-value current-team"></span>
+          </span>
+          <span class="picker-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div id="context-dropdown" class="team-dropdown" hidden>
+          <div id="context-status" class="status">Loading…</div>
+          <ul id="context-tree" hidden></ul>
+        </div>
+      </div>
+    </section>
 
-  <div class="hint" id="coaching-hint">When off, the extension stops intercepting sends.</div>
+    <div class="hint" id="coaching-hint">When off, the extension stops intercepting sends.</div>
+  </main>
+
   <div class="toast" id="toast"></div>
 
   <script src="popup.js"></script>

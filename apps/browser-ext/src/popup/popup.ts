@@ -12,7 +12,7 @@
 // change.
 
 import { API_URL } from '../config.ts';
-import { TEAM_TOKEN_KEY } from '../team-state.ts';
+import { TEAM_TOKEN_KEY, TEAM_NAME_KEY } from '../team-state.ts';
 import { CONTEXT_PATH_KEY } from '../context-state.ts';
 import { TEAM_TOKEN as DEFAULT_TEAM_TOKEN } from '../config.ts';
 import type {
@@ -49,8 +49,8 @@ function render(enabled: boolean): void {
   switchEl.classList.toggle('is-on', enabled);
   switchEl.setAttribute('aria-checked', String(enabled));
   hintEl.textContent = enabled
-    ? 'When off, the extension stops intercepting sends.'
-    : 'Coaching is off — Claude.ai sends behave as if the extension weren’t installed.';
+    ? 'Weak prompts open a quick coaching panel before they send.'
+    : 'Prompts send straight to Claude with no coaching.';
 }
 
 async function getStoredToken(): Promise<string> {
@@ -80,6 +80,12 @@ async function setStoredToken(token: string): Promise<void> {
   });
 }
 
+async function setStoredTeamName(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.set({ [TEAM_NAME_KEY]: name }, () => resolve());
+  });
+}
+
 async function getStoredContextPath(): Promise<string | null> {
   return new Promise((resolve) => {
     (chrome as any).storage.local.get(CONTEXT_PATH_KEY, (v: Record<string, unknown>) => {
@@ -104,6 +110,9 @@ async function clearStoredContextPath(): Promise<void> {
 async function refreshCurrentTeamName(): Promise<void> {
   const token = await getStoredToken();
   const team = cachedTeams?.find((t) => t.token === token);
+  // Backfill the cached display name whenever the popup discovers it via
+  // /teams — handles users who picked a team before this feature existed.
+  if (team) await setStoredTeamName(team.name);
   currentTeamNameEl.textContent = team
     ? team.name
     : token === DEFAULT_TEAM_TOKEN ? 'Acme (default)' : token.slice(0, 16) + '…';
@@ -111,7 +120,7 @@ async function refreshCurrentTeamName(): Promise<void> {
 
 async function refreshCurrentContextName(): Promise<void> {
   const path = await getStoredContextPath();
-  currentContextNameEl.textContent = path ?? '';
+  currentContextNameEl.textContent = displayPath(path);
 }
 
 function renderTeamList(teams: TeamSummary[], currentToken: string): void {
@@ -130,6 +139,9 @@ function renderTeamList(teams: TeamSummary[], currentToken: string): void {
     li.appendChild(name);
     li.addEventListener('click', async () => {
       await setStoredToken(team.token);
+      // Persist the team's display name alongside the token so the
+      // in-page pill can show "Acme Fintech · Root" instead of just "Root".
+      await setStoredTeamName(team.name);
       // Picking a different team invalidates the wiki tree cache and
       // any active context (the path may not exist for the new team).
       if (cachedTreeForToken !== team.token) {
@@ -210,6 +222,36 @@ function lastSegment(path: string): string {
   return i === -1 ? stripped : stripped.slice(i + 1);
 }
 
+// Display name for a tree node. Root nodes (path '/' or '' or anything that
+// reduces to an empty last segment) render as "Root" instead of a blank
+// label — the previous behaviour left the row visually empty next to the
+// folder icon.
+function displayName(path: string): string {
+  const seg = lastSegment(path);
+  if (seg) return seg;
+  return 'Root';
+}
+
+// Translate a wiki-tree node path into the value we persist to chrome.storage.
+// The root node has path = '' which clashes with the truthy-check used by
+// getStoredContextPath / context-state.ts to mean "no context selected".
+// We persist root as '/' so those callers see a non-empty string and treat
+// it as an active context. context-bundle.ts and team-context.ts translate
+// '/' back to '' when filtering the subtree, so the filter still matches
+// every node under root.
+const ROOT_SENTINEL = '/';
+function pathForStorage(path: string): string {
+  return path === '' ? ROOT_SENTINEL : path;
+}
+// Render either the bare path or the friendly "Root" label for the root
+// sentinel — used in the popup's "Active: …" row, the toast, and the
+// header label next to the Select-context button.
+function displayPath(path: string | null): string {
+  if (!path) return '';
+  if (path === ROOT_SENTINEL) return 'Root';
+  return path;
+}
+
 function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): void {
   contextTreeEl.replaceChildren();
 
@@ -222,7 +264,7 @@ function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): v
     const lbl = document.createElement('span');
     lbl.style.opacity = '0.7';
     lbl.style.fontSize = '11px';
-    lbl.textContent = `Active: ${currentPath}`;
+    lbl.textContent = `Active: ${displayPath(currentPath)}`;
     const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
     clearBtn.className = 'clear-ctx-btn';
@@ -250,7 +292,9 @@ function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): v
     const depth = pathDepth(node.path);
     li.style.paddingLeft = `${6 + depth * 12}px`;
     li.title = node.path;
-    if (node.path === currentPath) {
+    // Compare on the STORED form so the root node ('') matches the
+    // sentinel value ('/') we persisted earlier.
+    if (pathForStorage(node.path) === currentPath) {
       li.classList.add('is-current');
       const check = document.createElement('span');
       check.className = 'check';
@@ -263,14 +307,15 @@ function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): v
     li.appendChild(icon);
     const label = document.createElement('span');
     label.className = 'tree-label';
-    label.textContent = lastSegment(node.path) || node.path;
+    label.textContent = displayName(node.path);
     li.appendChild(label);
     li.addEventListener('click', async () => {
-      await setStoredContextPath(node.path);
-      cachedTree && renderContextTree(cachedTree, node.path);
+      const stored = pathForStorage(node.path);
+      await setStoredContextPath(stored);
+      cachedTree && renderContextTree(cachedTree, stored);
       await refreshCurrentContextName();
       closeContextDropdown();
-      showToast(`Context set: ${node.path}`);
+      showToast(`Context set: ${displayName(node.path)}`);
     });
     contextTreeEl.appendChild(li);
   }

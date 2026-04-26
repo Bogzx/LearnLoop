@@ -1,41 +1,79 @@
-// Improve-chat widget — Gemini-driven multi-turn prompt coach.
-// Spec: docs/superpowers/specs/2026-04-26-improve-widget-design.md
+// Improve-chat widget — drives the multi-round educational score arc
+// against the API's POST /coach endpoint.
+//
+// Why /coach (not /improve): /coach uses the project's polished MCP-server
+// tactic — curated DIMENSION_TEACH blocks per round (single lowest dim
+// targeted at a time), server-side no-progress detection, success and skip
+// reveals showing the score arc. The user *writes* the better prompt
+// themselves by appending to it across rounds; this is the educational
+// path the rest of Trailhead uses. /improve was a one-off LLM rewrite
+// that bypassed that learning loop.
 //
 // Card layout (single, persistent close button):
 //
 //   ┌─────────────────────────────────────────┐
-//   │ <stage header>                       [×] │  ← X always cancels
+//   │ <stage header>                       [×] │
 //   ├─────────────────────────────────────────┤
-//   │ <choice | thread+input | preview | err> │  ← stage-specific body
+//   │ <choice | thread+input | reveal+prompt> │
 //   └─────────────────────────────────────────┘
 //
 // Stages:
-//   1. choice  — opening screen with a single "Start coaching" button.
-//                (The wiki-context option lives in the extension popup,
-//                not here.)
-//   2. asking  — chat thread + input row, Send only.
-//   3. preview — polished prompt + Use this. Use this writes the prompt
-//                into Claude's composer and marks it approved so the
-//                user's next Enter goes straight to Claude.
-//   4. error   — coach unreachable; "Use template instead" fallback.
+//   1. choice     — "Start coaching" intro screen.
+//   2. coaching   — chat thread of teach-blocks + user replies, input row,
+//                   actions row with disabled "Use this prompt" affordance
+//                   plus "I'm done" bail-out.
+//   3. done       — success or skip reveal text in the rationale block,
+//                   the user's evolved prompt in the preview body, and an
+//                   enabled "Use this prompt" + "I'm done" action row.
+//   4. error      — coach unreachable; "I'm done" + "Use template instead".
 
-import type { ImproveResponse, ImproveTurn, MissingHints } from '@trailhead/shared';
-import { improve as apiImprove } from '../api.ts';
+import type {
+  CoachNextRoundInputs,
+  CoachResponse,
+  MissingHints,
+} from '@trailhead/shared';
+import { coach as apiCoach } from '../api.ts';
 import { USER_ID } from '../config.ts';
 import { writePrompt, type Selectors } from '../selectors.ts';
 import { resetCard } from '../score-card.ts';
 import { augmentAndSend, markApproved } from '../send-intercept.ts';
 
-export const IMPROVE_TURN_CAP = 5;
+interface ChatTurn {
+  role: 'user' | 'coach';
+  text: string;
+}
 
-type ImproveState =
+type CoachState =
   | { stage: 'choice' }
-  | { stage: 'asking'; history: ImproveTurn[]; pending: false }
-  | { stage: 'asking'; history: ImproveTurn[]; pending: true; command: 'next' | 'finalize' }
-  | { stage: 'preview'; history: ImproveTurn[]; polished: string; rationale?: string }
-  | { stage: 'error'; history: ImproveTurn[]; message: string }
+  | {
+      stage: 'coaching';
+      bubbles: ChatTurn[];
+      currentPrompt: string;
+      next: CoachNextRoundInputs | null;
+      pending: false;
+    }
+  | {
+      stage: 'coaching';
+      bubbles: ChatTurn[];
+      currentPrompt: string;
+      next: CoachNextRoundInputs | null;
+      pending: true;
+    }
+  | {
+      stage: 'done';
+      bubbles: ChatTurn[];
+      currentPrompt: string;
+      revealText: string;
+      mode: 'score' | 'skip_reveal' | 'augment';
+    }
+  | {
+      stage: 'error';
+      bubbles: ChatTurn[];
+      currentPrompt: string;
+      message: string;
+    }
   | { stage: 'cancelled' }
-  | { stage: 'done' };
+  | { stage: 'finished' };
 
 interface ChatRefs {
   root: HTMLDivElement;
@@ -51,31 +89,31 @@ interface ChatRefs {
   inputRow: HTMLDivElement;
   input: HTMLTextAreaElement;
   sendBtn: HTMLButtonElement;
-  // Preview body (the polished prompt — preview stage only)
+  // Done — reveal text shown above the user's evolved prompt
+  previewRationale: HTMLDivElement;
   previewBody: HTMLPreElement;
-  // Universal "Use AI prompt" row: visible in asking + preview, disabled
-  // until a polished prompt arrives.
+  // Universal action wrap. useThisRow holds primary "Use this prompt" (enabled
+  // only in done). previewActionsRow holds secondary "I'm done" (enabled
+  // throughout coaching + done).
   useThisRow: HTMLDivElement;
   useThisBtn: HTMLButtonElement;
-  // I'm done lives in its own row, visible in preview only.
   previewActionsRow: HTMLDivElement;
   previewImDoneBtn: HTMLButtonElement;
   // Error
   errorBody: HTMLDivElement;
   errorMsg: HTMLDivElement;
+  errImDoneBtn: HTMLButtonElement;
   useTemplateBtn: HTMLButtonElement;
-}
-
-function userReplyCount(history: ImproveTurn[]): number {
-  return history.filter((t) => t.role === 'user').length;
 }
 
 export function openImproveChat(
   sel: Selectors,
   originalPrompt: string,
-  missing: MissingHints,
+  // missing is no longer used — /coach figures out the lowest dim itself.
+  // Kept in the signature so score-card.ts callers don't break.
+  _missing: MissingHints,
 ): void {
-  console.info('[trailhead] openImproveChat: originalPrompt=', originalPrompt.slice(0, 60), 'missing=', Object.keys(missing));
+  console.info('[trailhead] openImproveChat: originalPrompt=', originalPrompt.slice(0, 60));
   const cardEl = document.getElementById('trailhead-score-card') as HTMLDivElement | null;
   if (!cardEl) {
     console.warn('[trailhead] openImproveChat: no #trailhead-score-card in DOM');
@@ -83,69 +121,103 @@ export function openImproveChat(
   }
 
   const refs = buildChatDom(cardEl);
-  let state: ImproveState = { stage: 'choice' };
+  let state: CoachState = { stage: 'choice' };
 
-  const setState = (next: ImproveState): void => {
+  const setState = (next: CoachState): void => {
     state = next;
     render(refs, state);
-    if (state.stage === 'asking' && state.pending) {
-      void runImproveCall(state.history, state.command);
+    if (state.stage === 'coaching' && state.pending) {
+      void runCoachCall(state.currentPrompt, state.next);
     }
-    if (state.stage === 'cancelled' || state.stage === 'done') {
+    if (state.stage === 'cancelled' || state.stage === 'finished') {
       teardown(refs);
     }
   };
 
-  const runImproveCall = async (history: ImproveTurn[], command: 'next' | 'finalize'): Promise<void> => {
-    const res = await apiImprove({
-      original_prompt: originalPrompt,
-      missing,
-      history,
-      command,
-      user_id: USER_ID,
-    });
-    handleApiResponse(res);
+  const runCoachCall = async (
+    prompt: string,
+    nextInputs: CoachNextRoundInputs | null,
+  ): Promise<void> => {
+    const body = nextInputs
+      ? {
+          prompt,
+          user_id: USER_ID,
+          mode: 'score' as const,
+          original_prompt: nextInputs.original_prompt,
+          original_dimensions: nextInputs.original_dimensions,
+          previous_dimensions: nextInputs.previous_dimensions,
+          round: nextInputs.round,
+        }
+      : { prompt, user_id: USER_ID, mode: 'score' as const };
+    const res = await apiCoach(body);
+    handleCoachResponse(res);
   };
 
-  const handleApiResponse = (res: ImproveResponse | null): void => {
-    if (state.stage !== 'asking' || !state.pending) return;
+  const handleCoachResponse = (res: CoachResponse | null): void => {
+    if (state.stage !== 'coaching' || !state.pending) return;
     if (!res) {
-      setState({ stage: 'error', history: state.history, message: 'Couldn’t reach the coach.' });
+      setState({
+        stage: 'error',
+        bubbles: state.bubbles,
+        currentPrompt: state.currentPrompt,
+        message: 'Couldn’t reach the coach.',
+      });
       return;
     }
-    if (res.kind === 'question') {
-      const history = [...state.history, { role: 'assistant' as const, text: res.text }];
-      setState({ stage: 'asking', history, pending: false });
+    // proceed=false → another teaching round. Append the coach's text as an
+    // assistant bubble and wait for the user's reply.
+    if (!res.proceed) {
+      const bubbles: ChatTurn[] = res.text.trim()
+        ? [...state.bubbles, { role: 'coach', text: res.text.trim() }]
+        : state.bubbles;
+      setState({
+        stage: 'coaching',
+        bubbles,
+        currentPrompt: state.currentPrompt,
+        next: res.next_round_inputs ?? null,
+        pending: false,
+      });
       return;
     }
+    // proceed=true → reached an exit (success, skip_reveal, or already-strong
+    // first-round). Move to the done state with the reveal text and the
+    // user's evolved prompt as the result.
     setState({
-      stage: 'preview',
-      history: state.history,
-      polished: res.polished,
-      rationale: res.rationale,
+      stage: 'done',
+      bubbles: state.bubbles,
+      currentPrompt: state.currentPrompt,
+      revealText: res.text.trim(),
+      mode: res.mode,
     });
   };
 
   const sendUserReply = (): void => {
-    if (state.stage !== 'asking' || state.pending) return;
+    if (state.stage !== 'coaching' || state.pending) return;
     const text = refs.input.value.trim();
     if (!text) return;
-    const history = [...state.history, { role: 'user' as const, text }];
     refs.input.value = '';
-    const replies = userReplyCount(history);
-    const command: 'next' | 'finalize' = replies >= IMPROVE_TURN_CAP ? 'finalize' : 'next';
-    setState({ stage: 'asking', history, pending: true, command });
+    // Concatenate the user's reply onto their prompt (the MCP coaching
+    // pattern — the user's own writing becomes the final prompt). A single
+    // space separator keeps the prompt readable and matches the directive's
+    // "user's reply concatenated to the previous prompt" instruction.
+    const newPrompt = `${state.currentPrompt} ${text}`;
+    setState({
+      stage: 'coaching',
+      bubbles: [...state.bubbles, { role: 'user', text }],
+      currentPrompt: newPrompt,
+      next: state.next,
+      pending: true,
+    });
   };
 
-  // "I'm done" — bail out of the widget and use the user's ORIGINAL
-  // prompt as it stands in the composer. We mark it as approved so the
-  // next Enter sends straight to Claude without re-opening the score
-  // card. Used from the chat (asking) and preview stages.
+  // "I'm done" — bail to the user's ORIGINAL prompt as it stands in the
+  // composer. We mark it as approved so the next Enter sends straight to
+  // Claude without re-opening the score card.
   const onImDone = (): void => {
-    console.info('[trailhead] improve: I\'m done clicked, originalPrompt=', originalPrompt.slice(0, 60));
+    console.info('[trailhead] coach: I’m done clicked, originalPrompt=', originalPrompt.slice(0, 60));
     markApproved(originalPrompt);
     sel.textarea.focus();
-    setState({ stage: 'done' });
+    setState({ stage: 'finished' });
   };
 
   // ----- Header X (single cancel for the whole widget)
@@ -154,7 +226,13 @@ export function openImproveChat(
   // ----- Choice screen
   refs.startBtn.addEventListener('click', () => {
     if (state.stage !== 'choice') return;
-    setState({ stage: 'asking', history: [], pending: true, command: 'next' });
+    setState({
+      stage: 'coaching',
+      bubbles: [],
+      currentPrompt: originalPrompt,
+      next: null,
+      pending: true,
+    });
     requestAnimationFrame(() => refs.input.focus());
   });
 
@@ -171,26 +249,26 @@ export function openImproveChat(
     }
   });
 
-  // ----- Preview
+  // ----- Done — "Use this prompt" writes the user's evolved prompt into
+  // the composer and pre-approves it so the next Enter sends through.
   refs.useThisBtn.addEventListener('click', () => {
-    if (state.stage !== 'preview') return;
-    const polished = state.polished;
+    if (state.stage !== 'done') return;
+    const finalPrompt = state.currentPrompt;
     try {
-      writePrompt(sel.textarea, polished);
+      writePrompt(sel.textarea, finalPrompt);
       sel.textarea.focus();
-      // Tell send-intercept this exact text is pre-approved so the user's
-      // next Enter sends straight to Claude (no score-card, no widget).
-      markApproved(polished);
+      markApproved(finalPrompt);
     } catch (err) {
       console.warn('[trailhead] writePrompt failed', err);
     }
-    setState({ stage: 'done' });
+    setState({ stage: 'finished' });
   });
   refs.previewImDoneBtn.addEventListener('click', onImDone);
 
   // ----- Error
+  refs.errImDoneBtn.addEventListener('click', onImDone);
   refs.useTemplateBtn.addEventListener('click', () => {
-    setState({ stage: 'done' });
+    setState({ stage: 'finished' });
     void augmentAndSend();
   });
 
@@ -215,13 +293,13 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   closeBtn.textContent = '×';
   header.append(headerTitle, closeBtn);
 
-  // Choice screen — single Start button now that wiki context lives in
-  // the popup.
+  // Choice screen
   const choice = document.createElement('div');
   choice.className = 'trailhead-improve-choice';
   const choiceIntro = document.createElement('div');
   choiceIntro.className = 'trailhead-improve-choice-intro';
-  choiceIntro.textContent = 'Want me to coach this prompt with a few quick questions?';
+  choiceIntro.textContent =
+    'Walk through a few targeted questions. Your replies build a stronger version of your own prompt — and you’ll learn the rubric the coach scores against.';
   const choiceActions = document.createElement('div');
   choiceActions.className = 'trailhead-improve-choice-actions';
   const startBtn = document.createElement('button');
@@ -246,35 +324,42 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   sendBtn.textContent = 'Send';
   inputRow.append(input, sendBtn);
 
-  // Preview body (the polished prompt) — preview stage only.
+  // Reveal block — the success/skip reveal text rendered above the final
+  // prompt. Shares the same accent-tinted style as the old rationale slot.
+  const previewRationale = document.createElement('div');
+  previewRationale.className = 'trailhead-improve-preview-rationale';
+  previewRationale.hidden = true;
+
+  // Final prompt (user's own evolved prompt, not an LLM rewrite). Shown in
+  // the done stage so the user can see what they’ll send if they accept.
   const previewBody = document.createElement('pre');
   previewBody.className = 'trailhead-improve-preview-body';
   previewBody.hidden = true;
 
-  // Universal "Use AI prompt" row — visible across asking + preview so
-  // the action is always discoverable. Stays disabled until polished
-  // arrives, then lights up.
+  // Action rows. useThisRow = primary "Use this prompt" (enabled only in
+  // done). previewActionsRow = secondary "I'm done" (enabled in coaching +
+  // done so the user can bail to the original prompt at any moment).
   const useThisRow = document.createElement('div');
   useThisRow.className = 'trailhead-improve-preview-actions';
   const useThisBtn = document.createElement('button');
   useThisBtn.type = 'button';
   useThisBtn.className = 'is-primary';
   useThisBtn.disabled = true;
-  useThisBtn.title = 'Available once the coach has polished your prompt.';
-  useThisBtn.textContent = 'Use AI prompt';
+  useThisBtn.title = 'Available once coaching wraps up.';
+  useThisBtn.textContent = 'Use this prompt';
   useThisRow.append(useThisBtn);
 
-  // Preview-only actions row (currently just I'm done).
   const previewActionsRow = document.createElement('div');
   previewActionsRow.className = 'trailhead-improve-preview-actions';
   previewActionsRow.hidden = true;
   const previewImDoneBtn = document.createElement('button');
   previewImDoneBtn.type = 'button';
-  previewImDoneBtn.title = 'Discard the polished version — use the prompt I originally typed.';
-  previewImDoneBtn.textContent = 'I’m done';
+  previewImDoneBtn.title =
+    'Discard coaching changes — use my original prompt as I typed it.';
+  previewImDoneBtn.textContent = 'Keep original';
   previewActionsRow.append(previewImDoneBtn);
 
-  // Error
+  // Error stage actions: bail to original or accept the legacy template.
   const errorBody = document.createElement('div');
   errorBody.className = 'trailhead-improve-error';
   errorBody.hidden = true;
@@ -282,21 +367,32 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   errorMsg.className = 'trailhead-improve-error-msg';
   const errActions = document.createElement('div');
   errActions.className = 'trailhead-improve-error-actions';
+  const errImDoneBtn = document.createElement('button');
+  errImDoneBtn.type = 'button';
+  errImDoneBtn.title = 'Discard the coaching attempt and use my original prompt as-is.';
+  errImDoneBtn.textContent = 'Keep original';
   const useTemplateBtn = document.createElement('button');
   useTemplateBtn.type = 'button';
   useTemplateBtn.className = 'is-primary';
   useTemplateBtn.textContent = 'Use template instead';
-  errActions.append(useTemplateBtn);
+  errActions.append(errImDoneBtn, useTemplateBtn);
   errorBody.append(errorMsg, errActions);
+
+  // Right-aligned wrapper for the two action rows. In coaching: only
+  // "I'm done" is visible. In done: "I'm done" + enabled "Use this prompt"
+  // sit side-by-side on a single horizontal line, primary on the right.
+  const actionsWrap = document.createElement('div');
+  actionsWrap.className = 'trailhead-improve-actions-wrap';
+  actionsWrap.append(previewActionsRow, useThisRow);
 
   card.append(
     header,
     choice,
     thread,
     inputRow,
+    previewRationale,
     previewBody,
-    useThisRow,
-    previewActionsRow,
+    actionsWrap,
     errorBody,
   );
 
@@ -304,69 +400,92 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
     root: card, header, headerTitle, closeBtn,
     choice, startBtn,
     thread, inputRow, input, sendBtn,
-    previewBody, useThisRow, useThisBtn, previewActionsRow, previewImDoneBtn,
-    errorBody, errorMsg, useTemplateBtn,
+    previewRationale, previewBody, useThisRow, useThisBtn, previewActionsRow, previewImDoneBtn,
+    errorBody, errorMsg, errImDoneBtn, useTemplateBtn,
   };
 }
 
-function render(refs: ChatRefs, state: ImproveState): void {
+function render(refs: ChatRefs, state: CoachState): void {
+  const isCoaching = state.stage === 'coaching';
+  const isDone = state.stage === 'done';
+
   refs.choice.hidden = state.stage !== 'choice';
-  refs.thread.hidden = state.stage !== 'asking';
-  refs.inputRow.hidden = state.stage !== 'asking';
-  refs.previewBody.hidden = state.stage !== 'preview';
-  // Use AI prompt row is visible across asking + preview.
-  refs.useThisRow.hidden = state.stage !== 'asking' && state.stage !== 'preview';
-  // I'm done row stays preview-only.
-  refs.previewActionsRow.hidden = state.stage !== 'preview';
+  refs.thread.hidden = !isCoaching && !isDone;
+  refs.inputRow.hidden = !isCoaching;
+  refs.previewRationale.hidden = true;
+  refs.previewBody.hidden = !isDone;
+  refs.useThisRow.hidden = !isCoaching && !isDone;
+  refs.previewActionsRow.hidden = !isCoaching && !isDone;
   refs.errorBody.hidden = state.stage !== 'error';
 
+  // Header reflects the current stage so the user always knows where they
+  // are in the flow.
   if (state.stage === 'choice') {
     refs.headerTitle.textContent = 'Improve your prompt';
-  } else if (state.stage === 'asking') {
-    refs.headerTitle.textContent = 'Coaching…';
-  } else if (state.stage === 'preview') {
-    refs.headerTitle.textContent = 'Polished prompt ready';
+  } else if (state.stage === 'coaching') {
+    refs.headerTitle.textContent = state.pending ? 'Coaching…' : 'Your turn';
+  } else if (state.stage === 'done') {
+    refs.headerTitle.textContent =
+      state.mode === 'skip_reveal' ? 'Coaching paused' : 'Coaching complete';
   } else if (state.stage === 'error') {
     refs.headerTitle.textContent = 'Coach unavailable';
   }
 
-  if (state.stage === 'asking') {
+  // Render chat bubbles in coaching + done so the conversation stays visible
+  // as a learning record even after the user reaches the reveal.
+  if (isCoaching || isDone) {
     refs.thread.replaceChildren();
-    for (const t of state.history) {
+    const bubbles = state.stage === 'coaching' || state.stage === 'done' ? state.bubbles : [];
+    for (const t of bubbles) {
       const bubble = document.createElement('div');
-      bubble.className = `trailhead-bubble trailhead-bubble--${t.role}`;
-      bubble.textContent = (t.role === 'assistant' ? '🤖 ' : '👤 ') + t.text;
+      const role = t.role === 'coach' ? 'assistant' : 'user';
+      bubble.className = `trailhead-bubble trailhead-bubble--${role}`;
+      bubble.textContent = (t.role === 'coach' ? '🧑‍🏫 ' : '👤 ') + t.text;
       refs.thread.appendChild(bubble);
     }
-    if (state.pending) {
+    if (isCoaching && state.pending) {
       const bubble = document.createElement('div');
       bubble.className = 'trailhead-bubble trailhead-bubble--assistant trailhead-bubble--pending';
       bubble.textContent = '…';
       refs.thread.appendChild(bubble);
     }
     refs.thread.scrollTop = refs.thread.scrollHeight;
+  }
 
+  if (isCoaching) {
     const pending = state.pending;
     refs.input.disabled = pending;
     refs.sendBtn.disabled = pending;
-    // "I'm done" stays enabled even while a request is in flight — the
-    // user is allowed to bail at any moment. Pending API responses are
-    // ignored once we transition to 'done'.
     refs.input.placeholder = pending ? 'Coach is thinking…' : 'Type your answer…';
+    // Use this prompt is disabled until coaching reaches a reveal.
+    refs.useThisBtn.disabled = true;
+    refs.useThisBtn.title = 'Available once coaching wraps up.';
   }
 
-  if (state.stage === 'preview') {
-    refs.previewBody.textContent = state.polished;
-    // Enable Use AI prompt now that we have a polished prompt to use.
-    // Defensive empty-check stays in case the API ever returns "".
-    refs.useThisBtn.disabled = !state.polished?.trim();
-    refs.useThisBtn.title = 'Drop the AI-polished prompt into Claude’s composer.';
-  } else {
-    // Asking (and any pre-preview state) — keep the button disabled
-    // until the coach finalizes.
-    refs.useThisBtn.disabled = true;
-    refs.useThisBtn.title = 'Available once the coach has polished your prompt.';
+  if (isDone) {
+    // Reveal text (success or skip reveal) shown as the lesson recap above
+    // the user's evolved prompt. Server may return empty text on a
+    // first-round-already-strong shortcut; only render the block when there
+    // is something to show.
+    const text = state.revealText;
+    if (text && text.trim()) {
+      refs.previewRationale.replaceChildren();
+      const label = document.createElement('span');
+      label.className = 'trailhead-improve-preview-rationale-label';
+      label.textContent = state.mode === 'skip_reveal' ? 'How you could have written it' : 'What changed';
+      const body = document.createElement('span');
+      body.className = 'trailhead-improve-preview-rationale-text';
+      body.textContent = text;
+      refs.previewRationale.append(label, body);
+      refs.previewRationale.hidden = false;
+    }
+    refs.previewBody.textContent = state.currentPrompt;
+    refs.useThisBtn.disabled = !state.currentPrompt.trim();
+    refs.useThisBtn.title = 'Drop your evolved prompt into Claude’s composer.';
+    refs.input.disabled = true;
+    refs.sendBtn.disabled = true;
   }
+
   if (state.stage === 'error') {
     refs.errorMsg.textContent = state.message;
   }
