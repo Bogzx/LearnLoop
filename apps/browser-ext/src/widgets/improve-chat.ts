@@ -63,6 +63,7 @@ interface ChatRefs {
   // Error
   errorBody: HTMLDivElement;
   errorMsg: HTMLDivElement;
+  errImDoneBtn: HTMLButtonElement;
   useTemplateBtn: HTMLButtonElement;
 }
 
@@ -189,6 +190,7 @@ export function openImproveChat(
   refs.previewImDoneBtn.addEventListener('click', onImDone);
 
   // ----- Error
+  refs.errImDoneBtn.addEventListener('click', onImDone);
   refs.useTemplateBtn.addEventListener('click', () => {
     setState({ stage: 'done' });
     void augmentAndSend();
@@ -274,7 +276,8 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   previewImDoneBtn.textContent = 'I’m done';
   previewActionsRow.append(previewImDoneBtn);
 
-  // Error
+  // Error — both bail-out options shown horizontally so the user always
+  // has a quick out, even when the coach is unreachable.
   const errorBody = document.createElement('div');
   errorBody.className = 'trailhead-improve-error';
   errorBody.hidden = true;
@@ -282,12 +285,26 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
   errorMsg.className = 'trailhead-improve-error-msg';
   const errActions = document.createElement('div');
   errActions.className = 'trailhead-improve-error-actions';
+  const errImDoneBtn = document.createElement('button');
+  errImDoneBtn.type = 'button';
+  errImDoneBtn.title = 'Discard the coaching attempt and use my original prompt as-is.';
+  errImDoneBtn.textContent = "I'm done";
   const useTemplateBtn = document.createElement('button');
   useTemplateBtn.type = 'button';
   useTemplateBtn.className = 'is-primary';
   useTemplateBtn.textContent = 'Use template instead';
-  errActions.append(useTemplateBtn);
+  errActions.append(errImDoneBtn, useTemplateBtn);
   errorBody.append(errorMsg, errActions);
+
+  // Both preview action rows live inside a single right-aligned wrapper.
+  // - Asking stage: only useThisRow visible inside (disabled "Use AI prompt"
+  //   affordance, sitting at the right where the enabled version will land).
+  // - Preview stage: both visible, flowing as one horizontal line —
+  //   previewActionsRow ("I'm done", secondary) on the left,
+  //   useThisRow ("Use AI prompt", primary) on the right.
+  const actionsWrap = document.createElement('div');
+  actionsWrap.className = 'trailhead-improve-actions-wrap';
+  actionsWrap.append(previewActionsRow, useThisRow);
 
   card.append(
     header,
@@ -295,8 +312,7 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
     thread,
     inputRow,
     previewBody,
-    useThisRow,
-    previewActionsRow,
+    actionsWrap,
     errorBody,
   );
 
@@ -305,7 +321,7 @@ function buildChatDom(card: HTMLDivElement): ChatRefs {
     choice, startBtn,
     thread, inputRow, input, sendBtn,
     previewBody, useThisRow, useThisBtn, previewActionsRow, previewImDoneBtn,
-    errorBody, errorMsg, useTemplateBtn,
+    errorBody, errorMsg, errImDoneBtn, useTemplateBtn,
   };
 }
 
