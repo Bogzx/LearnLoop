@@ -136,6 +136,34 @@
       opacity: 0.7;
     }
     .team-dropdown .status.is-error { color: rgba(255,140,140,0.92); opacity: 1; }
+
+    .tree-li {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tree-icon {
+      font-size: 11px;
+      opacity: 0.85;
+      flex: 0 0 auto;
+    }
+    .tree-label {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11.5px;
+    }
+    .tree-li.is-folder .tree-label { font-weight: 600; }
+    .clear-ctx-btn {
+      width: auto;
+      padding: 4px 8px;
+      font-size: 11px;
+      margin-left: 6px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.10);
+    }
   </style>
 </head>
 <body>
@@ -147,10 +175,14 @@
   </div>
 
   <div class="row">
-    <button id="add-context-btn" type="button">
-      <span>Add wiki context</span>
-      <span class="soon">soon</span>
+    <button id="add-context-btn" type="button" aria-expanded="false" aria-controls="context-dropdown">
+      <span>Select context</span>
+      <span id="current-context-name" class="current-team"></span>
     </button>
+  </div>
+  <div id="context-dropdown" class="team-dropdown" hidden>
+    <div id="context-status" class="status">Loading…</div>
+    <ul id="context-tree" hidden></ul>
   </div>
 
   <div class="row">

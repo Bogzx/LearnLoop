@@ -1,13 +1,26 @@
-// Popup script. Shows a coaching on/off switch, an "Add wiki context"
-// placeholder, and a Select-team dropdown that fetches GET /teams and
-// persists the selection to chrome.storage.local. The content script
-// subscribes to that storage key and uses the selected team's token
-// for every subsequent X-Team-Token header.
+// Popup script. Surfaces three controls:
+//   - Coaching on/off switch
+//   - Select context — fetches GET /wiki/tree and lets the user pick a
+//     subtree root; persisted to chrome.storage.local.<CONTEXT_PATH_KEY>
+//     so the content script prepends the rendered subtree to every send.
+//   - Select team — fetches GET /teams and persists the chosen team's
+//     X-Team-Token to chrome.storage.local.<TEAM_TOKEN_KEY>.
+//
+// Both pickers cache their first fetch in popup memory so re-opening the
+// dropdown is instant. A team change implicitly invalidates the wiki tree
+// (different team → different nodes), so cachedTree is dropped on token
+// change.
 
 import { API_URL } from '../config.ts';
 import { TEAM_TOKEN_KEY } from '../team-state.ts';
+import { CONTEXT_PATH_KEY } from '../context-state.ts';
 import { TEAM_TOKEN as DEFAULT_TEAM_TOKEN } from '../config.ts';
-import type { TeamSummary, TeamsListResponse } from '@trailhead/shared';
+import type {
+  TeamSummary,
+  TeamsListResponse,
+  WikiTreeNode,
+  WikiTreeResponse,
+} from '@trailhead/shared';
 
 const COACHING_KEY = 'trailhead.coachingEnabled';
 
@@ -18,10 +31,19 @@ const currentTeamNameEl = document.getElementById('current-team-name') as HTMLSp
 const teamDropdownEl = document.getElementById('team-dropdown') as HTMLDivElement;
 const teamStatusEl = document.getElementById('team-status') as HTMLDivElement;
 const teamListEl = document.getElementById('team-list') as HTMLUListElement;
+const currentContextNameEl = document.getElementById('current-context-name') as HTMLSpanElement;
+const contextDropdownEl = document.getElementById('context-dropdown') as HTMLDivElement;
+const contextStatusEl = document.getElementById('context-status') as HTMLDivElement;
+const contextTreeEl = document.getElementById('context-tree') as HTMLUListElement;
 const hintEl = document.getElementById('coaching-hint') as HTMLDivElement;
 const toastEl = document.getElementById('toast') as HTMLDivElement;
 
 let cachedTeams: TeamSummary[] | null = null;
+let cachedTree: WikiTreeNode[] | null = null;
+// Tree cache is keyed by the team token under which it was fetched. A team
+// switch must drop the tree (different wiki) — we compare against this on
+// every openContextDropdown to know whether to refetch.
+let cachedTreeForToken: string | null = null;
 
 function render(enabled: boolean): void {
   switchEl.classList.toggle('is-on', enabled);
@@ -40,19 +62,56 @@ async function getStoredToken(): Promise<string> {
   });
 }
 
+// True only if the user has explicitly picked a team in the popup. The
+// fallback (DEFAULT_TEAM_TOKEN from config.ts) doesn't count — a team
+// must have been actively selected.
+async function hasSelectedTeam(): Promise<boolean> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.get(TEAM_TOKEN_KEY, (v: Record<string, unknown>) => {
+      const stored = v[TEAM_TOKEN_KEY];
+      resolve(typeof stored === 'string' && stored.length > 0);
+    });
+  });
+}
+
 async function setStoredToken(token: string): Promise<void> {
   return new Promise((resolve) => {
     (chrome as any).storage.local.set({ [TEAM_TOKEN_KEY]: token }, () => resolve());
   });
 }
 
+async function getStoredContextPath(): Promise<string | null> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.get(CONTEXT_PATH_KEY, (v: Record<string, unknown>) => {
+      const stored = v[CONTEXT_PATH_KEY];
+      resolve(typeof stored === 'string' && stored ? stored : null);
+    });
+  });
+}
+
+async function setStoredContextPath(path: string): Promise<void> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.set({ [CONTEXT_PATH_KEY]: path }, () => resolve());
+  });
+}
+
+async function clearStoredContextPath(): Promise<void> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.remove(CONTEXT_PATH_KEY, () => resolve());
+  });
+}
+
 async function refreshCurrentTeamName(): Promise<void> {
   const token = await getStoredToken();
-  // If we don't have a teams list yet, just show a truncated token.
   const team = cachedTeams?.find((t) => t.token === token);
   currentTeamNameEl.textContent = team
     ? team.name
     : token === DEFAULT_TEAM_TOKEN ? 'Acme (default)' : token.slice(0, 16) + '…';
+}
+
+async function refreshCurrentContextName(): Promise<void> {
+  const path = await getStoredContextPath();
+  currentContextNameEl.textContent = path ?? '';
 }
 
 function renderTeamList(teams: TeamSummary[], currentToken: string): void {
@@ -71,9 +130,20 @@ function renderTeamList(teams: TeamSummary[], currentToken: string): void {
     li.appendChild(name);
     li.addEventListener('click', async () => {
       await setStoredToken(team.token);
+      // Picking a different team invalidates the wiki tree cache and
+      // any active context (the path may not exist for the new team).
+      if (cachedTreeForToken !== team.token) {
+        cachedTree = null;
+        cachedTreeForToken = null;
+      }
+      const oldPath = await getStoredContextPath();
+      if (oldPath) {
+        await clearStoredContextPath();
+        await refreshCurrentContextName();
+      }
       cachedTeams && renderTeamList(cachedTeams, team.token);
       await refreshCurrentTeamName();
-      closeDropdown();
+      closeTeamDropdown();
       showToast(`Switched to ${team.name}`);
     });
     teamListEl.appendChild(li);
@@ -96,12 +166,12 @@ function showTeamError(msg: string): void {
   teamListEl.hidden = true;
 }
 
-function closeDropdown(): void {
+function closeTeamDropdown(): void {
   teamDropdownEl.hidden = true;
   selectTeamBtn.setAttribute('aria-expanded', 'false');
 }
 
-async function openDropdown(): Promise<void> {
+async function openTeamDropdown(): Promise<void> {
   teamDropdownEl.hidden = false;
   selectTeamBtn.setAttribute('aria-expanded', 'true');
   if (cachedTeams) {
@@ -125,6 +195,142 @@ async function openDropdown(): Promise<void> {
   }
 }
 
+// ----- Wiki context picker ---------------------------------------------------
+
+function pathDepth(path: string): number {
+  // Folder paths end in '/', file paths don't. We count the segments and
+  // subtract 1 so a top-level node ('src/' or 'README.md') sits at depth 0.
+  const segments = path.split('/').filter((s) => s.length > 0);
+  return Math.max(0, segments.length - 1);
+}
+
+function lastSegment(path: string): string {
+  const stripped = path.endsWith('/') ? path.slice(0, -1) : path;
+  const i = stripped.lastIndexOf('/');
+  return i === -1 ? stripped : stripped.slice(i + 1);
+}
+
+function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): void {
+  contextTreeEl.replaceChildren();
+
+  // A "Clear context" row at the top — only visible when something is
+  // currently active. Lets the user reset without leaving the popup.
+  if (currentPath) {
+    const clearLi = document.createElement('li');
+    clearLi.className = 'tree-li';
+    clearLi.style.justifyContent = 'space-between';
+    const lbl = document.createElement('span');
+    lbl.style.opacity = '0.7';
+    lbl.style.fontSize = '11px';
+    lbl.textContent = `Active: ${currentPath}`;
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'clear-ctx-btn';
+    clearBtn.textContent = 'Clear';
+    clearBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await clearStoredContextPath();
+      await refreshCurrentContextName();
+      if (cachedTree) renderContextTree(cachedTree, null);
+      showToast('Context cleared');
+    });
+    clearLi.appendChild(lbl);
+    clearLi.appendChild(clearBtn);
+    contextTreeEl.appendChild(clearLi);
+  }
+
+  // Sort by path so parents come before children — string-prefix order
+  // lines up with the depth-indent visualization.
+  const sorted = [...nodes].sort((a, b) => a.path.localeCompare(b.path));
+  for (const node of sorted) {
+    const li = document.createElement('li');
+    li.classList.add('tree-li');
+    const isFolder = node.path.endsWith('/');
+    if (isFolder) li.classList.add('is-folder');
+    const depth = pathDepth(node.path);
+    li.style.paddingLeft = `${6 + depth * 12}px`;
+    li.title = node.path;
+    if (node.path === currentPath) {
+      li.classList.add('is-current');
+      const check = document.createElement('span');
+      check.className = 'check';
+      check.textContent = '✓';
+      li.appendChild(check);
+    }
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.textContent = isFolder ? '📁' : '📄';
+    li.appendChild(icon);
+    const label = document.createElement('span');
+    label.className = 'tree-label';
+    label.textContent = lastSegment(node.path) || node.path;
+    li.appendChild(label);
+    li.addEventListener('click', async () => {
+      await setStoredContextPath(node.path);
+      cachedTree && renderContextTree(cachedTree, node.path);
+      await refreshCurrentContextName();
+      closeContextDropdown();
+      showToast(`Context set: ${node.path}`);
+    });
+    contextTreeEl.appendChild(li);
+  }
+  contextTreeEl.hidden = false;
+  contextStatusEl.hidden = true;
+}
+
+function showContextLoading(): void {
+  contextStatusEl.textContent = 'Loading wiki…';
+  contextStatusEl.classList.remove('is-error');
+  contextStatusEl.hidden = false;
+  contextTreeEl.hidden = true;
+}
+
+function showContextError(msg: string): void {
+  contextStatusEl.textContent = msg;
+  contextStatusEl.classList.add('is-error');
+  contextStatusEl.hidden = false;
+  contextTreeEl.hidden = true;
+}
+
+function closeContextDropdown(): void {
+  contextDropdownEl.hidden = true;
+  addCtxBtn.setAttribute('aria-expanded', 'false');
+}
+
+async function openContextDropdown(): Promise<void> {
+  contextDropdownEl.hidden = false;
+  addCtxBtn.setAttribute('aria-expanded', 'true');
+
+  const token = await getStoredToken();
+  // Drop the cache if we're now scoped to a different team.
+  if (cachedTreeForToken && cachedTreeForToken !== token) {
+    cachedTree = null;
+    cachedTreeForToken = null;
+  }
+  if (cachedTree) {
+    renderContextTree(cachedTree, await getStoredContextPath());
+    return;
+  }
+  showContextLoading();
+  try {
+    const res = await fetch(`${API_URL}/wiki/tree`, {
+      headers: { 'X-Team-Token': token },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as WikiTreeResponse;
+    if (!Array.isArray(data.nodes) || data.nodes.length === 0) {
+      showContextError('No wiki nodes for this team yet.');
+      return;
+    }
+    cachedTree = data.nodes;
+    cachedTreeForToken = token;
+    renderContextTree(cachedTree, await getStoredContextPath());
+  } catch (err) {
+    console.warn('[trailhead-popup] /wiki/tree fetch failed', err);
+    showContextError('Couldn’t load wiki. Check the API.');
+  }
+}
+
 function showToast(text: string, ms = 1600): void {
   toastEl.textContent = text;
   toastEl.classList.add('is-shown');
@@ -140,9 +346,10 @@ function showToast(text: string, ms = 1600): void {
   } catch {
     render(true);
   }
-  // Show the current team name in the button row even before the user
-  // opens the dropdown.
+  // Show the current team + context in the button rows even before the
+  // user opens either dropdown.
   await refreshCurrentTeamName();
+  await refreshCurrentContextName();
 })();
 
 switchEl.addEventListener('click', async () => {
@@ -168,25 +375,42 @@ switchEl.addEventListener('keydown', (e) => {
   }
 });
 
-addCtxBtn.addEventListener('click', () => {
-  // Placeholder for the wiki-context flow. Wired so the UX is complete;
-  // the actual context selection is the next iteration.
-  showToast('Wiki context — coming soon.');
+addCtxBtn.addEventListener('click', async () => {
+  // Wiki context is scoped to a team — require an explicit team
+  // selection before letting the user proceed. If none is picked yet,
+  // warn and pop the team dropdown so the next click can land.
+  if (!(await hasSelectedTeam())) {
+    showToast('Pick a team first — choose one below.', 2400);
+    void openTeamDropdown();
+    return;
+  }
+  if (contextDropdownEl.hidden) {
+    void openContextDropdown();
+  } else {
+    closeContextDropdown();
+  }
 });
 
 selectTeamBtn.addEventListener('click', () => {
   if (teamDropdownEl.hidden) {
-    void openDropdown();
+    void openTeamDropdown();
   } else {
-    closeDropdown();
+    closeTeamDropdown();
   }
 });
 
-// Click outside the dropdown closes it.
+// Click outside any dropdown closes it.
 document.addEventListener('click', (e) => {
-  if (teamDropdownEl.hidden) return;
   const target = e.target as Node | null;
   if (!target) return;
-  if (teamDropdownEl.contains(target) || selectTeamBtn.contains(target)) return;
-  closeDropdown();
+  if (!teamDropdownEl.hidden) {
+    if (!teamDropdownEl.contains(target) && !selectTeamBtn.contains(target)) {
+      closeTeamDropdown();
+    }
+  }
+  if (!contextDropdownEl.hidden) {
+    if (!contextDropdownEl.contains(target) && !addCtxBtn.contains(target)) {
+      closeContextDropdown();
+    }
+  }
 });

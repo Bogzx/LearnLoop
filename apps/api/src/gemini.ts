@@ -123,7 +123,15 @@ export interface ScoreModelResult {
   missing: MissingHints;
 }
 
-export async function scorePrompt(args: { prompt: string; file_path?: string }): Promise<ScoreModelResult> {
+export async function scorePrompt(args: {
+  prompt: string;
+  file_path?: string;
+  // Optional team-context bundle (already rendered by team-context.ts).
+  // When set, we prepend it to the system instruction so the rubric is
+  // calibrated against the team's conventions. The user's prompt itself
+  // is NOT modified — score still reflects the bare prompt's quality.
+  team_context?: string;
+}): Promise<ScoreModelResult> {
   // Flash with responseSchema + dynamic thinking + maxOutputTokens cap.
   //
   // thinkingBudget=-1 (dynamic) is the single biggest model-side defense
@@ -138,13 +146,17 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
   // maxOutputTokens is still the hard ceiling that bounds cost in the
   // worst case. A well-formed response is ~150 tokens; 500 is plenty of
   // headroom while capping worst-case at ~3x normal.
+  const systemInstruction = args.team_context
+    ? `${args.team_context}\n\n${SCORE_SYSTEM_PROMPT}`
+    : SCORE_SYSTEM_PROMPT;
+
   if (SCORE_MODEL.startsWith('gemini-')) {
     const resp = await withRetry(
       () => ai.models.generateContent({
         model: SCORE_MODEL,
         contents: buildScoreUserPrompt(args),
         config: {
-          systemInstruction: SCORE_SYSTEM_PROMPT,
+          systemInstruction,
           temperature: 0.2,
           thinkingConfig: { thinkingBudget: -1 },
           maxOutputTokens: 500,
@@ -197,7 +209,7 @@ export async function scorePrompt(args: { prompt: string; file_path?: string }):
     () => ai.models.generateContent({
       model: SCORE_MODEL,
       contents:
-        `${SCORE_SYSTEM_PROMPT}\n\n${buildScoreUserPrompt(args)}\n\n` +
+        `${systemInstruction}\n\n${buildScoreUserPrompt(args)}\n\n` +
         `Return ONLY the JSON object, nothing else.`,
       config: { temperature: 0, maxOutputTokens: 500 },
     }),
@@ -322,6 +334,10 @@ export interface ImproveCoachInput {
   missing: MissingHints;
   history: { role: 'assistant' | 'user'; text: string }[];
   command: 'next' | 'finalize';
+  // Same semantics as scorePrompt.team_context — when set, prepend to the
+  // system instruction so the coach's questions and the polished prompt
+  // are calibrated against the team's idiom.
+  team_context?: string;
 }
 
 export type ImproveCoachOutput =
@@ -343,12 +359,16 @@ export async function improveCoach(input: ImproveCoachInput): Promise<ImproveCoa
     `Conversation so far:\n${transcript}\n\n` +
     `Command: ${input.command}`;
 
+  const systemInstruction = input.team_context
+    ? `${input.team_context}\n\n${IMPROVE_SYSTEM_PROMPT}`
+    : IMPROVE_SYSTEM_PROMPT;
+
   const resp = await withRetry(
     () => ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: userMessage,
       config: {
-        systemInstruction: IMPROVE_SYSTEM_PROMPT,
+        systemInstruction,
         temperature: 0.3,
         thinkingConfig: { thinkingBudget: 0 },
         maxOutputTokens: 800,
