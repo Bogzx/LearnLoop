@@ -12,7 +12,7 @@
 // change.
 
 import { API_URL } from '../config.ts';
-import { TEAM_TOKEN_KEY } from '../team-state.ts';
+import { TEAM_TOKEN_KEY, TEAM_NAME_KEY } from '../team-state.ts';
 import { CONTEXT_PATH_KEY } from '../context-state.ts';
 import { TEAM_TOKEN as DEFAULT_TEAM_TOKEN } from '../config.ts';
 import type {
@@ -80,6 +80,12 @@ async function setStoredToken(token: string): Promise<void> {
   });
 }
 
+async function setStoredTeamName(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.set({ [TEAM_NAME_KEY]: name }, () => resolve());
+  });
+}
+
 async function getStoredContextPath(): Promise<string | null> {
   return new Promise((resolve) => {
     (chrome as any).storage.local.get(CONTEXT_PATH_KEY, (v: Record<string, unknown>) => {
@@ -104,6 +110,9 @@ async function clearStoredContextPath(): Promise<void> {
 async function refreshCurrentTeamName(): Promise<void> {
   const token = await getStoredToken();
   const team = cachedTeams?.find((t) => t.token === token);
+  // Backfill the cached display name whenever the popup discovers it via
+  // /teams — handles users who picked a team before this feature existed.
+  if (team) await setStoredTeamName(team.name);
   currentTeamNameEl.textContent = team
     ? team.name
     : token === DEFAULT_TEAM_TOKEN ? 'Acme (default)' : token.slice(0, 16) + '…';
@@ -130,6 +139,9 @@ function renderTeamList(teams: TeamSummary[], currentToken: string): void {
     li.appendChild(name);
     li.addEventListener('click', async () => {
       await setStoredToken(team.token);
+      // Persist the team's display name alongside the token so the
+      // in-page pill can show "Acme Fintech · Root" instead of just "Root".
+      await setStoredTeamName(team.name);
       // Picking a different team invalidates the wiki tree cache and
       // any active context (the path may not exist for the new team).
       if (cachedTreeForToken !== team.token) {

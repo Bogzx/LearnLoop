@@ -796,8 +796,10 @@ export const TRAILHEAD_CSS = `
  * ============================================================ */
 #trailhead-context-pill {
   position: fixed;
-  top: 310px;
-  /* right is set inline by JS — see context-pill.ts updateRightOffset. */
+  /* Anchored to the right edge of the viewport, 10% inset (so the pill
+   * floats over the right side of the chat without hugging the corner). */
+  right: 4%;
+  top: 15px;
   z-index: 2147483645;        /* one below the toast stack */
   display: flex;
   align-items: center;
@@ -820,6 +822,11 @@ export const TRAILHEAD_CSS = `
   border-color: rgba(108,140,255,0.55);
 }
 #trailhead-context-pill[hidden] { display: none; }
+/* Bump the right inset on narrower viewports — at 4% the pill starts to
+ * crowd the chat column when the window shrinks (or the sidebar opens). */
+@media (max-width: 1280px) {
+  #trailhead-context-pill { right: 6%; }
+}
 .trailhead-context-pill-icon { font-size: 12px; opacity: 0.85; }
 .trailhead-context-pill-prefix {
   opacity: 0.72;

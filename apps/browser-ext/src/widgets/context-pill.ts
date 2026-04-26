@@ -13,6 +13,7 @@
 // resizes the window or toggles the sidebar.
 
 import { CONTEXT_PATH_KEY, getContextPath, subscribeContext } from '../context-state.ts';
+import { getTeamName, subscribeTeam } from '../team-state.ts';
 import type { Selectors } from '../selectors.ts';
 
 const PILL_ID = 'trailhead-context-pill';
@@ -20,8 +21,7 @@ const PILL_ID = 'trailhead-context-pill';
 let pillEl: HTMLDivElement | null = null;
 let labelEl: HTMLSpanElement | null = null;
 let unsubscribe: (() => void) | null = null;
-let resizeObs: ResizeObserver | null = null;
-let onWindowResize: (() => void) | null = null;
+let unsubscribeTeam: (() => void) | null = null;
 
 function buildPill(): HTMLDivElement {
   const pill = document.createElement('div');
@@ -71,27 +71,18 @@ function refresh(): void {
   // (its real wiki path is the empty string, which clashes with our
   // truthy "is context active?" check). Render it as "Root" so the pill
   // doesn't show a bare slash.
-  labelEl.textContent = path === '/' ? 'Root' : path;
+  const pathLabel = path === '/' ? 'Root' : path;
+  // Prepend the team's display name when available — disambiguates
+  // ambiguous labels like "Root" across multiple projects. Falls back
+  // to just the path when no team name has been cached yet (e.g.,
+  // user is on the default demo team and never opened the team picker).
+  const teamName = getTeamName();
+  labelEl.textContent = teamName ? `${teamName} · ${pathLabel}` : pathLabel;
   pillEl.hidden = false;
 }
 
-// Align the pill's right edge with the composer's right edge (with a small
-// 8px inset). Composer width === visible chat column width on every
-// Claude.ai layout we've seen, so this anchors the pill to the chat without
-// hard-coding any selector for the column itself.
-function updateRightOffset(sel: Selectors): void {
-  if (!pillEl) return;
-  const composer = sel.scoreCardAnchor;
-  const rect = composer?.getBoundingClientRect();
-  if (!rect || rect.width === 0) {
-    // Composer not measurable yet (detached / display:none) — fall back to
-    // the page's right edge so the pill is still visible.
-    pillEl.style.right = '16px';
-    return;
-  }
-  const offset = Math.max(8, Math.round(window.innerWidth - rect.right + 8));
-  pillEl.style.right = `${offset}px`;
-}
+// Position is now static (centered horizontally, bottom: 100px) — see
+// styles.ts. No dynamic offset functions needed; CSS handles it.
 
 export function mountContextPill(sel: Selectors): () => void {
   // Already mounted? (Re-init can fire during health-check recoveries.)
@@ -102,34 +93,25 @@ export function mountContextPill(sel: Selectors): () => void {
   // reconciles the chat tree. The styles.ts rule for #trailhead-context-pill
   // sets position: fixed + top: 16px; the right offset is set inline below.
   document.body.appendChild(pillEl);
-  updateRightOffset(sel);
   refresh();
-
-  // Keep the right offset accurate when:
-  // - The user resizes the browser window.
-  // - Claude rearranges its layout (sidebar collapse, model switcher
-  //   expand/collapse) — the composer's bounding rect changes accordingly.
-  onWindowResize = () => updateRightOffset(sel);
-  window.addEventListener('resize', onWindowResize);
-  if (resizeObs) resizeObs.disconnect();
-  resizeObs = new ResizeObserver(() => updateRightOffset(sel));
-  if (sel.scoreCardAnchor) resizeObs.observe(sel.scoreCardAnchor);
+  // Position is fully static via CSS (centered horizontally, bottom: 100px)
+  // — no resize observer or interval needed. `sel` is kept for API
+  // compatibility with the mount call site.
+  void sel;
 
   if (unsubscribe) unsubscribe();
   unsubscribe = subscribeContext(refresh);
+  if (unsubscribeTeam) unsubscribeTeam();
+  unsubscribeTeam = subscribeTeam(refresh);
 
   return () => {
     if (unsubscribe) {
       unsubscribe();
       unsubscribe = null;
     }
-    if (resizeObs) {
-      resizeObs.disconnect();
-      resizeObs = null;
-    }
-    if (onWindowResize) {
-      window.removeEventListener('resize', onWindowResize);
-      onWindowResize = null;
+    if (unsubscribeTeam) {
+      unsubscribeTeam();
+      unsubscribeTeam = null;
     }
     if (pillEl && pillEl.isConnected) pillEl.remove();
     pillEl = null;
