@@ -20,6 +20,21 @@ function truncate(s, n) {
   return s.length <= n ? s : s.slice(0, Math.max(1, n - 3)) + '...';
 }
 
+// Render a multiline prompt as a single readable line for the success reveal.
+// Hosts vary in how they format tool output: some preserve newlines, others
+// (Gemini Antigravity as of 2026-04-26) escape them into literal \n which
+// looks broken when echoed back inside quotes. Collapse to a separator so the
+// before/after diff stays scannable regardless of host rendering.
+function inlinePrompt(s) {
+  if (typeof s !== 'string') return '';
+  return s.replace(/\s*\r?\n\s*/g, ' / ').trim();
+}
+
+function capitalizeFirst(s) {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 function dimensionDeltas(originalDimensions, finalDimensions) {
   return DIMS.map((d) => ({
     d,
@@ -58,7 +73,8 @@ export function renderTeachBlock({
   if (previousLowestDim && previousLowestDim !== targetDim) {
     const prevTpl = DIMENSION_TEACH[previousLowestDim];
     const prevLabel = prevTpl ? prevTpl.title.toLowerCase() : previousLowestDim.replace(/_/g, ' ');
-    lines.push(`You addressed ${prevLabel}. ${tpl.title.toLowerCase()} is the next gap.`);
+    const nextLabel = capitalizeFirst(tpl.title.toLowerCase());
+    lines.push(`You addressed ${prevLabel}. ${nextLabel} is the next gap.`);
     lines.push('');
   }
 
@@ -99,9 +115,9 @@ export function renderSuccessReveal({
   return [
     header,
     'Your prompt grew:',
-    `  "${truncate(originalPrompt, 80)}"`,
+    `  "${truncate(inlinePrompt(originalPrompt), 80)}"`,
     '  →',
-    `  "${truncate(finalPrompt, 200)}"`,
+    `  "${truncate(inlinePrompt(finalPrompt), 200)}"`,
     calloutLine,
   ].join('\n');
 }
@@ -137,7 +153,7 @@ export function renderSkipReveal({
     prefix = 'Proceeding with your original prompt. For next time, a stronger version would have been:';
   }
 
-  const lines = [prefix, `  "${(strongRewrite ?? '').trim()}"`];
+  const lines = [prefix, `  "${inlinePrompt(strongRewrite ?? '')}"`];
   if (calloutLine) lines.push(calloutLine);
   return lines.join('\n');
 }
