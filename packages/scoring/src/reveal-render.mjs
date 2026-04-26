@@ -48,6 +48,8 @@ export function renderTeachBlock({
   targetScore,
   strongExample,
   previousLowestDim,
+  acknowledgment,
+  tip,
 }) {
   const tpl = DIMENSION_TEACH[targetDim];
   if (!tpl) {
@@ -55,7 +57,13 @@ export function renderTeachBlock({
   }
 
   const lines = [];
-  if (previousLowestDim && previousLowestDim !== targetDim) {
+  // Round 2+ acknowledgment of the user's last edit. Gemini-generated, so
+  // it can specifically name what they added; falls back to the static
+  // "You addressed X" line if the helper failed (empty string).
+  if (acknowledgment && acknowledgment.trim()) {
+    lines.push(acknowledgment.trim());
+    lines.push('');
+  } else if (previousLowestDim && previousLowestDim !== targetDim) {
     const prevTpl = DIMENSION_TEACH[previousLowestDim];
     const prevLabel = prevTpl ? prevTpl.title.toLowerCase() : previousLowestDim.replace(/_/g, ' ');
     lines.push(`You addressed ${prevLabel}. ${tpl.title.toLowerCase()} is the next gap.`);
@@ -67,6 +75,9 @@ export function renderTeachBlock({
   if (strongExample && strongExample.trim()) {
     lines.push('');
     lines.push(`Strong example: "${strongExample.trim()}"`);
+    if (tip && tip.trim()) {
+      lines.push(`Why it works: ${tip.trim()}`);
+    }
   }
   lines.push('');
   lines.push(tpl.question);
@@ -86,6 +97,7 @@ export function renderSuccessReveal({
   originalDimensions,
   finalDimensions,
   maxRoundsHit,
+  summary,
 }) {
   const improved = topImprovedDims(originalDimensions, finalDimensions);
   const calloutLine = improved.length
@@ -96,14 +108,21 @@ export function renderSuccessReveal({
     ? `(coached: ${originalOverall} → ${finalOverall}, max rounds reached)`
     : `(coached: ${originalOverall} → ${finalOverall})`;
 
-  return [
+  const lines = [
     header,
     'Your prompt grew:',
     `  "${truncate(originalPrompt, 80)}"`,
     '  →',
     `  "${truncate(finalPrompt, 200)}"`,
     calloutLine,
-  ].join('\n');
+  ];
+  // Gemini-written closing recap. Fail-open: when the helper returned "",
+  // the static block above is still informative on its own.
+  if (summary && summary.trim()) {
+    lines.push('');
+    lines.push(summary.trim());
+  }
+  return lines.join('\n');
 }
 
 // =============================================================================
@@ -121,6 +140,7 @@ export function renderSkipReveal({
   originalDimensions,
   reason,
   noProgressDim,
+  summary,
 }) {
   const wouldHaveImproved = DIMS.filter((d) => (originalDimensions?.[d] ?? 0) < 5);
   const calloutLine = wouldHaveImproved.length
@@ -139,5 +159,11 @@ export function renderSkipReveal({
 
   const lines = [prefix, `  "${(strongRewrite ?? '').trim()}"`];
   if (calloutLine) lines.push(calloutLine);
+  // Same fail-open pattern as renderSuccessReveal — Gemini-written takeaway
+  // appended after the templated arc, omitted on helper failure.
+  if (summary && summary.trim()) {
+    lines.push('');
+    lines.push(summary.trim());
+  }
   return lines.join('\n');
 }
