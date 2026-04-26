@@ -433,6 +433,48 @@ export const TRAILHEAD_CSS = `
   background: rgba(0,0,0,0.18);
   border-radius: 4px;
 }
+
+#trailhead-context-pill {
+  margin: 6px auto 0;
+  padding: 5px 8px 5px 10px;
+  border-radius: 999px;
+  background: rgba(74,107,255,0.14);
+  border: 1px solid rgba(74,107,255,0.42);
+  color: var(--text-primary, #ddd);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 760px;
+  width: fit-content;
+}
+#trailhead-context-pill[hidden] { display: none; }
+.trailhead-context-pill-icon { font-size: 12px; }
+.trailhead-context-pill-prefix { opacity: 0.7; }
+.trailhead-context-pill-label {
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.trailhead-context-pill-clear {
+  margin-left: 4px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.trailhead-context-pill-clear:hover {
+  background: rgba(255,255,255,0.10);
+  opacity: 1;
+}
 `;
 
 export function injectStyles(): void {

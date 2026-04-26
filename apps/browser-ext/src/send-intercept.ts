@@ -27,6 +27,7 @@ import { readPrompt, writePrompt, type Selectors } from './selectors.ts';
 import { store } from './store.ts';
 import { hideCard, scoreAndShow } from './score-card.ts';
 import { isCoachingEnabled } from './coaching-state.ts';
+import { getCachedContextBundle } from './context-bundle.ts';
 
 let activeSelectors: Selectors | null = null;
 let sentOnce = false;
@@ -129,9 +130,20 @@ function onSendAttempt(e: Event): void {
       return;
     }
     // Popup-controlled coaching toggle: when the user has flipped Coaching
-    // off, the chat behaves as if Trailhead weren't installed for sends.
+    // off, the chat behaves as if Trailhead weren't installed for sends —
+    // EXCEPT for context injection, which is independent of coaching. If a
+    // wiki context is active, we still preventDefault and re-fire after
+    // augmenting the composer.
     if (!isCoachingEnabled()) {
-      console.info('  → coaching disabled, letting event through');
+      if (getCachedContextBundle() && activeSelectors) {
+        console.info('  → coaching off but context active — injecting then re-firing');
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+        bypassWithContextInjection();
+      } else {
+        console.info('  → coaching disabled, letting event through');
+      }
       return;
     }
     if (!activeSelectors) {
@@ -152,8 +164,17 @@ function onSendAttempt(e: Event): void {
     // The next native send should go straight through. We clear after one
     // hit so a later edit-and-resend resumes normal coaching.
     if (approvedPrompt && text === approvedPrompt.trim()) {
-      console.info('  → text matches approved prompt — bypassing, sending native');
+      console.info('  → text matches approved prompt — bypassing');
       approvedPrompt = null;
+      // Same context-injection rule: if a context is active, intercept and
+      // re-fire with augmented text so Claude.ai sees the team context.
+      if (getCachedContextBundle()) {
+        console.info('  → context active, injecting before re-fire');
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+        bypassWithContextInjection();
+      }
       return;
     }
     if (approvedPrompt) {
@@ -253,53 +274,92 @@ function findLiveSendButton(): HTMLElement | null {
 }
 
 function fireSendOnce(sel: Selectors): boolean {
-  // Path 1: programmatic click on the actual send button. `.click()` produces
-  // an untrusted MouseEvent but Claude.ai's React onClick handler still runs
-  // (only browser-action defaults like `<a target=_blank>` need trust).
-  // Re-resolve fresh — the cached one may be stale after SPA navigation.
-  const liveButton = findLiveSendButton() ?? sel.sendButton;
-  if (liveButton && liveButton.isConnected) {
-    try {
-      liveButton.click();
-      return true;
-    } catch {
-      /* fall through */
-    }
-  }
-  // Path 2: form.requestSubmit() — fires a real submit event the form's
-  // onSubmit handler picks up. Only works if the textarea sits inside a form.
-  const form = sel.textarea.closest('form');
-  if (form && typeof form.requestSubmit === 'function') {
-    try {
-      form.requestSubmit();
-      return true;
-    } catch {
-      /* fall through */
-    }
-  }
-  // Path 3: dispatch a synthetic Enter keydown on the textarea. Tiptap /
-  // ProseMirror (claude.ai/chat) has no <form> and the send button can be
-  // unmounted, so this is the last-resort path. The bypassIntercept flag
-  // makes our own capture-phase listener no-op for this single dispatch
-  // so Claude.ai's React handler receives it.
+  // Wrap every fire path in bypassIntercept so the click() / submit / Enter
+  // we dispatch can't re-trigger our own capture-phase listeners. Without
+  // this, path 1 (button click) would re-enter onSendAttempt, see the
+  // (now context-augmented) text, and intercept again.
+  bypassIntercept = true;
   try {
-    sel.textarea.focus();
-    bypassIntercept = true;
-    const enter = new KeyboardEvent('keydown', {
-      key: 'Enter',
-      code: 'Enter',
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-      cancelable: true,
-    });
-    const ok = sel.textarea.dispatchEvent(enter);
+    // Path 1: programmatic click on the actual send button. `.click()`
+    // produces an untrusted MouseEvent but Claude.ai's React onClick
+    // handler still runs (only browser-action defaults like
+    // `<a target=_blank>` need trust). Re-resolve fresh — the cached
+    // one may be stale after SPA navigation.
+    const liveButton = findLiveSendButton() ?? sel.sendButton;
+    if (liveButton && liveButton.isConnected) {
+      try {
+        liveButton.click();
+        return true;
+      } catch {
+        /* fall through */
+      }
+    }
+    // Path 2: form.requestSubmit() — fires a real submit event the form's
+    // onSubmit handler picks up. Only works if the textarea sits inside a form.
+    const form = sel.textarea.closest('form');
+    if (form && typeof form.requestSubmit === 'function') {
+      try {
+        form.requestSubmit();
+        return true;
+      } catch {
+        /* fall through */
+      }
+    }
+    // Path 3: dispatch a synthetic Enter keydown on the textarea. Tiptap /
+    // ProseMirror (claude.ai/chat) has no <form> and the send button can be
+    // unmounted, so this is the last-resort path.
+    try {
+      sel.textarea.focus();
+      const enter = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      });
+      return sel.textarea.dispatchEvent(enter);
+    } catch {
+      return false;
+    }
+  } finally {
     bypassIntercept = false;
-    return ok;
-  } catch {
-    bypassIntercept = false;
-    return false;
   }
+}
+
+// Sticky wiki context: the popup picker writes a node path to chrome.storage,
+// context-bundle.ts fetches the subtree and renders it as a markdown blob,
+// and we prepend that blob to the composer text right before firing the
+// native send. The user's bare prompt is what /score sees (we forward
+// context_path separately), so the score never gets inflated by the
+// context bundle.
+function maybePrependContextToComposer(sel: Selectors): boolean {
+  const bundle = getCachedContextBundle();
+  if (!bundle) return false;
+  const bareText = readPrompt(sel.textarea);
+  if (!bareText.trim()) return false;
+  // Defensive — if a bypass path re-enters with already-augmented text we
+  // don't want to nest <team_context> wrappers.
+  if (bareText.startsWith('<team_context>')) return false;
+  console.info('[trailhead] prepending context bundle (', bundle.length, 'chars) to composer');
+  writePrompt(sel.textarea, `${bundle}\n\n${bareText}`);
+  return true;
+}
+
+// Used by the bypass paths in onSendAttempt — when we want to let Claude.ai
+// receive the prompt without our coaching, but we DO still want to inject
+// the active context. preventDefault on the original event, augment, then
+// fire programmatically.
+function bypassWithContextInjection(): void {
+  if (!activeSelectors) return;
+  const sel = activeSelectors;
+  void (async () => {
+    maybePrependContextToComposer(sel);
+    // Yield once so the editor's onChange sees the new content before we
+    // fire the synthetic send.
+    await Promise.resolve();
+    fireSendOnce(sel);
+  })();
 }
 
 async function doNativeSend(): Promise<void> {
@@ -307,8 +367,21 @@ async function doNativeSend(): Promise<void> {
   sentOnce = true;
   if (!activeSelectors) return;
   const sel = activeSelectors;
+  // Capture the BARE text first — captures table should reflect what the
+  // user actually wrote, not the (potentially huge) augmented blob we send
+  // to Claude.ai. lastScoredText is the canonical source for the same
+  // reason; this branch covers the fail-open fallback when scoring failed.
   const sentText = readPrompt(sel.textarea);
   hideCard();
+  // Inject sticky context (if any) right before firing — covers the
+  // fail-open path (scoreAndShow returned null) and keeps the user's
+  // selected wiki subtree in front of every send.
+  if (maybePrependContextToComposer(sel)) {
+    // Yield once so the editor's onChange registers the augmented
+    // content before fireSendOnce reads from it (form.requestSubmit
+    // path) or before React's controlled-input round-trips.
+    await Promise.resolve();
+  }
   const fired = fireSendOnce(sel);
   if (!fired) {
     console.warn('[trailhead] send fallback failed — both button.click() and form.requestSubmit() unavailable');
