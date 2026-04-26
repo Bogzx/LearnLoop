@@ -1,0 +1,10 @@
+{
+  "name": "landing-page",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LearnLoop marketing landing page (static HTML).",
+  "scripts": {
+    "dev": "npx --yes serve . -l 4000",
+    "start": "npx --yes serve . -l 4000"
+  }
+}
