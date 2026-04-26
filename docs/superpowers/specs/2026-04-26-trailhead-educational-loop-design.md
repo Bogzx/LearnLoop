@@ -244,14 +244,23 @@ New `POST /coach` endpoint in `apps/api`. Existing `/score` is untouched.
 ```
 target_dim = lowest dimension with score < 7
 
-# Wiki-first: graduated team prompts on similar paths
-graduated_prompts = SELECT * FROM prompts
-   WHERE node_id IN (ancestor nodes for file_path, if any)
-   ORDER BY reuse_count DESC LIMIT 5;
+# Wiki-first: graduated team prompts.
+# When file_path is provided, scope to ancestor nodes for relevance.
+# When no file_path, fall back to team-wide top-reused prompts.
+if file_path:
+   graduated_prompts = SELECT * FROM prompts
+      WHERE node_id IN (ancestor nodes for file_path)
+      ORDER BY reuse_count DESC LIMIT 5;
+else:
+   graduated_prompts = SELECT * FROM prompts
+      WHERE team_id = $1
+      ORDER BY reuse_count DESC LIMIT 5;
 
 # Pick a graduated prompt that scores >= 7 on target_dim.
-# Re-score top candidates against the rubric in a single batched
-# Gemini call if needed; cache aggressively by prompt_id.
+# Re-score top candidates against the rubric (single batched Gemini
+# call). Result cached by prompt_id → dimension_scores so subsequent
+# /coach calls reuse it; the per-(file_path_ancestor, target_dim)
+# 5-min in-process cache then short-circuits the whole wiki step.
 strong_example = first graduated_prompt with target_dim score >= 7
 
 # Fallback: Gemini rewrite
@@ -333,12 +342,13 @@ Strict on purpose — a tiny improvement (e.g., 3→4) still earns another round
 
 | Path | Score | Render | Total |
 |------|-------|--------|-------|
-| Round 1, wiki hit | ~1s | ~50ms (DB) | ~1.05s |
-| Round 1, Gemini fallback | ~1s | ~600ms | ~1.6s |
+| Round 1, wiki hit (cached prompt scores) | ~1s | ~50ms (DB) | ~1.05s |
+| Round 1, wiki hit (cold cache, re-scoring 3 candidates) | ~1s | ~600ms (Gemini) | ~1.6s |
+| Round 1, Gemini fallback (no wiki match) | ~1s | ~600ms | ~1.6s |
 | Success reveal | ~1s | ~0 (pure) | ~1s |
 | Skip-style reveal | ~1s | ~600ms (rewrite) | ~1.6s — fires once at exit |
 
-Well within hackathon-acceptable bounds.
+Well within hackathon-acceptable bounds. Steady-state for a team that returns to the same files repeatedly is the cached row (~1.05s).
 
 ---
 
