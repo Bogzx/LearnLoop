@@ -128,6 +128,7 @@ export interface WikiTreePrompt {
   template: string;
   topic: string | null;
   reuse_count: number;
+  author_user_id: string | null;
 }
 export interface WikiTreeNode {
   path: string;

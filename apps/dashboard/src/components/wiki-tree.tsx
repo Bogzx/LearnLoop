@@ -409,6 +409,17 @@ function Tree2D({
   );
 }
 
+// Render-friendly author label. Demo data has tokens like 'user_ana',
+// 'user_marco' or null for legacy rows; show emails verbatim, take the
+// suffix after the last underscore for tokens, fall back to anonymous.
+function formatAuthor(author: string | null | undefined): string {
+  if (!author) return 'anonymous';
+  if (author.includes('@')) return author;
+  if (author.startsWith('user_')) return author.slice(5);
+  if (author.length > 18) return `${author.slice(0, 16)}…`;
+  return author;
+}
+
 function ancestorChain(tree: Tree, selectedPath: string): WikiTreeNode[] {
   const paths: string[] = [];
   let cur = selectedPath;
@@ -514,146 +525,158 @@ function DetailPanel({
         </div>
       </div>
 
-      {bodyChain.length > 0 && (
-        <div>
-          <div className="mb-3 text-xs uppercase tracking-wider text-muted-foreground">
-            General info
+      {/* ── Section 1 — Onboarding Info ─────────────────────────── */}
+      <div>
+        <div className="mb-4 border-b border-border/60 pb-3">
+          <h3 className="text-xl font-semibold tracking-tight text-foreground">
+            Onboarding info
+          </h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Team prompting patterns and best prompts for this scope.
+          </p>
+        </div>
+        {prompts.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border bg-card/40 p-4 text-sm text-muted-foreground">
+            No graduated prompts here yet. Patterns appear once the team reuses
+            a prompt enough for it to be promoted.
           </div>
+        ) : (
           <div className="space-y-3">
-            {bodyChain.map((n) => {
-              const color = layerColorFor(n.path);
+            {prompts.map((p, idx) => {
+              const isTop = idx === 0;
               return (
-                <div key={n.path} className="space-y-1.5">
-                  <span
-                    className="inline-block rounded px-1.5 py-0.5 font-mono text-[11px]"
-                    style={{ background: withAlpha(color, 0.22), color }}
-                  >
-                    {n.path || '/'}
-                  </span>
-                  <pre
-                    className="whitespace-pre-wrap rounded border p-3 text-xs text-muted-foreground"
-                    style={{
-                      background: withAlpha(color, 0.06),
-                      borderColor: withAlpha(color, 0.35),
-                    }}
-                  >
-                    {n.body_md}
+                <div
+                  key={`${p.path}-${p.id}`}
+                  className={`rounded-lg border p-4 ${isTop ? 'border-foreground/30 bg-card' : 'border-border bg-card/60'}`}
+                >
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      {isTop && (
+                        <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono font-semibold text-amber-300">
+                          best
+                        </span>
+                      )}
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">
+                        {p.path || '/'}
+                      </span>
+                      {p.topic && (
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">
+                          {p.topic}
+                        </span>
+                      )}
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">
+                        {p.reuse_count}× reused
+                      </span>
+                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">
+                        ✍ {formatAuthor(p.author_user_id)}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(p.template);
+                      }}
+                      className="rounded border border-border bg-background px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <pre className="whitespace-pre-wrap rounded border border-border bg-background/40 p-3 text-xs text-foreground">
+                    {p.template}
                   </pre>
                 </div>
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {durables.length > 0 && (
-        <div>
-          <div className="mb-3 text-xs uppercase tracking-wider text-emerald-400">
-            Durable learnings
+      {/* ── Section 2 — Learnings (durable + draft) ──────────────── */}
+      <div>
+        <div className="mb-4 border-b border-border/60 pb-3">
+          <h3 className="text-xl font-semibold tracking-tight text-foreground">
+            Learnings
+          </h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Durable = reinforced 3+ times. Draft = awaiting reinforcement.
+          </p>
+        </div>
+        {durables.length === 0 && drafts.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border bg-card/40 p-4 text-sm text-muted-foreground">
+            No learnings here yet. Every <code className="font-mono">wiki_save</code>{' '}
+            from the team starts as a draft and gets promoted after 3 hits.
           </div>
+        ) : (
           <ul className="space-y-2">
-            {durables.map((l) => {
-              const color = layerColorFor(l.path);
-              return (
-                <li
-                  key={`${l.path}-${l.id}`}
-                  className="flex items-start gap-2 text-sm text-foreground"
-                >
-                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
-                  <span>
-                    <span
-                      className="rounded px-1 py-0 font-mono text-[10px]"
-                      style={{ background: withAlpha(color, 0.22), color }}
-                    >
-                      {l.path || '/'}
-                    </span>{' '}
-                    <span className="font-mono text-xs text-muted-foreground">
-                      ({l.reinforcement_count}×)
-                    </span>{' '}
-                    {l.body}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-
-      {drafts.length > 0 && (
-        <div>
-          <div className="mb-3 text-xs uppercase tracking-wider text-muted-foreground">
-            Draft learnings
-          </div>
-          <ul className="space-y-1.5">
-            {drafts.map((l) => {
-              const color = layerColorFor(l.path);
-              return (
-                <li
-                  key={`${l.path}-${l.id}`}
-                  className="flex items-start gap-2 text-xs italic text-muted-foreground"
-                >
-                  <span
-                    className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
-                    style={{ background: 'hsl(215 20% 65% / 0.4)' }}
-                  />
-                  <span>
-                    <span
-                      className="rounded px-1 py-0 font-mono text-[10px] not-italic"
-                      style={{ background: withAlpha(color, 0.22), color }}
-                    >
-                      {l.path || '/'}
-                    </span>{' '}
-                    <span className="font-mono">({l.reinforcement_count}×)</span>{' '}
-                    {l.body}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-
-      {prompts.length > 0 && (
-        <div>
-          <div className="mb-3 text-xs uppercase tracking-wider text-amber-400">
-            Graduated prompts
-          </div>
-          <ul className="space-y-3">
-            {prompts.map((p) => {
-              const color = layerColorFor(p.path);
-              return (
-                <li key={`${p.path}-${p.id}`} className="space-y-1.5">
-                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                    <span
-                      className="rounded px-1.5 py-0.5 font-mono"
-                      style={{ background: withAlpha(color, 0.22), color }}
-                    >
-                      {p.path || '/'}
-                    </span>
-                    {p.topic && (
-                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">
-                        {p.topic}
-                      </span>
-                    )}
-                    <span className="font-mono text-muted-foreground">
-                      {p.reuse_count}× reused
-                    </span>
-                  </div>
-                  <pre
-                    className="whitespace-pre-wrap rounded border p-3 text-xs text-foreground"
-                    style={{
-                      background: withAlpha(color, 0.06),
-                      borderColor: withAlpha(color, 0.35),
-                    }}
+            {[...durables.map((l) => ({ ...l, status: 'durable' as const })),
+              ...drafts.map((l) => ({ ...l, status: 'draft' as const }))]
+              .map((l) => {
+                const isDurable = l.status === 'durable';
+                return (
+                  <li
+                    key={`${l.path}-${l.id}`}
+                    className="flex items-start gap-3 rounded-lg border border-border bg-card/60 px-3 py-2.5"
                   >
-                    {p.template}
-                  </pre>
-                </li>
-              );
-            })}
+                    <span
+                      className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${isDurable ? 'bg-emerald-400' : 'bg-muted-foreground/40'}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2 text-[10px]">
+                        <span
+                          className={`rounded px-1.5 py-0.5 font-mono font-semibold uppercase tracking-wider ${isDurable ? 'bg-emerald-500/15 text-emerald-300' : 'bg-muted text-muted-foreground'}`}
+                        >
+                          {l.status}
+                        </span>
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">
+                          {l.path || '/'}
+                        </span>
+                        <span className="font-mono text-muted-foreground">
+                          {l.reinforcement_count}× reinforced
+                        </span>
+                      </div>
+                      <p
+                        className={`mt-1.5 text-sm ${isDurable ? 'text-foreground' : 'italic text-muted-foreground'}`}
+                      >
+                        {l.body}
+                      </p>
+                    </div>
+                  </li>
+                );
+              })}
           </ul>
+        )}
+      </div>
+
+      {/* ── Section 3 — Description of project (root → current) ──── */}
+      <div>
+        <div className="mb-4 border-b border-border/60 pb-3">
+          <h3 className="text-xl font-semibold tracking-tight text-foreground">
+            Description of project
+          </h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Cumulative narrative from root down to this folder.
+          </p>
         </div>
-      )}
+        {bodyChain.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border bg-card/40 p-4 text-sm text-muted-foreground">
+            No descriptions written yet for this scope. Run{' '}
+            <code className="font-mono">wiki_bootstrap</code> to generate them.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {bodyChain.map((n) => (
+              <div key={n.path} className="space-y-1.5">
+                <span className="inline-block rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                  {n.path || '/'}
+                </span>
+                <pre className="whitespace-pre-wrap rounded border border-border bg-background/40 p-3 text-xs text-muted-foreground">
+                  {n.body_md}
+                </pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
