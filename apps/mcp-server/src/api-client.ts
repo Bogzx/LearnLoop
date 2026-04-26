@@ -2,6 +2,8 @@
 // Reads URL + token from env so the same module works in MCP context (env
 // from .mcp.json) and in standalone tests (env from .env).
 import type {
+  CoachRequest,
+  CoachResponse,
   OnboardRepoFullRequest,
   OnboardRepoFullResponse,
   OnboardRepoRequest,
@@ -77,6 +79,10 @@ export class ApiClient {
 
   score(body: ScoreRequest): Promise<ScoreResponse> {
     return this.req('POST', '/score', body);
+  }
+
+  coach(body: CoachRequest): Promise<CoachResponse> {
+    return this.req('POST', '/coach', body);
   }
 
   wikiPropose(body: WikiProposeRequest): Promise<WikiProposeResponse> {

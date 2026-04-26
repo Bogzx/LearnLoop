@@ -1,22 +1,18 @@
-// Three hero MCP tools for Trailhead: `coach`, `wiki_lookup`, `wiki_save`.
+// Four hero MCP tools for Trailhead: `coach`, `wiki_lookup`, `wiki_save`,
+// `wiki_bootstrap`.
 //
-// The previous 7-tool surface (coach_score / coach_augment / coach_examples /
+// Previous 7-tool surface (coach_score / coach_augment / coach_examples /
 // wiki_update_learnings / wiki_context_for / wiki_rules_for / wiki_search) is
-// collapsed into 3 because Copilot Chat is markedly stingier than Claude Code
-// about firing tools when descriptions overlap. Three tools is the sweet
-// spot: one verb each (coach / lookup / save), no overlap, no jargon in the
-// short description.
+// collapsed because Copilot Chat is markedly stingier than Claude Code about
+// firing tools when descriptions overlap.
 //
-// All previous behavior is preserved by routing inside each handler:
-//   coach        → /score (+ buildAugmentation when mode='augment')
-//   wiki_lookup  → /context  (file_path) and/or /search (query)
-//   wiki_save    → /wiki/propose
-//
-// Spec ref: docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md §3
+// As of 2026-04-26 (educational-loop redesign), `coach` is a thin forwarder
+// to the API's POST /coach endpoint, which drives the teach→reveal cycle
+// server-side. The `proceed` boolean and rendered `text` are the only inputs
+// the directive needs. Spec ref:
+//   docs/superpowers/specs/2026-04-26-trailhead-educational-loop-design.md
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { buildAugmentation } from '@trailhead/scoring';
-import type { Dimension, MissingHints } from '@trailhead/shared';
 import type { ApiClient, ContextResponse, ExamplesResponse, SearchResponse } from './api-client.ts';
 import { runBootstrap, runRichBootstrap } from './bootstrap.ts';
 import type { WikiJobStatusResponse } from '@trailhead/shared';
@@ -25,36 +21,16 @@ import type { WikiJobStatusResponse } from '@trailhead/shared';
 // the rest of the demo posture.
 const COACH_USER_ID = 'demo';
 
-// Hardcoded clarifying questions per dimension. Keeps coach's "next question"
-// path off the LLM hot path — one fewer round-trip to Gemini.
-const NEXT_QUESTION_BY_DIMENSION: Record<Dimension, string> = {
-  context_loading:
-    'Which file or function is this about?',
-  constraint_articulation:
-    'What constraints apply? (max attempts, idempotency, side effects, etc.)',
-  output_specification:
-    'What output shape do you expect? (only the changed function, full file, etc.)',
-  goal_clarity:
-    'What outcome are you aiming for? Be concrete.',
-  specificity:
-    'What exactly should change? Name the function, error, or behavior.',
-};
-
-function pickNextQuestion(
-  dimensions: Record<Dimension, number>,
-  missing: MissingHints,
-): { dimension: Dimension; question: string } | null {
-  const sorted = (Object.entries(dimensions) as Array<[Dimension, number]>)
-    .filter(([, score]) => score < 7)
-    .sort(([, a], [, b]) => a - b);
-  if (!sorted.length) return null;
-  const [lowestDim] = sorted[0]!;
-  const hint = missing[lowestDim];
-  const question = hint
-    ? `${NEXT_QUESTION_BY_DIMENSION[lowestDim]} (gap: ${hint})`
-    : NEXT_QUESTION_BY_DIMENSION[lowestDim];
-  return { dimension: lowestDim, question };
-}
+// Reusable Zod schema for the 5-dim score block. Used both for `dimensions`
+// in the coach output and for the optional `original_dimensions` /
+// `previous_dimensions` round-state inputs the LLM echoes back.
+const DIMENSION_SCORES_SCHEMA = z.object({
+  goal_clarity: z.number().int().min(0).max(10),
+  specificity: z.number().int().min(0).max(10),
+  context_loading: z.number().int().min(0).max(10),
+  constraint_articulation: z.number().int().min(0).max(10),
+  output_specification: z.number().int().min(0).max(10),
+});
 
 // All tools share the same error shape so the model can react instead of
 // crashing.
@@ -130,9 +106,12 @@ function renderExamples(res: ExamplesResponse): string {
 export const COACH_DESC =
   'Use BEFORE answering any code task (fix, add, refactor, implement, ' +
   'change, debug). Scores the user prompt 0-10 on five dimensions and ' +
-  'returns a clarifying question to ask when the score is below 7. ' +
-  'Default mode="score". Use mode="augment" to rewrite the prompt ' +
-  'instead of scoring.';
+  'drives an educational coaching loop. The tool returns { proceed, ' +
+  'text, next_round_inputs? }: when proceed=false, relay text verbatim ' +
+  "and call coach again with the user's reply concatenated to the " +
+  'prompt and the four next_round_inputs fields echoed back; when ' +
+  'proceed=true, relay any non-empty text and produce your answer. ' +
+  "Use mode='skip_reveal' if the user dismisses coaching mid-loop.";
 
 export const WIKI_LOOKUP_DESC =
   'Use BEFORE writing code in a known file (pass file_path) OR when ' +
@@ -162,10 +141,14 @@ export const WIKI_BOOTSTRAP_DESC =
 // =============================================================================
 // Hero tool 1: `coach`
 //
-// Replaces the legacy coach_score + coach_augment. `mode='score'` (default)
-// returns the per-dimension scores and a next clarifying question.
-// `mode='augment'` rewrites the prompt with a built-in coaching addendum
-// for one-shot improvement.
+// Thin forwarder to POST /coach. The API drives the teach→reveal loop server-
+// side; this tool's only job is to surface `proceed` and `text` to the host
+// LLM with minimal ceremony.
+//
+// Inputs from round 2+ (or `mode: 'skip_reveal'`) include the round-state
+// fields (`original_prompt`, `original_dimensions`, `previous_dimensions`,
+// `round`) — the directive instructs the LLM to echo back whatever was in
+// `next_round_inputs` from the previous coach response.
 // =============================================================================
 export function registerCoach(server: McpServer, client: ApiClient): void {
   server.registerTool(
@@ -176,94 +159,93 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
         prompt: z
           .string()
           .min(1)
-          .describe("The user's exact prompt, scored as-is."),
+          .describe(
+            "Round 1: the user's exact prompt. Round 2+: original prompt + the user's reply, concatenated.",
+          ),
         file_path: z
           .string()
           .optional()
           .describe(
-            "Optional repo-relative file path the prompt refers to. Used to weight context_loading.",
+            'Optional repo-relative file path the prompt refers to. Used for wiki-anchored examples and weighting context_loading.',
           ),
         mode: z
-          .enum(['score', 'augment'])
+          .enum(['score', 'skip_reveal', 'augment'])
           .optional()
-          .describe('Default "score". Use "augment" to one-shot-rewrite the prompt instead.'),
+          .describe(
+            "Default 'score' (the teach→reveal loop). Pass 'skip_reveal' when the user dismisses coaching ('skip', 'just do it', etc.). 'augment' is a legacy passthrough that one-shot rewrites the prompt.",
+          ),
+        original_prompt: z
+          .string()
+          .optional()
+          .describe(
+            "Round 2+ / skip_reveal only. The user's first prompt of this coaching session — echoed from next_round_inputs.original_prompt.",
+          ),
+        original_dimensions: DIMENSION_SCORES_SCHEMA.optional().describe(
+          "Round 2+ / skip_reveal only. Echoed from next_round_inputs.original_dimensions.",
+        ),
+        previous_dimensions: DIMENSION_SCORES_SCHEMA.optional().describe(
+          "Round 2+ only. Echoed from next_round_inputs.previous_dimensions. Used by the server to detect no-progress.",
+        ),
+        round: z
+          .number()
+          .int()
+          .min(1)
+          .max(3)
+          .optional()
+          .describe('Round 2+ only. Echoed from next_round_inputs.round. Server clamps to [1, 3].'),
       },
       outputSchema: {
-        mode: z.enum(['score', 'augment']),
-        // Populated when mode='score' (always on, even after augment for visibility).
+        proceed: z.boolean(),
+        mode: z.enum(['score', 'skip_reveal', 'augment']),
         overall: z.number().int().min(0).max(10),
-        dimensions: z.object({
-          goal_clarity: z.number().int().min(0).max(10),
-          specificity: z.number().int().min(0).max(10),
-          context_loading: z.number().int().min(0).max(10),
-          constraint_articulation: z.number().int().min(0).max(10),
-          output_specification: z.number().int().min(0).max(10),
-        }),
+        dimensions: DIMENSION_SCORES_SCHEMA,
         missing: z.record(z.string(), z.string()),
-        next_question: z
-          .object({ dimension: z.string(), question: z.string() })
-          .nullable(),
-        // Populated when mode='augment'.
+        text: z.string(),
+        next_round_inputs: z
+          .object({
+            original_prompt: z.string(),
+            original_dimensions: DIMENSION_SCORES_SCHEMA,
+            previous_dimensions: DIMENSION_SCORES_SCHEMA,
+            round: z.number().int(),
+          })
+          .optional(),
         augmented_prompt: z.string().optional(),
         missing_dims: z.array(z.string()).optional(),
       },
     },
-    async ({ prompt, file_path, mode }) => {
+    async (input) => {
       try {
-        const resolvedMode = mode ?? 'score';
-        const score = await client.score({
-          prompt,
-          file_path,
+        const res = await client.coach({
+          prompt: input.prompt,
+          file_path: input.file_path,
+          mode: input.mode,
+          original_prompt: input.original_prompt,
+          original_dimensions: input.original_dimensions,
+          previous_dimensions: input.previous_dimensions,
+          round: input.round,
           user_id: COACH_USER_ID,
         });
-        const next = pickNextQuestion(score.dimensions, score.missing);
 
-        if (resolvedMode === 'augment') {
-          const augmented = buildAugmentation({
-            original: prompt,
-            missing: score.missing as Record<string, string>,
-          });
-          const missingDims = Object.keys(score.missing);
-          return {
-            structuredContent: {
-              mode: 'augment' as const,
-              overall: score.overall,
-              dimensions: score.dimensions,
-              missing: score.missing as Record<string, string>,
-              next_question: next,
-              augmented_prompt: augmented,
-              missing_dims: missingDims,
-            },
-            content: [
-              {
-                type: 'text' as const,
-                text:
-                  `original overall: ${score.overall}/10\n` +
-                  `missing: ${missingDims.length ? missingDims.join(', ') : '(none — augmentation is a no-op)'}\n\n` +
-                  `--- augmented prompt ---\n${augmented}`,
-              },
-            ],
-          };
+        // Surface a human-readable rendering for the tool log. The directive
+        // tells the LLM to read structuredContent (`proceed`, `text`); this
+        // text is mostly for debug.
+        let logText: string;
+        if (res.text && res.text.trim()) {
+          logText = res.text;
+        } else if (res.proceed && res.mode === 'score') {
+          logText = `(coach overall: ${res.overall}/10 — no coaching needed)`;
+        } else if (res.mode === 'augment') {
+          logText =
+            `original overall: ${res.overall}/10\n` +
+            `missing: ${(res.missing_dims ?? []).join(', ') || '(none — augmentation is a no-op)'}\n\n` +
+            `--- augmented prompt ---\n${res.augmented_prompt ?? ''}`;
+        } else {
+          logText = `(coach overall: ${res.overall}/10)`;
         }
 
-        // mode === 'score'
-        const lines = [
-          `overall: ${score.overall}/10`,
-          ...(Object.entries(score.dimensions) as Array<[Dimension, number]>).map(
-            ([d, s]) => `  ${s >= 7 ? '✓' : '✗'} ${d}: ${s}`,
-          ),
-        ];
-        if (next) lines.push('', `next question: ${next.question}`);
-        else lines.push('', 'no coaching needed (score >= 7)');
         return {
-          structuredContent: {
-            mode: 'score' as const,
-            overall: score.overall,
-            dimensions: score.dimensions,
-            missing: score.missing as Record<string, string>,
-            next_question: next,
-          },
-          content: [{ type: 'text' as const, text: lines.join('\n') }],
+          structuredContent: { ...res },
+          content: [{ type: 'text' as const, text: logText }],
         };
       } catch (e) {
         return asError(e);
