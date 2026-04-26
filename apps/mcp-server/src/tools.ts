@@ -21,16 +21,22 @@ import type { WikiJobStatusResponse } from '@trailhead/shared';
 // the rest of the demo posture.
 const COACH_USER_ID = 'demo';
 
-// Reusable Zod schema for the 5-dim score block. Used both for `dimensions`
-// in the coach output and for the optional `original_dimensions` /
-// `previous_dimensions` round-state inputs the LLM echoes back.
-const DIMENSION_SCORES_SCHEMA = z.object({
-  goal_clarity: z.number().int().min(0).max(10),
-  specificity: z.number().int().min(0).max(10),
-  context_loading: z.number().int().min(0).max(10),
-  constraint_articulation: z.number().int().min(0).max(10),
-  output_specification: z.number().int().min(0).max(10),
-});
+// 5-dim score block. Returned as a factory rather than a shared constant
+// because zod-to-json-schema dedupes shared object identity into `$ref`
+// references, and at least one popular MCP client (Gemini Antigravity, as of
+// 2026-04-26) crashes with "Cannot read properties of undefined (reading
+// 'invoke')" when the tool schema contains internal `$ref`s. Calling this
+// factory at each usage produces a fresh object and forces the converter to
+// inline the schema every time.
+function dimensionScoresSchema() {
+  return z.object({
+    goal_clarity: z.number().int().min(0).max(10),
+    specificity: z.number().int().min(0).max(10),
+    context_loading: z.number().int().min(0).max(10),
+    constraint_articulation: z.number().int().min(0).max(10),
+    output_specification: z.number().int().min(0).max(10),
+  });
+}
 
 // All tools share the same error shape so the model can react instead of
 // crashing.
@@ -211,10 +217,10 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
           .describe(
             "Round 2+ / skip_reveal only. The user's first prompt of this coaching session — echoed from next_round_inputs.original_prompt.",
           ),
-        original_dimensions: DIMENSION_SCORES_SCHEMA.optional().describe(
+        original_dimensions: dimensionScoresSchema().optional().describe(
           "Round 2+ / skip_reveal only. Echoed from next_round_inputs.original_dimensions.",
         ),
-        previous_dimensions: DIMENSION_SCORES_SCHEMA.optional().describe(
+        previous_dimensions: dimensionScoresSchema().optional().describe(
           "Round 2+ only. Echoed from next_round_inputs.previous_dimensions. Used by the server to detect no-progress.",
         ),
         round: z
@@ -229,14 +235,14 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
         proceed: z.boolean(),
         mode: z.enum(['score', 'skip_reveal', 'augment']),
         overall: z.number().int().min(0).max(10),
-        dimensions: DIMENSION_SCORES_SCHEMA,
+        dimensions: dimensionScoresSchema(),
         missing: z.record(z.string(), z.string()),
         text: z.string(),
         next_round_inputs: z
           .object({
             original_prompt: z.string(),
-            original_dimensions: DIMENSION_SCORES_SCHEMA,
-            previous_dimensions: DIMENSION_SCORES_SCHEMA,
+            original_dimensions: dimensionScoresSchema(),
+            previous_dimensions: dimensionScoresSchema(),
             round: z.number().int(),
           })
           .optional(),
@@ -354,14 +360,11 @@ export function registerWikiLookup(server: McpServer, client: ApiClient): void {
             sections.push(renderSearch(results, query));
           }
         } else if (query) {
-          // Free-text search, unscoped.
-          let results: SearchResponse;
-          try {
-            results = await client.search(query);
-          } catch {
-            const ctx = await client.context('');
-            results = searchInContext(ctx, query);
-          }
+          // Free-text search, unscoped. /search is the only path that works
+          // here — the previous fallback called /context with empty path,
+          // which the API rejects with 400 missing_path (the GET requires a
+          // non-empty `?path=`). Surface a clear error instead.
+          const results = await client.search(query);
           sections.push(`# search results for "${query}"`);
           sections.push(renderSearch(results, query));
         }

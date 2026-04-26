@@ -11,8 +11,8 @@ const SERVER = resolve(__dirname, 'index.ts');
 const child = spawn('npx', ['--yes', 'tsx', SERVER], {
   env: {
     ...process.env,
-    TRAILHEAD_API_URL: 'https://trailheadapi-production.up.railway.app',
-    TRAILHEAD_TEAM_TOKEN: 'trailhead_demo_acme_2026',
+    TRAILHEAD_API_URL: process.env.TRAILHEAD_API_URL ?? 'https://trailheadapi-production.up.railway.app',
+    TRAILHEAD_TEAM_TOKEN: process.env.TRAILHEAD_TEAM_TOKEN ?? 'trailhead_demo_acme_2026',
   },
   stdio: ['pipe', 'pipe', 'pipe'],
   shell: process.platform === 'win32',

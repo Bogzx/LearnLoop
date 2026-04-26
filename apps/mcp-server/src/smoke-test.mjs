@@ -265,6 +265,23 @@ function fail(msg) {
   }
   console.log('wiki_lookup validation OK (rejected empty args)');
 
+  // 12b. wiki_lookup with only `query` — must hit /search and return a non-
+  // error response. Pre-fix this path fell through to /context?path= which
+  // the API rejects with 400 missing_path; the regression was invisible to
+  // earlier smoke runs because they only covered the file_path branch.
+  const lookupQueryRes = await send('tools/call', {
+    name: 'wiki_lookup',
+    arguments: { query: 'webhook' },
+  });
+  if (lookupQueryRes.result?.isError) {
+    fail(`wiki_lookup (query only) error: ${JSON.stringify(lookupQueryRes.result)}`);
+  }
+  const queryText = lookupQueryRes.result?.content?.[0]?.text ?? '';
+  if (!queryText.startsWith('# search results for')) {
+    fail(`wiki_lookup (query only) unexpected content: ${queryText.slice(0, 80)}`);
+  }
+  console.log(`wiki_lookup OK (query only): ${queryText.slice(0, 60)}…`);
+
   // 13. wiki_bootstrap with explicit mode='minimal' — idempotent against the
   // seeded demo team. paths_submitted should equal what we sent. We use
   // minimal so the smoke test stays fast and free; rich mode is exercised
