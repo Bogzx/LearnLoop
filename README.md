@@ -12,7 +12,7 @@ prompting" compounds without anyone writing docs.
 - **Landing page / waitlist:** <https://learnloop-gules.vercel.app/>
 - **Demo video (3 min walkthrough):** <https://www.youtube.com/watch?v=kD6nnJAmRK8>
 
-[![Watch the demo](https://img.youtube.com/vi/kD6nnJAmRK8/maxresdefault.jpg)](https://www.youtube.com/watch?v=kD6nnJAmRK8 "LearnLoop — 3 minute walkthrough")
+
 
 ### Screenshots
 
