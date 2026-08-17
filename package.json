@@ -1,6 +1,7 @@
 {
   "name": "trailhead",
-  "version": "0.0.0",
+  "version": "0.0.0",
+  "license": "MIT",
   "private": true,
   "description": "Trailhead — prompt-skill coach. PoliHack 2026-04-25. Spec: docs/superpowers/specs/2026-04-25-trailhead-design.md",
   "workspaces": [
