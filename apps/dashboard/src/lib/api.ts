@@ -1,7 +1,8 @@
 // Thin SWR-friendly client for the Trailhead API. Every fetcher takes a
-// `token` so the dashboard can render any team's data — the team picker
-// fetches /teams (no auth) and routes each team card to ?team=<token>;
-// downstream pages read that param and pass it into these calls.
+// `token` and sends it as X-Team-Token — the whole API (including GET /teams)
+// authenticates on that header. The home page resolves the caller's own team
+// via GET /teams and routes each link to ?team=<token>; downstream pages read
+// that param and pass it into these calls.
 //
 // Tokens aren't secrets in this design — they're derived from public git
 // remotes. See master spec §3 for the trust model.
@@ -12,7 +13,6 @@ import type {
   ScoreResponse,
   SkillArcResponse,
   TeamMetricsResponse,
-  TeamsListResponse,
   WikiRecentResponse,
   WikiTreeResponse,
 } from '@trailhead/shared';
@@ -76,21 +76,15 @@ async function fetcher<T>(path: string, token: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-// Public team enumeration — no auth header required server-side.
-async function fetchListTeams(): Promise<TeamsListResponse> {
-  const res = await guardedFetch(`${API_URL}/teams`);
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`trailhead-api /teams ${res.status}: ${text.slice(0, 200)}`);
-  }
-  return (await res.json()) as TeamsListResponse;
-}
-
 // Typed convenience wrappers. Each page imports the one it needs and
 // passes it as the SWR fetcher; this keeps useSWR<T> generics inferred
 // without each page restating the path string.
+//
+// There is no listTeams() here: GET /teams is authenticated and returns only
+// the caller's own team, so the home page fetches it directly with its
+// configured token (see app/page.tsx) rather than through an unauthenticated
+// enumeration helper.
 export const api = {
-  listTeams: (): Promise<TeamsListResponse> => fetchListTeams(),
   skillArc: (token: string, since?: string, userId?: string): Promise<SkillArcResponse> => {
     const params = new URLSearchParams();
     if (since) params.set('since', since);
