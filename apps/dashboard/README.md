@@ -44,8 +44,10 @@ npm --workspace=apps/dashboard run build      # ~5s, static export
 npm --workspace=apps/dashboard run typecheck  # tsc --noEmit
 ```
 
-All four routes prerender as static (`○` in the build output) — they hydrate
-on the client and SWR drives the live data.
+There are five routes: `/`, `/onboarding`, `/skill-arc`, `/team` and `/wiki`.
+Four prerender as static (`○` in the build output) and hydrate on the client
+with SWR driving the live data. `/` is `export const dynamic = 'force-dynamic'`
+(`ƒ` in the build output) because it fetches the team list per request.
 
 ## Deploy to Vercel
 
