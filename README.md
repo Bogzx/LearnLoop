@@ -63,7 +63,7 @@ Endpoints implemented in `apps/api/src/index.ts`:
 | Method + Path | What it does |
 |---|---|
 | `GET  /` | Health + endpoint catalog (unauth) |
-| `GET  /teams` | List all teams with tokens (unauth, drives the dashboard team picker) |
+| `GET  /teams` | Resolves the caller's own team (authenticated). Never returns tokens — `{ name, id }` where `id` is an opaque digest |
 | `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
 | `POST /coach` | Stateless 3-round teach→reveal coaching loop |
 | `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
@@ -76,6 +76,7 @@ Endpoints implemented in `apps/api/src/index.ts`:
 | `GET  /skill-arc` | Time-series of per-dimension scores (powers the dashboard hero chart) |
 | `GET  /team/metrics` | Snapshot: avg overall, reuse rate, durable count, draft count, active users |
 | `GET  /wiki/tree` | Full node + learnings tree |
+| `GET  /wiki/export` | The whole team wiki as one markdown document (`?drafts=true`, `?format=json`) |
 | `POST /onboard/repo` | Bulk-upsert one node per path, idempotent, optional `initial_rules[path]` for seeding `body_md` |
 | `POST /onboard/repo/full` | Async rich bootstrap: accepts a folder + file bundle (capped at 16 MB / 2 000 files / 32 KB per file), enqueues a `wiki_jobs` row, three-pass Gemini fan-out via `setImmediate` |
 | `GET  /onboard/jobs/:id` | Per-path progress for a rich-bootstrap job |
@@ -94,7 +95,8 @@ Tracing silently no-ops when keys are missing.
 ### `apps/browser-ext` — Chrome MV3 extension for Claude.ai
 
 Vanilla TypeScript + esbuild. Manifest declares `https://claude.ai/*` as the
-content-script host and pre-allowlists the deployed Railway API.
+content-script host and allowlists `http://localhost/*` for a self-hosted API.
+The popup's **API server** row shows and edits that URL.
 
 Implemented widgets (`src/widgets/`):
 
@@ -227,6 +229,26 @@ docs/
 ---
 
 ## Quick start
+
+Trailhead is self-hosted. There is no hosted backend to sign up for — you run
+the API, and every client points at it.
+
+### The short way: Docker
+
+Everything you need is Docker and a Gemini API key from
+<https://aistudio.google.com/apikey>.
+
+```bash
+cp .env.example .env     # then put your Gemini key in it
+docker compose up
+# → API on http://localhost:3000, Postgres schema applied automatically
+```
+
+That is the whole setup. See [SELFHOSTING.md](SELFHOSTING.md) for pointing the
+browser extension, VS Code extension, MCP server and dashboard at it, and for
+running against an external database instead.
+
+### The long way: local Node + your own Postgres
 
 Prerequisites:
 
