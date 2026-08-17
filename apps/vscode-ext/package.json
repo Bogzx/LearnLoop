@@ -2,7 +2,9 @@
   "name": "trailhead-vscode",
   "displayName": "Trailhead",
   "description": "Prompt-skill coach in your sidebar — score-card, team-anchored examples, autonomous wiki updates.",
-  "version": "0.0.1",
+  "version": "0.0.1",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/Bogzx/LearnLoop.git", "directory": "apps/vscode-ext" },
   "private": true,
   "publisher": "trailhead",
   "engines": {
@@ -17,7 +19,7 @@
         {
           "id": "trailhead",
           "title": "Trailhead",
-          "icon": "$(rocket)"
+          "icon": "media/trailhead.svg"
         }
       ]
     },
@@ -41,8 +43,8 @@
       "properties": {
         "trailhead.apiUrl": {
           "type": "string",
-          "default": "https://trailheadapi-production.up.railway.app",
-          "description": "Trailhead API base URL."
+          "default": "http://localhost:3000",
+          "description": "Base URL of your self-hosted Trailhead API. Trailhead ships no hosted backend — bring one up with `docker compose up` from the repo root (see SELFHOSTING.md), then point this at it. Defaults to the port that compose publishes."
         },
         "trailhead.teamToken": {
           "type": "string",

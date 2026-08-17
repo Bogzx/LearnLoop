@@ -20,7 +20,8 @@ import type {
   ScoreResponse,
   WikiRecentResponse,
 } from '@trailhead/shared';
-import { API_URL, FETCH_TIMEOUT_MS, TRAILHEAD_ERROR_TAG } from './config.ts';
+import { FETCH_TIMEOUT_MS, TRAILHEAD_ERROR_TAG } from './config.ts';
+import { apiUnreachableHint, getApiUrl } from './api-url-state.ts';
 import { getTeamToken } from './team-state.ts';
 import { getContextPath } from './context-state.ts';
 
@@ -44,6 +45,20 @@ function withTimeout(ac: AbortController, ms: number): () => void {
   return () => clearTimeout(id);
 }
 
+// Failure logging. A self-hosted API that isn't running (or is configured to
+// the wrong host) fails at the network layer, which fetch reports as TypeError
+// — distinct from a 4xx/5xx, which resolves normally and returns null. Those
+// get the actionable "here is what to fix" message rather than an opaque
+// stack, so an unconfigured API is never a silent no-op.
+function logFailure(path: string, err: unknown): void {
+  if (err instanceof DOMException && err.name === 'AbortError') return;
+  if (err instanceof TypeError) {
+    console.warn(`${apiUnreachableHint()} (request: ${path})`, err);
+    return;
+  }
+  console.warn(`${TRAILHEAD_ERROR_TAG} ${path} failed`, err);
+}
+
 function headers(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
@@ -59,7 +74,7 @@ async function call<T>(
   const ac = abortPrev(key);
   const stop = withTimeout(ac, FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(`${API_URL}${path}`, {
+    const res = await fetch(`${getApiUrl()}${path}`, {
       method: init.method,
       headers: headers(),
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
@@ -70,9 +85,7 @@ async function call<T>(
   } catch (err) {
     // Aborts and network errors share a single failure path. We log so the
     // demonstrator can `console.warn` to debug; we never re-throw.
-    if (!(err instanceof DOMException && err.name === 'AbortError')) {
-      console.warn(`${TRAILHEAD_ERROR_TAG} ${path} failed`, err);
-    }
+    logFailure(path, err);
     return null;
   } finally {
     stop();
@@ -113,7 +126,7 @@ export async function coach(body: CoachRequest): Promise<CoachResponse | null> {
   const ac = new AbortController();
   const stop = setTimeout(() => ac.abort(), 25_000);
   try {
-    const res = await fetch(`${API_URL}/coach`, {
+    const res = await fetch(`${getApiUrl()}/coach`, {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify(enriched),
@@ -122,9 +135,7 @@ export async function coach(body: CoachRequest): Promise<CoachResponse | null> {
     if (!res.ok) return null;
     return (await res.json()) as CoachResponse;
   } catch (err) {
-    if (!(err instanceof DOMException && err.name === 'AbortError')) {
-      console.warn(`${TRAILHEAD_ERROR_TAG} /coach failed`, err);
-    }
+    logFailure('/coach', err);
     return null;
   } finally {
     clearTimeout(stop);
@@ -140,7 +151,7 @@ export async function improve(body: ImproveRequest): Promise<ImproveResponse | n
   const ac = new AbortController();
   const stop = setTimeout(() => ac.abort(), 25_000);
   try {
-    const res = await fetch(`${API_URL}/improve`, {
+    const res = await fetch(`${getApiUrl()}/improve`, {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify(enriched),
@@ -149,9 +160,7 @@ export async function improve(body: ImproveRequest): Promise<ImproveResponse | n
     if (!res.ok) return null;
     return (await res.json()) as ImproveResponse;
   } catch (err) {
-    if (!(err instanceof DOMException && err.name === 'AbortError')) {
-      console.warn(`${TRAILHEAD_ERROR_TAG} /improve failed`, err);
-    }
+    logFailure('/improve', err);
     return null;
   } finally {
     clearTimeout(stop);

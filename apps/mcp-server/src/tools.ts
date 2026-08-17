@@ -303,6 +303,8 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
         dimensions: dimensionScoresSchema(),
         missing: z.record(z.string(), z.string()),
         text: z.string(),
+        degraded: z.boolean().optional(),
+        error: z.string().optional(),
         next_round_inputs: z
           .object({
             original_prompt: z.string(),
@@ -334,7 +336,13 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
         // tells the LLM to read structuredContent (`proceed`, `text`); this
         // text is mostly for debug.
         let logText: string;
-        if (res.text && res.text.trim()) {
+        if (res.degraded) {
+          // Never let a scoring outage render as "no coaching needed" — that
+          // is exactly how it stayed invisible before.
+          logText = res.text?.trim()
+            ? res.text
+            : `(coach unavailable: ${res.error ?? 'unknown error'} — prompt was NOT scored)`;
+        } else if (res.text && res.text.trim()) {
           logText = res.text;
         } else if (res.proceed && res.mode === 'score') {
           logText = `(coach overall: ${res.overall}/10 — no coaching needed)`;

@@ -1,19 +1,39 @@
 #!/usr/bin/env bash
 # Live API smoke test (spec §7.4). Hand-runnable: covers /score, /capture,
-# /diff, /wiki/recent against the deployed Railway endpoint with the demo
-# team token. Pass --local to point at http://localhost:3000.
+# /diff, /wiki/recent against a self-hosted Trailhead API with the demo team
+# token.
+#
+# Trailhead has no hosted API — bring one up with `docker compose up` from the
+# repo root (see SELFHOSTING.md). Set TRAILHEAD_API_URL to point elsewhere.
 
 set -euo pipefail
 
-API_URL="${TRAILHEAD_API_URL:-https://trailheadapi-production.up.railway.app}"
+DEFAULT_API_URL="http://localhost:3000"
+API_URL="${TRAILHEAD_API_URL:-}"
 TOKEN="${TRAILHEAD_TEAM_TOKEN:-trailhead_demo_acme_2026}"
 
 if [[ "${1:-}" == "--local" ]]; then
-  API_URL="http://localhost:3000"
+  API_URL="$DEFAULT_API_URL"
+fi
+
+if [[ -z "$API_URL" ]]; then
+  API_URL="$DEFAULT_API_URL"
+  echo "! TRAILHEAD_API_URL not set — defaulting to ${API_URL}" >&2
+  echo "  Start a self-hosted API with \`docker compose up\` from the repo root," >&2
+  echo "  or export TRAILHEAD_API_URL=<your api base url>." >&2
+  echo >&2
 fi
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "smoke.sh requires curl" >&2
+  exit 1
+fi
+
+# Fail loudly and early rather than emitting six confusing curl errors.
+if ! curl -sSf -o /dev/null --max-time 5 "${API_URL}/teams" 2>/dev/null; then
+  echo "! Cannot reach a Trailhead API at ${API_URL}" >&2
+  echo "  Start one with \`docker compose up\` (see SELFHOSTING.md), or set" >&2
+  echo "  TRAILHEAD_API_URL to the base URL of your server." >&2
   exit 1
 fi
 JQ="cat"

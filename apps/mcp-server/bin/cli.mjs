@@ -26,6 +26,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInit } from './init.mjs';
 import { deriveRepoToken } from '../src/token.mjs';
+import { resolveApiUrl } from '../src/api-url.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cmd = process.argv[2] ?? 'help';
@@ -50,10 +51,7 @@ function resolveToken({ cwd }) {
 if (cmd === 'init') {
   const cwd = process.cwd();
   const { token, source, remoteUrl } = resolveToken({ cwd });
-  const apiUrl =
-    flagValue('--api-url') ??
-    process.env.TRAILHEAD_API_URL ??
-    'https://trailheadapi-production.up.railway.app';
+  const apiUrl = resolveApiUrl(flagValue('--api-url'));
 
   const sourceLabel = {
     flag: '--team-token',
@@ -64,6 +62,7 @@ if (cmd === 'init') {
   }[source];
   console.log(`Token: ${token}`);
   console.log(`Source: ${sourceLabel}`);
+  console.log(`API: ${apiUrl}`);
   console.log('');
 
   await runInit({

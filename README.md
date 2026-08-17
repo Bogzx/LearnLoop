@@ -63,7 +63,7 @@ Endpoints implemented in `apps/api/src/index.ts`:
 | Method + Path | What it does |
 |---|---|
 | `GET  /` | Health + endpoint catalog (unauth) |
-| `GET  /teams` | List all teams with tokens (unauth, drives the dashboard team picker) |
+| `GET  /teams` | Resolves the caller's own team (authenticated). Never returns tokens — `{ name, id }` where `id` is an opaque digest |
 | `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
 | `POST /coach` | Stateless 3-round teach→reveal coaching loop |
 | `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
@@ -71,18 +71,21 @@ Endpoints implemented in `apps/api/src/index.ts`:
 | `GET  /context?path=` | Ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
 | `GET  /examples?path=` | Top graduated prompts for an ancestor of a file path |
 | `GET  /wiki/recent?since=ISO` | Polling endpoint for the VS Code wiki-toast surface |
-| `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, asks Gemini Pro to narrate the difference |
+| `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, asks Gemini to narrate the difference |
 | `POST /improve` | Multi-turn Gemini-driven prompt rewrite, capped at 5 user replies |
 | `GET  /skill-arc` | Time-series of per-dimension scores (powers the dashboard hero chart) |
 | `GET  /team/metrics` | Snapshot: avg overall, reuse rate, durable count, draft count, active users |
 | `GET  /wiki/tree` | Full node + learnings tree |
+| `GET  /wiki/export` | The whole team wiki as one markdown document (`?drafts=true`, `?format=json`) |
 | `POST /onboard/repo` | Bulk-upsert one node per path, idempotent, optional `initial_rules[path]` for seeding `body_md` |
 | `POST /onboard/repo/full` | Async rich bootstrap: accepts a folder + file bundle (capped at 16 MB / 2 000 files / 32 KB per file), enqueues a `wiki_jobs` row, three-pass Gemini fan-out via `setImmediate` |
 | `GET  /onboard/jobs/:id` | Per-path progress for a rich-bootstrap job |
 | `DELETE /team/data` | Wipes the requesting team's data; demo team is protected unless `TRAILHEAD_ALLOW_DEMO_RESET=true` |
 
-LLM work runs through `apps/api/src/gemini.ts`: Gemini 2.5 Flash for scoring
-(JSON-schema mode), Gemini 2.5 Pro for diff narration and rich bootstrap.
+LLM work runs through `apps/api/src/gemini.ts`. Model assignments live in
+`packages/scoring/src/models.mjs`: `gemini-3-flash-preview` for scoring
+(JSON-schema mode), topic extraction and diff narration; `gemma-4-31b-it` for
+async learning extraction, where latency is tolerable.
 
 Every Gemini call is instrumented with **Langfuse** when
 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set — one trace per HTTP
@@ -92,11 +95,12 @@ Tracing silently no-ops when keys are missing.
 ### `apps/browser-ext` — Chrome MV3 extension for Claude.ai
 
 Vanilla TypeScript + esbuild. Manifest declares `https://claude.ai/*` as the
-content-script host and pre-allowlists the deployed Railway API.
+content-script host and allowlists `http://localhost/*` for a self-hosted API.
+The popup's **API server** row shows and edits that URL.
 
 Implemented widgets (`src/widgets/`):
 
-- **Score card** under the textarea — debounced 250 ms hits to `/score`,
+- **Score card** under the textarea — scores on send (not on keystroke),
   per-dimension bars, missing-dimension hints
 - **Score badge** on each user bubble
 - **Prompt diff panel** — "Compare to team" expands a `/diff` view inline
@@ -104,9 +108,10 @@ Implemented widgets (`src/widgets/`):
 - **Wiki toast** — drops in when `/wiki/recent` polling sees a new learning
 - **Improve chat** — multi-turn rewrite using `/improve`
 - **Context pill + popup** — pick a wiki node to bias scoring
-- **Send-intercept** — on send: `≥ 7` lets the native send fire; `< 7` shows a
-  5-second nudge with *Have Claude clarify* / *Send as-is*; auto-sends as-is on
-  timeout. Fail-open on every API error.
+- **Send-intercept** — on send: `≥ 7` lets the native send fire; `< 7` keeps the
+  score card up with *Improve* / *Send as-is* / *Edit* and waits for the user.
+  There is no timer and nothing is ever sent automatically. Fail-open on every
+  API error.
 
 Kill-switch: `chrome.storage.local.set({ 'trailhead.disabled': true })` halts
 the extension on next page load.
@@ -120,9 +125,8 @@ toasts when `/wiki/recent` reports a new insight.
 
 ### `apps/mcp-server` — MCP server for Claude Code + Copilot Chat
 
-STDIO MCP server distributed via `npx trailhead-mcp …`. Four hero tools
-deliberately collapsed from a previous seven-tool surface so Copilot's tool
-selector picks reliably:
+STDIO MCP server. Five hero tools, deliberately collapsed from a previous
+seven-tool surface so Copilot's tool selector picks reliably:
 
 | Tool | Routes to |
 |---|---|
@@ -130,8 +134,14 @@ selector picks reliably:
 | `wiki_lookup` | `GET /context` + `GET /examples` (file-path based) and/or `GET /search` (query) |
 | `wiki_save` | `POST /wiki/propose` with server-side dedup |
 | `wiki_bootstrap` | `POST /onboard/repo` (skeleton) or `POST /onboard/repo/full` (rich, LLM-populated) |
+| `wiki_proven_prompts` | `GET /prompts/proven` — the team's graduated prompts, filterable by score, path and topic |
 
 Plus a `ping` for health checks.
+
+> **Not published to npm.** The package is `private: true` and neither
+> `trailhead-mcp` nor `@trailhead/mcp-server` exists on the registry, so
+> `npx trailhead-mcp` does not work. Run it from a clone — see
+> [SELFHOSTING.md](SELFHOSTING.md).
 
 CLI subcommands (`bin/cli.mjs`):
 
@@ -151,7 +161,8 @@ CLI subcommands (`bin/cli.mjs`):
 App router, server components for the team list, SWR for the live charts.
 Pages (`src/app/`):
 
-- `/` — team picker (lists every team returned by `/teams`)
+- `/` — team view (shows the caller's own team; `GET /teams` is authenticated
+  and returns only the team the configured token resolves to)
 - `/skill-arc?team=…` — per-dimension team chart driven by `/skill-arc`,
   polls every 2 s during the demo
 - `/team?team=…` — L1→L2 metric cards from `/team/metrics`
@@ -220,6 +231,26 @@ docs/
 
 ## Quick start
 
+Trailhead is self-hosted. There is no hosted backend to sign up for — you run
+the API, and every client points at it.
+
+### The short way: Docker
+
+Everything you need is Docker and a Gemini API key from
+<https://aistudio.google.com/apikey>.
+
+```bash
+cp .env.example .env     # then put your Gemini key in it
+docker compose up
+# → API on http://localhost:3000, Postgres schema applied automatically
+```
+
+That is the whole setup. See [SELFHOSTING.md](SELFHOSTING.md) for pointing the
+browser extension, VS Code extension, MCP server and dashboard at it, and for
+running against an external database instead.
+
+### The long way: local Node + your own Postgres
+
 Prerequisites:
 
 - Node `>= 22.6`
@@ -262,10 +293,12 @@ npm --workspace=@trailhead/browser-ext run build
 # VS Code extension — build, then F5 with apps/vscode-ext as the workspace
 npm --workspace=apps/vscode-ext run build
 
-# MCP server — install into a target repo
+# MCP server — install into a target repo. The package is unpublished
+# (private: true), so `npx trailhead-mcp` does NOT work — invoke the CLI by
+# path from this clone. It operates on the cwd, so cd into the target first.
 cd /path/to/your/repo
-npx trailhead-mcp init
-npx trailhead-mcp bootstrap
+node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs init
+node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs bootstrap
 ```
 
 ### Workspace scripts
@@ -285,7 +318,7 @@ Single root `.env.example` — every surface reads from the same set.
 | Var | Used by | Notes |
 |---|---|---|
 | `DATABASE_URL` | api | Postgres connection string, `sslmode=require` |
-| `GEMINI_API_KEY` | api | Gemini 2.5 Flash + 2.5 Pro |
+| `GEMINI_API_KEY` | api | `gemini-3-flash-preview` + `gemma-4-31b-it` |
 | `LANGFUSE_PUBLIC_KEY` | api | Optional. Hosted Langfuse public key (`pk-lf-…`) |
 | `LANGFUSE_SECRET_KEY` | api | Optional. Hosted Langfuse secret key (`sk-lf-…`) |
 | `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
@@ -310,18 +343,20 @@ Single root `.env.example` — every surface reads from the same set.
   <https://learnloop-gules.vercel.app/>.
 - **Browser extension** → loaded unpacked from `apps/browser-ext/dist/`.
 - **VS Code extension** → `vsce package` from `apps/vscode-ext/`.
-- **MCP server** → distributed via `npx trailhead-mcp init` (per-repo wiring,
+- **MCP server** → not published to npm (`private: true`). Wired into a repo by
+  running `apps/mcp-server/bin/cli.mjs init` from a clone (per-repo wiring,
   multi-tenant token derivation from the git remote).
 
 ---
 
 ## How the pieces fit
 
-1. Engineer types a prompt. Browser extension debounces 250 ms and hits
-   `/score`. The card mounts under the textarea with five per-dimension bars
-   and missing-dimension hints.
-2. Below 7 → 5-second *Have Claude clarify* nudge, or fall back to *Send
-   as-is*. Each `/score` writes 5 `skill_observation` rows; the dashboard's
+1. Engineer types a prompt and hits send. The extension intercepts the send and
+   calls `/score`. The card mounts under the textarea with five per-dimension
+   bars and missing-dimension hints.
+2. `≥ 7` sends straight through. Below 7 the card stays up with *Improve* /
+   *Send as-is* / *Edit* and waits for an explicit choice — no timer, no
+   auto-send. Each `/score` writes 5 `skill_observation` rows; the dashboard's
    `/skill-arc` chart polls every 2 s, so the rightmost bucket climbs as the
    user prompts.
 3. In Claude Code or Copilot Chat, the MCP server's `coach` tool is called
@@ -346,7 +381,7 @@ The project was specced before it was built. Source of truth for *why*:
 
 - `docs/superpowers/specs/2026-04-25-trailhead-design.md` — master spec
 - `docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md` — MCP install
-  story and four-tool surface
+  story and (then) four-tool surface
 - `docs/superpowers/specs/2026-04-25-trailhead-browser-ext-design.md` —
   Claude.ai content-script architecture
 - `docs/superpowers/specs/2026-04-25-demo-completion-design.md` — dashboard
@@ -368,7 +403,7 @@ contracts, builds, and tests.
 
 - **Backend:** Hono, TypeScript, Node 22, `@hono/node-server`, raw `pg`
 - **DB:** Postgres on Neon, no ORM
-- **LLMs:** Gemini 2.5 Flash (scoring, JSON-schema mode), Gemini 2.5 Pro
+- **LLMs:** `gemini-3-flash-preview` (scoring, JSON-schema mode), `gemma-4-31b-it`
   (diff narration, rich bootstrap)
 - **Observability:** Langfuse (hosted) — one trace per request, one
   generation per LLM call
@@ -376,5 +411,6 @@ contracts, builds, and tests.
   TS + esbuild (extensions); React via CDN (landing page)
 - **MCP:** `@modelcontextprotocol/sdk`, STDIO transport
 - **Build:** npm workspaces; per-package `tsc` / `esbuild`
-- **Hosts:** Railway (API), Vercel (dashboard + landing page), per-repo MCP
-  install via `npx trailhead-mcp`
+- **Hosts:** self-hosted API (see SELFHOSTING.md; `railway.json` remains for
+  anyone who wants a Railway deploy), Vercel (dashboard + landing page), per-repo
+  MCP wired from a clone via `apps/mcp-server/bin/cli.mjs init` (unpublished)

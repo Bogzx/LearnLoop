@@ -1,0 +1,39 @@
+# Keep the build context small and reproducible. node_modules in particular is
+# hundreds of MB and MUST NOT be copied — the image installs its own via
+# `npm ci`, and a host copy would carry platform-specific binaries.
+node_modules
+**/node_modules
+
+# Build output — the API runs from source via tsx.
+dist
+**/dist
+build
+**/build
+out
+**/out
+.next
+**/.next
+*.tsbuildinfo
+apps/vscode-ext/*.vsix
+apps/browser-ext/.plasmo
+
+# Secrets. GEMINI_API_KEY and friends are injected at runtime by compose,
+# never baked into an image layer.
+.env
+.env.*
+!.env.example
+
+# VCS / tooling / docs — irrelevant to the API image.
+.git
+.github
+.claude
+.superpowers
+coverage
+.cache
+.turbo
+.parcel-cache
+archive
+docs
+*.log
+Dockerfile
+docker-compose.yml

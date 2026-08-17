@@ -7,7 +7,12 @@
   "permissions": ["storage"],
   "host_permissions": [
     "https://claude.ai/*",
-    "https://trailheadapi-production.up.railway.app/*"
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "action": {
     "default_title": "LearnLoop",

@@ -1,29 +1,20 @@
 // Tiny HTTP client used by the extension host. Matches the locked shapes from
 // packages/shared and the Phase-2 endpoints from the roadmap §2.
+// Response shapes come from @trailhead/shared, where the API declares them.
+// They were previously re-declared here as field-identical local copies with
+// no compile-time link to the server, so drift would have been invisible.
 import type {
+  ExamplesItem,
+  ExamplesResponse,
   ScoreRequest,
   ScoreResponse,
   WikiProposeResponse,
+  WikiRecentItem,
+  WikiRecentResponse,
 } from '@trailhead/shared';
 
-export interface ExamplesItem {
-  template: string;
-  topic: string | null;
-  reuse_count: number;
-  node_path: string;
-}
-export interface ExamplesResponse { items: ExamplesItem[]; }
-
-export interface WikiRecentItem {
-  id: string;
-  node_path: string;
-  body: string;
-  status: 'draft' | 'durable';
-  reinforcement_count: number;
-  last_seen_at: string;
-  created_at: string;
-}
-export interface WikiRecentResponse { items: WikiRecentItem[]; }
+// Re-exported so existing importers of these names from './api.ts' keep working.
+export type { ExamplesItem, ExamplesResponse, WikiRecentItem, WikiRecentResponse };
 
 export interface ApiConfig {
   apiUrl: string;
