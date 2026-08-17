@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Activity-bar icon. VS Code renders these monochrome and masks by the
+       stroke/fill colour, so this uses currentColor and no hard-coded palette.
+       A trail switchbacking up to a marker: the "trailhead" idea. -->
+  <path d="M5 20c2.5 0 3-2.5 5.5-2.5S14 20 16.5 20" />
+  <path d="M5.5 15c2.2 0 2.6-2.2 4.8-2.2s2.6 2.2 4.8 2.2" />
+  <path d="M7 10c1.8 0 2.1-1.8 3.9-1.8" />
+  <circle cx="17" cy="6" r="2.5" />
+  <path d="M17 8.5V12" />
+</svg>

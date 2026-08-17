@@ -147,7 +147,23 @@ export class ApiClient {
 export function clientFromEnv(): ApiClient {
   const apiUrl = process.env.TRAILHEAD_API_URL;
   const teamToken = process.env.TRAILHEAD_TEAM_TOKEN;
-  if (!apiUrl) throw new Error('TRAILHEAD_API_URL not set');
-  if (!teamToken) throw new Error('TRAILHEAD_TEAM_TOKEN not set');
+  // Trailhead ships no hosted API. The MCP server is launched by an agent
+  // host (Claude Code, Copilot) from a generated config, so an unset value
+  // here means that config is wrong — name the variable and the fix rather
+  // than failing with a bare "not set".
+  if (!apiUrl) {
+    throw new Error(
+      'TRAILHEAD_API_URL is not set. Trailhead is self-hosted: start an API with ' +
+        '`docker compose up` from the repo root (see SELFHOSTING.md), then set ' +
+        'TRAILHEAD_API_URL to its base URL (e.g. http://localhost:3000). ' +
+        '`npx trailhead-mcp init` writes this into your MCP config for you.',
+    );
+  }
+  if (!teamToken) {
+    throw new Error(
+      'TRAILHEAD_TEAM_TOKEN is not set. Run `npx trailhead-mcp init` in your repo to ' +
+        'derive and wire one, or set it explicitly.',
+    );
+  }
   return new ApiClient({ apiUrl, teamToken });
 }

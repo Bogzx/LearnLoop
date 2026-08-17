@@ -1,5 +1,10 @@
 # Trailhead Browser Extension — Design Spec
 
+> **Historical document.** The host `trailheadapi-production.up.railway.app`
+> referenced below is DELETED and returns 404. Trailhead is self-hosted now:
+> bring an API up with `docker compose up` (see `SELFHOSTING.md`) and use
+> `http://localhost:3000`. Do not copy the URLs below into a config.
+
 **Date:** 2026-04-25
 **Scope:** `apps/browser-ext/` (new) + `packages/score-card/` (new shared lib)
 **Parent spec:** [`2026-04-25-trailhead-design.md`](./2026-04-25-trailhead-design.md) (read §2, §6, §13, §19 first)

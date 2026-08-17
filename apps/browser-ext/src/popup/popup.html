@@ -316,6 +316,58 @@
       transition: background 120ms var(--ease);
     }
     .team-dropdown li:hover { background: rgba(255,255,255,0.08); }
+
+    /* Team-token editor. Replaced the pick-a-team list, which was built from
+       an unauthenticated /teams that handed out every tenant's token. */
+    .team-dropdown li.team-editor,
+    .team-dropdown li.team-editor:hover {
+      display: block;
+      background: none;
+      cursor: default;
+      padding: 10px 12px;
+    }
+    .team-editor label {
+      display: block;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      opacity: 0.6;
+      margin-bottom: 4px;
+    }
+    .team-editor input {
+      width: 100%;
+      box-sizing: border-box;
+      font: inherit;
+      font-size: 12px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(0,0,0,0.25);
+      color: inherit;
+    }
+    .team-editor input:focus-visible {
+      outline: none;
+      border-color: rgba(255,255,255,0.45);
+    }
+    .team-editor button {
+      margin-top: 8px;
+      width: 100%;
+      font: inherit;
+      font-size: 12px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.08);
+      color: inherit;
+      cursor: pointer;
+    }
+    .team-editor button:hover { background: rgba(255,255,255,0.14); }
+    .team-editor .team-hint {
+      margin: 8px 0 0;
+      font-size: 11px;
+      line-height: 1.4;
+      opacity: 0.55;
+    }
     .team-dropdown li.is-current {
       background: var(--accent-bg);
       color: var(--text);
@@ -373,6 +425,65 @@
       border-radius: 3px;
     }
     .team-dropdown::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.20); }
+
+    /* ===== API server row ===== */
+    .api-input-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px;
+      align-items: stretch;
+    }
+    .api-input {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11.5px;
+      color: var(--text);
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      min-width: 0;
+      width: 100%;
+      transition: border-color 150ms var(--ease), background 150ms var(--ease);
+    }
+    .api-input::placeholder { color: var(--text-faint); }
+    .api-input:hover { border-color: var(--border-strong); }
+    .api-input:focus {
+      outline: none;
+      background: var(--surface-2);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-bg);
+    }
+    .api-save-btn {
+      padding: 0 12px;
+      font-size: 11.5px;
+      font-weight: 500;
+      background: var(--surface-2);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      transition: background 120ms var(--ease), border-color 120ms var(--ease);
+      white-space: nowrap;
+    }
+    .api-save-btn:hover:not(:disabled) {
+      background: var(--accent-bg);
+      border-color: var(--accent-border);
+    }
+    .api-save-btn:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-bg);
+    }
+    .api-status {
+      font-size: 10.5px;
+      line-height: 1.4;
+      color: var(--text-muted);
+      padding: 0 2px;
+      display: flex;
+      align-items: baseline;
+      gap: 5px;
+    }
+    .api-status.is-error { color: var(--bad); }
+    .api-status.is-ok { color: var(--good); }
 
     /* ===== Footer hint ===== */
     .hint {
@@ -488,6 +599,26 @@
           <ul id="context-tree" hidden></ul>
         </div>
       </div>
+    </section>
+
+    <!-- API server — Trailhead is self-hosted, so this is required config. -->
+    <section class="section">
+      <div class="section-label">Server</div>
+      <div class="api-input-row">
+        <input
+          id="api-url-input"
+          class="api-input"
+          type="text"
+          inputmode="url"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          placeholder="http://localhost:3000"
+          aria-label="Trailhead API base URL"
+        >
+        <button id="api-url-save" class="api-save-btn" type="button">Save</button>
+      </div>
+      <div id="api-url-status" class="api-status"></div>
     </section>
 
     <div class="hint" id="coaching-hint">When off, the extension stops intercepting sends.</div>

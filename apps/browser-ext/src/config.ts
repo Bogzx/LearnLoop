@@ -1,6 +1,20 @@
-// Single hardcoded configuration for the demo build (spec §2 / §3).
-// `chrome.storage.local.trailhead.disabled` is the only runtime knob (spec §6.6).
-export const API_URL = 'https://trailheadapi-production.up.railway.app';
+// Configuration for the extension. Trailhead is self-host-first: there is no
+// hosted API to fall back to, so the default points at an API running on this
+// machine (see SELFHOSTING.md at the repo root — `docker compose up`).
+//
+// The URL is user-editable in the popup ("API server" row) and persisted to
+// chrome.storage.local under API_URL_KEY. Read it through
+// `getApiUrl()` (api-url-state.ts), never by importing a constant — the value
+// changes at runtime when the user edits it.
+
+/** Default API base URL: a self-hosted Trailhead API on this machine.
+ *  Matches the port apps/api listens on (PORT ?? 3000) and the port published
+ *  by the root docker-compose.yml. */
+export const DEFAULT_API_URL = 'http://localhost:3000';
+
+/** chrome.storage.local key holding the user's API base URL override. */
+export const API_URL_KEY = 'trailhead.apiUrl';
+
 export const TEAM_TOKEN = 'trailhead_demo_acme_2026';
 export const USER_ID = 'demo';
 
