@@ -40,7 +40,7 @@ function withFetchStub(
 ): { calls: FetchCall[]; restore: () => void } {
   const original = globalThis.fetch;
   const calls: FetchCall[] = [];
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     let body: unknown;
     try {
       body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;

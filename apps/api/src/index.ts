@@ -56,6 +56,7 @@ import {
   renderTeachBlock,
 } from '@trailhead/scoring';
 import { applyTeamNameIfPlaceholder, DEMO_TEAM_TOKEN, q, ensureTeam, upsertNode, wipeTeamData } from './db.ts';
+import { degradedCoachResponse } from './coach-degraded.ts';
 import {
   acknowledgeProgress,
   extractTopic,
@@ -74,11 +75,12 @@ import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
 if (!process.env.GEMINI_API_KEY) { console.error('GEMINI_API_KEY not set'); process.exit(1); }
 
-// Multi-tenant policy. Defaults to ON for the hackathon-grade open demo
-// posture: any X-Team-Token spawns its own teams row on first write.
-// Production deploys should set TRAILHEAD_AUTO_CREATE_TEAMS=false and
-// register teams explicitly.
-const AUTO_CREATE_TEAMS = process.env.TRAILHEAD_AUTO_CREATE_TEAMS !== 'false';
+// Multi-tenant policy. Defaults to OFF: an unknown X-Team-Token is rejected
+// with 401 rather than silently provisioning a tenant. It used to default ON,
+// which meant any string anyone sent spawned a real teams row — unauthenticated
+// tenant creation, and an unbounded write amplifier for anyone who found the
+// host. Opt in with TRAILHEAD_AUTO_CREATE_TEAMS=true for open demo deploys.
+const AUTO_CREATE_TEAMS = process.env.TRAILHEAD_AUTO_CREATE_TEAMS === 'true';
 
 // Hono context typing — the auth middleware sets `team_token` so every
 // downstream handler can pull it via c.get('team_token') with type safety.
@@ -469,17 +471,14 @@ app.post('/coach', async (c) => {
     });
     scoreResult = { dimensions: result.dimensions, missing: result.missing as Record<string, string> };
   } catch (err) {
-    console.warn('[api] /coach scorePrompt failed', err);
+    // Fail-open on `proceed`, but NEVER fail silent. A coaching outage must
+    // not block the user's real work, so proceed stays true — but the caller
+    // is told plainly that this turn was not coached, and why. Returning
+    // text:'' here (the old behaviour) made an outage look identical to a
+    // perfect prompt, so the MCP tool ran indefinitely without ever coaching.
+    console.error('[api] /coach scorePrompt failed', err);
     const zeros = Object.fromEntries(DIMENSIONS.map((d) => [d, 0])) as DimensionScores;
-    const res: CoachResponse = {
-      proceed: true,
-      mode,
-      overall: 0,
-      dimensions: zeros,
-      missing: {},
-      text: '',
-    };
-    return c.json(res);
+    return c.json(degradedCoachResponse(mode, zeros, 'score_failed', err));
   }
   const overall = overallScore(scoreResult.dimensions);
 
@@ -493,15 +492,10 @@ app.post('/coach', async (c) => {
   const allZero = DIMENSIONS.every((d) => scoreResult.dimensions[d] === 0);
   const noMissing = Object.keys(scoreResult.missing).length === 0;
   if (allZero && noMissing) {
-    const res: CoachResponse = {
-      proceed: true,
-      mode,
-      overall: 0,
-      dimensions: scoreResult.dimensions,
-      missing: {},
-      text: '',
-    };
-    return c.json(res);
+    console.error('[api] /coach scorePrompt returned unparseable output (zero+empty fingerprint)');
+    return c.json(
+      degradedCoachResponse(mode, scoreResult.dimensions, 'score_unparseable'),
+    );
   }
 
   // 2. Skill_observation writes (same dedup as /score).
