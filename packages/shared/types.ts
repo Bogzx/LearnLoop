@@ -298,6 +298,18 @@ export interface CoachResponse {
   missing: MissingHints;
   text: string;              // fully rendered block to relay verbatim, may be ''
 
+  // Set when coaching could not be produced because the scoring LLM failed
+  // (request threw, or returned output we could not parse). `proceed` stays
+  // true — a coaching outage must not block the user's actual work — but the
+  // caller is told, in `text` and here, that this turn was NOT coached.
+  //
+  // Before this existed, that case returned { proceed: true, text: '',
+  // overall: 0 }, which the MCP tool rendered as "no coaching needed" — the
+  // exact same output as a flawless prompt. The tool ran forever, never
+  // coaching and never erroring. Never let a scoring failure be silent.
+  degraded?: boolean;
+  error?: string;            // short machine-readable reason, e.g. 'score_failed'
+
   // Populated when proceed=false. Echo the four fields back unchanged on the
   // next coach() call, with `prompt` set to original + user's reply.
   next_round_inputs?: CoachNextRoundInputs;
