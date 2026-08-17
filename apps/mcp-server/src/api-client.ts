@@ -1,9 +1,18 @@
 // Thin client for the Trailhead Hono API. Used by every MCP tool handler.
 // Reads URL + token from env so the same module works in MCP context (env
 // from .mcp.json) and in standalone tests (env from .env).
+// These shapes are the API's response contract, so they live in
+// @trailhead/shared next to the endpoint types rather than being re-declared
+// here. They used to be local copies that happened to be field-identical to
+// the server's — with nothing linking the two, so a server-side change would
+// have compiled cleanly on both sides and broken only at runtime.
 import type {
   CoachRequest,
   CoachResponse,
+  ContextNode,
+  ContextResponse,
+  ExamplesItem,
+  ExamplesResponse,
   OnboardRepoFullRequest,
   OnboardRepoFullResponse,
   OnboardRepoRequest,
@@ -11,43 +20,27 @@ import type {
   ProvenPromptsResponse,
   ScoreRequest,
   ScoreResponse,
+  SearchItem,
+  SearchResponse,
   WikiJobStatusResponse,
   WikiProposeRequest,
   WikiProposeResponse,
+  WikiRecentItem,
+  WikiRecentResponse,
 } from '@trailhead/shared';
 
-export interface ContextNode {
-  path: string;
-  body_md: string;
-  durable_learnings: { body: string; reinforcement_count: number }[];
-}
-export interface ContextResponse { nodes: ContextNode[]; }
-
-export interface ExamplesItem {
-  template: string;
-  topic: string | null;
-  reuse_count: number;
-  node_path: string;
-}
-export interface ExamplesResponse { items: ExamplesItem[]; }
-
-export interface WikiRecentItem {
-  id: string;
-  node_path: string;
-  body: string;
-  status: 'draft' | 'durable';
-  reinforcement_count: number;
-  last_seen_at: string;
-  created_at: string;
-}
-export interface WikiRecentResponse { items: WikiRecentItem[]; }
-
-export interface SearchItem {
-  kind: 'learning' | 'rule' | 'prompt';
-  body: string;
-  node_path: string;
-}
-export interface SearchResponse { items: SearchItem[]; }
+// Re-exported so existing importers of these names from './api-client.ts'
+// keep working.
+export type {
+  ContextNode,
+  ContextResponse,
+  ExamplesItem,
+  ExamplesResponse,
+  SearchItem,
+  SearchResponse,
+  WikiRecentItem,
+  WikiRecentResponse,
+};
 
 export interface ApiClientConfig {
   apiUrl: string;

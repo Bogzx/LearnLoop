@@ -29,6 +29,7 @@ import type {
   ProvenPromptsResponse,
   ScoreRequest,
   ScoreResponse,
+  SearchResponse,
   SkillArcObservation,
   SkillArcResponse,
   TeamMetricsResponse,
@@ -1209,7 +1210,8 @@ app.get('/search', async (c) => {
     [teamToken, pattern, ancestors, limit],
   );
 
-  return c.json({ items: rows });
+  const res: SearchResponse = { items: rows };
+  return c.json(res);
 });
 
 // ----- GET /wiki/recent?since=ISO --------------------------------------------
