@@ -12,12 +12,18 @@
 // TRAILHEAD_ERROR_TAG via the api.ts console.warn line). Anything else
 // bubbles to Claude.ai's own handler (spec §6.5).
 import { SELECTOR_RETRY_MS, TRAILHEAD_ERROR_TAG } from './config.ts';
-import { classifyBubble, resolveSelectors, type Selectors } from './selectors.ts';
+import {
+  BUBBLE_HINT_SELECTOR,
+  classifyBubble,
+  resolveSelectors,
+  type Selectors,
+} from './selectors.ts';
 import { injectStyles } from './styles.ts';
 import { attachScoreCard } from './score-card.ts';
 import { attachSendIntercept } from './send-intercept.ts';
 import { startWikiToastLoop } from './widgets/wiki-toast.ts';
 import { initCoachingState } from './coaching-state.ts';
+import { initApiUrlState } from './api-url-state.ts';
 import { initTeamState } from './team-state.ts';
 import { initContextState } from './context-state.ts';
 import { initContextBundle } from './context-bundle.ts';
@@ -67,15 +73,15 @@ function tagBubble(node: HTMLElement, role: 'user' | 'assistant'): void {
   node.dataset.trailheadBubble = role;
 }
 
+// Query the bubble hint selectors directly rather than testing every
+// `div, article, li` on the page. On a long conversation that scan ran over
+// thousands of elements per mutation batch, i.e. on every streaming token.
 function walkBubblesIn(root: Node, sel: Selectors): void {
   if (!(root instanceof Element)) return;
-  const candidates = root.matches('[data-trailhead-bubble], div, article, li')
-    ? [root]
-    : [];
-  for (const node of candidates) {
-    handleNode(node as HTMLElement, sel);
+  if (root.matches(BUBBLE_HINT_SELECTOR)) {
+    handleNode(root as HTMLElement, sel);
   }
-  for (const node of root.querySelectorAll<HTMLElement>('div, article, li')) {
+  for (const node of root.querySelectorAll<HTMLElement>(BUBBLE_HINT_SELECTOR)) {
     handleNode(node, sel);
   }
 }
@@ -182,6 +188,10 @@ async function main(): Promise<void> {
   // Subscribe to the coaching toggle so the popup switch takes effect
   // live — no page reload needed.
   initCoachingState();
+  // Trailhead is self-hosted: the API base URL is user config, edited in
+  // the popup's "API server" row. Seed it before any fetch so requests go
+  // to the user's server rather than the localhost default.
+  initApiUrlState();
   // Same pattern for the popup's Select-team dropdown — every fetch
   // after the user picks a team uses that team's X-Team-Token.
   initTeamState();

@@ -9,7 +9,7 @@
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test --experimental-strip-types src/hash.test.mts src/augment.test.mts src/api.test.mts src/diff-parse.test.mts src/widgets/wiki-toast.test.mts test/bundle-load.test.mjs",
+    "test": "npm run build && node --test --experimental-strip-types src/hash.test.mts src/augment.test.mts src/api.test.mts src/diff-parse.test.mts src/selectors-classify.test.mts src/widgets/wiki-toast.test.mts test/bundle-load.test.mjs",
     "smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {
