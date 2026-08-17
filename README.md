@@ -161,7 +161,8 @@ CLI subcommands (`bin/cli.mjs`):
 App router, server components for the team list, SWR for the live charts.
 Pages (`src/app/`):
 
-- `/` — team picker (lists every team returned by `/teams`)
+- `/` — team view (shows the caller's own team; `GET /teams` is authenticated
+  and returns only the team the configured token resolves to)
 - `/skill-arc?team=…` — per-dimension team chart driven by `/skill-arc`,
   polls every 2 s during the demo
 - `/team?team=…` — L1→L2 metric cards from `/team/metrics`
@@ -292,10 +293,12 @@ npm --workspace=@trailhead/browser-ext run build
 # VS Code extension — build, then F5 with apps/vscode-ext as the workspace
 npm --workspace=apps/vscode-ext run build
 
-# MCP server — install into a target repo
+# MCP server — install into a target repo. The package is unpublished
+# (private: true), so `npx trailhead-mcp` does NOT work — invoke the CLI by
+# path from this clone. It operates on the cwd, so cd into the target first.
 cd /path/to/your/repo
-npx trailhead-mcp init
-npx trailhead-mcp bootstrap
+node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs init
+node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs bootstrap
 ```
 
 ### Workspace scripts
@@ -340,7 +343,8 @@ Single root `.env.example` — every surface reads from the same set.
   <https://learnloop-gules.vercel.app/>.
 - **Browser extension** → loaded unpacked from `apps/browser-ext/dist/`.
 - **VS Code extension** → `vsce package` from `apps/vscode-ext/`.
-- **MCP server** → distributed via `npx trailhead-mcp init` (per-repo wiring,
+- **MCP server** → not published to npm (`private: true`). Wired into a repo by
+  running `apps/mcp-server/bin/cli.mjs init` from a clone (per-repo wiring,
   multi-tenant token derivation from the git remote).
 
 ---
@@ -407,5 +411,6 @@ contracts, builds, and tests.
   TS + esbuild (extensions); React via CDN (landing page)
 - **MCP:** `@modelcontextprotocol/sdk`, STDIO transport
 - **Build:** npm workspaces; per-package `tsc` / `esbuild`
-- **Hosts:** Railway (API), Vercel (dashboard + landing page), per-repo MCP
-  install via `npx trailhead-mcp`
+- **Hosts:** self-hosted API (see SELFHOSTING.md; `railway.json` remains for
+  anyone who wants a Railway deploy), Vercel (dashboard + landing page), per-repo
+  MCP wired from a clone via `apps/mcp-server/bin/cli.mjs init` (unpublished)
