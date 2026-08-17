@@ -37,6 +37,7 @@ import {
 } from './bootstrap.ts';
 import type { WikiJobStatusResponse } from '@trailhead/shared';
 import { deriveRepoToken } from './token.mjs';
+import { resolveApiUrl } from './api-url.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -158,10 +159,7 @@ const explicitToken = flagValues.get('--team-token');
 const tokenInfo = explicitToken
   ? { token: explicitToken, source: 'flag' as const, remoteUrl: undefined as string | undefined }
   : deriveRepoToken(cwd);
-const apiUrl =
-  flagValues.get('--api-url') ??
-  process.env.TRAILHEAD_API_URL ??
-  'https://trailheadapi-production.up.railway.app';
+const apiUrl = resolveApiUrl(flagValues.get('--api-url'));
 
 const seed = seedFromFiles ? readSeedRules(cwd) : {};
 

@@ -12,6 +12,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { ApiClient } from './api-client.ts';
 import { deriveRepoToken } from './token.mjs';
+import { resolveApiUrl } from './api-url.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -61,10 +62,7 @@ const explicitToken = flagValues.get('--team-token');
 const tokenInfo = explicitToken
   ? { token: explicitToken, source: 'flag' as const }
   : deriveRepoToken(cwd);
-const apiUrl =
-  flagValues.get('--api-url') ??
-  process.env.TRAILHEAD_API_URL ??
-  'https://trailheadapi-production.up.railway.app';
+const apiUrl = resolveApiUrl(flagValues.get('--api-url'));
 
 console.log(`API: ${apiUrl}`);
 console.log(`Token: ${tokenInfo.token}`);

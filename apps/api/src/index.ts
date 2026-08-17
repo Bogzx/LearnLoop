@@ -29,6 +29,7 @@ import type {
   ProvenPromptsResponse,
   ScoreRequest,
   ScoreResponse,
+  SearchResponse,
   SkillArcObservation,
   SkillArcResponse,
   TeamMetricsResponse,
@@ -56,6 +57,10 @@ import {
   renderTeachBlock,
 } from '@trailhead/scoring';
 import { applyTeamNameIfPlaceholder, DEMO_TEAM_TOKEN, q, ensureTeam, upsertNode, wipeTeamData } from './db.ts';
+import { createHash } from 'node:crypto';
+import { degradedCoachResponse } from './coach-degraded.ts';
+import { loadWikiTree } from './wiki-tree.ts';
+import { exportFilename, renderWikiMarkdown } from './wiki-export.ts';
 import {
   acknowledgeProgress,
   extractTopic,
@@ -74,11 +79,12 @@ import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
 if (!process.env.GEMINI_API_KEY) { console.error('GEMINI_API_KEY not set'); process.exit(1); }
 
-// Multi-tenant policy. Defaults to ON for the hackathon-grade open demo
-// posture: any X-Team-Token spawns its own teams row on first write.
-// Production deploys should set TRAILHEAD_AUTO_CREATE_TEAMS=false and
-// register teams explicitly.
-const AUTO_CREATE_TEAMS = process.env.TRAILHEAD_AUTO_CREATE_TEAMS !== 'false';
+// Multi-tenant policy. Defaults to OFF: an unknown X-Team-Token is rejected
+// with 401 rather than silently provisioning a tenant. It used to default ON,
+// which meant any string anyone sent spawned a real teams row — unauthenticated
+// tenant creation, and an unbounded write amplifier for anyone who found the
+// host. Opt in with TRAILHEAD_AUTO_CREATE_TEAMS=true for open demo deploys.
+const AUTO_CREATE_TEAMS = process.env.TRAILHEAD_AUTO_CREATE_TEAMS === 'true';
 
 // Hono context typing — the auth middleware sets `team_token` so every
 // downstream handler can pull it via c.get('team_token') with type safety.
@@ -122,9 +128,11 @@ app.use('*', async (c, next) => {
 // existing clients carrying the old token continue to land on the demo team.
 app.use('*', async (c, next) => {
   if (c.req.method === 'OPTIONS' || c.req.path === '/') return next();
-  // /teams is unauthenticated so the popup can populate a Select-team
-  // dropdown before any token is configured.
-  if (c.req.path === '/teams') return next();
+  // /teams used to be exempt here so the popup could populate a Select-team
+  // dropdown before any token was configured. That exemption published every
+  // tenant's credential to the open internet. Clients now resolve their own
+  // team by sending the token they already hold; GET / remains the
+  // unauthenticated reachability probe.
   const token = c.req.header('x-team-token');
   if (!token) return c.json({ error: 'unauthorized', detail: 'missing X-Team-Token' }, 401);
   const teamToken = await ensureTeam(token, { autoCreate: AUTO_CREATE_TEAMS });
@@ -137,6 +145,15 @@ app.use('*', async (c, next) => {
   c.set('team_token', teamToken);
   await next();
 });
+
+// A stable, opaque handle for a team that is safe to hand to a client.
+//
+// SHA-256 of the token, truncated to 16 hex chars. Not reversible, not
+// replayable as an X-Team-Token, and stable across requests so it works as a
+// React key or a client-side lookup handle.
+function opaqueTeamId(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
 
 app.get('/', (c) =>
   c.json({
@@ -156,10 +173,11 @@ app.get('/', (c) =>
       'GET  /wiki/recent?since=ISO',
       'POST /diff',
       'POST /improve',
-      'GET  /teams (unauthenticated)',
+      'GET  /teams (your team only; never returns tokens)',
       'GET  /skill-arc?user_id=&since=ISO',
       'GET  /team/metrics',
       'GET  /wiki/tree',
+      'GET  /wiki/export?drafts=&format=',
       'POST /onboard/repo',
       'POST /onboard/repo/full',
       'GET  /onboard/jobs/:id',
@@ -469,17 +487,14 @@ app.post('/coach', async (c) => {
     });
     scoreResult = { dimensions: result.dimensions, missing: result.missing as Record<string, string> };
   } catch (err) {
-    console.warn('[api] /coach scorePrompt failed', err);
+    // Fail-open on `proceed`, but NEVER fail silent. A coaching outage must
+    // not block the user's real work, so proceed stays true — but the caller
+    // is told plainly that this turn was not coached, and why. Returning
+    // text:'' here (the old behaviour) made an outage look identical to a
+    // perfect prompt, so the MCP tool ran indefinitely without ever coaching.
+    console.error('[api] /coach scorePrompt failed', err);
     const zeros = Object.fromEntries(DIMENSIONS.map((d) => [d, 0])) as DimensionScores;
-    const res: CoachResponse = {
-      proceed: true,
-      mode,
-      overall: 0,
-      dimensions: zeros,
-      missing: {},
-      text: '',
-    };
-    return c.json(res);
+    return c.json(degradedCoachResponse(mode, zeros, 'score_failed', err));
   }
   const overall = overallScore(scoreResult.dimensions);
 
@@ -493,15 +508,10 @@ app.post('/coach', async (c) => {
   const allZero = DIMENSIONS.every((d) => scoreResult.dimensions[d] === 0);
   const noMissing = Object.keys(scoreResult.missing).length === 0;
   if (allZero && noMissing) {
-    const res: CoachResponse = {
-      proceed: true,
-      mode,
-      overall: 0,
-      dimensions: scoreResult.dimensions,
-      missing: {},
-      text: '',
-    };
-    return c.json(res);
+    console.error('[api] /coach scorePrompt returned unparseable output (zero+empty fingerprint)');
+    return c.json(
+      degradedCoachResponse(mode, scoreResult.dimensions, 'score_unparseable'),
+    );
   }
 
   // 2. Skill_observation writes (same dedup as /score).
@@ -1212,7 +1222,8 @@ app.get('/search', async (c) => {
     [teamToken, pattern, ancestors, limit],
   );
 
-  return c.json({ items: rows });
+  const res: SearchResponse = { items: rows };
+  return c.json(res);
 });
 
 // ----- GET /wiki/recent?since=ISO --------------------------------------------
@@ -1449,118 +1460,68 @@ app.get('/team/metrics', async (c) => {
 // learnings split into durable vs draft. Sort by path (prefix-friendly).
 
 app.get('/wiki/tree', async (c) => {
-  const teamToken = c.get('team_token');
-  // Two queries instead of a three-way LEFT JOIN to avoid the cartesian
-  // row explosion (nodes × learnings × prompts). Run in parallel — the
-  // round-trip overhead is negligible at hackathon scale.
-  const [rows, promptRows] = await Promise.all([
-    q<{
-      node_id: string;
-      path: string;
-      body_md: string;
-      learning_id: string | null;
-      learning_body: string | null;
-      learning_status: 'draft' | 'durable' | null;
-      reinforcement_count: number | null;
-    }>(
-      `SELECT n.id AS node_id, n.path, n.body_md,
-              l.id AS learning_id, l.body AS learning_body,
-              l.status AS learning_status, l.reinforcement_count
-         FROM nodes n
-         LEFT JOIN learnings l ON l.node_id = n.id
-        WHERE n.team_token = $1
-        ORDER BY n.path ASC,
-                 COALESCE(l.reinforcement_count, 0) DESC`,
-      [teamToken],
-    ),
-    q<{
-      path: string;
-      prompt_id: string;
-      template: string;
-      topic: string | null;
-      reuse_count: number;
-      author_user_id: string | null;
-    }>(
-      `SELECT n.path,
-              p.id AS prompt_id,
-              p.template,
-              p.topic,
-              p.reuse_count,
-              p.author_user_id
-         FROM prompts p
-         JOIN nodes n ON n.id = p.node_id
-        WHERE n.team_token = $1
-          AND p.status = 'graduated'
-        ORDER BY n.path ASC,
-                 p.reuse_count DESC,
-                 p.created_at DESC`,
-      [teamToken],
-    ),
-  ]);
-
-  const byPath = new Map<string, WikiTreeNode>();
-  for (const r of rows) {
-    let node = byPath.get(r.path);
-    if (!node) {
-      node = {
-        path: r.path,
-        body_md: r.body_md,
-        durable_learnings: [],
-        draft_learnings: [],
-        graduated_prompts: [],
-      };
-      byPath.set(r.path, node);
-    }
-    if (r.learning_id && r.learning_body && r.learning_status) {
-      const learning: WikiTreeLearning = {
-        id: r.learning_id,
-        body: r.learning_body,
-        status: r.learning_status,
-        reinforcement_count: r.reinforcement_count ?? 0,
-      };
-      if (r.learning_status === 'durable') node.durable_learnings.push(learning);
-      else node.draft_learnings.push(learning);
-    }
-  }
-  for (const r of promptRows) {
-    // Fallback init covers the rare case where a node carries prompts but
-    // never appeared in the learnings query (shouldn't happen since the
-    // first query LEFT JOINs every node, but defense-in-depth).
-    let node = byPath.get(r.path);
-    if (!node) {
-      node = {
-        path: r.path,
-        body_md: '',
-        durable_learnings: [],
-        draft_learnings: [],
-        graduated_prompts: [],
-      };
-      byPath.set(r.path, node);
-    }
-    node.graduated_prompts.push({
-      id: r.prompt_id,
-      template: r.template,
-      topic: r.topic,
-      reuse_count: r.reuse_count,
-      author_user_id: r.author_user_id,
-    });
-  }
-
-  const res: WikiTreeResponse = { nodes: Array.from(byPath.values()) };
+  const nodes = await loadWikiTree(c.get('team_token'));
+  const res: WikiTreeResponse = { nodes };
   return c.json(res);
 });
 
+// ----- GET /wiki/export -----------------------------------------------------
+// Markdown export of the whole team wiki. Teams will not pour knowledge into
+// a store they cannot get it back out of, so this is a trust signal as much
+// as a backup story.
+//
+//   GET /wiki/export                 -> text/markdown, as a download
+//   GET /wiki/export?drafts=true     -> include draft learnings too
+//   GET /wiki/export?format=json     -> { filename, markdown } for browser clients
+app.get('/wiki/export', async (c) => {
+  const teamToken = c.get('team_token');
+  const [nodes, teamRows] = await Promise.all([
+    loadWikiTree(teamToken),
+    q<{ name: string }>('SELECT name FROM teams WHERE token = $1', [teamToken]),
+  ]);
+  const teamName = teamRows[0]?.name;
+  const now = new Date();
+  const markdown = renderWikiMarkdown(nodes, {
+    teamName,
+    generatedAt: now,
+    includeDrafts: c.req.query('drafts') === 'true',
+  });
+  const filename = exportFilename(teamName, now);
+
+  if (c.req.query('format') === 'json') {
+    return c.json({ filename, markdown });
+  }
+  return new Response(markdown, {
+    status: 200,
+    headers: {
+      'content-type': 'text/markdown; charset=utf-8',
+      'content-disposition': `attachment; filename="${filename}"`,
+    },
+  });
+});
+
 // ----- GET /teams ------------------------------------------------------------
-// Lists every team with a usable token. Unauthenticated (the popup needs to
-// populate a Select-team dropdown before any token is configured). Demo
-// simplicity: no per-user permission filter.
+// Resolves the CALLER's team. Authenticated, and it never returns a token.
+//
+// This used to be unauthenticated and return every team on the server together
+// with its token — with CORS `*`, so any web page could read it. The team token
+// is the only credential in this system: it grants read on the wiki (which
+// summarises private source code) and write on everything. A single unauth GET
+// therefore compromised every tenant at once. The browser popup's convenience
+// of pre-populating a team dropdown before any token was configured is what
+// paid for that, and it is nowhere near worth the price.
+//
+// The response is a list of one so the TeamsListResponse shape (and every
+// caller that maps over `teams`) keeps working.
 app.get('/teams', async (c) => {
+  const teamToken = c.get('team_token');
   const rows = await q<{ name: string; token: string }>(
-    'SELECT name, token FROM teams ORDER BY name ASC',
+    'SELECT name, token FROM teams WHERE token = $1',
+    [teamToken],
   );
   const teams: TeamSummary[] = rows.map((r) => ({
     name: r.name,
-    token: r.token,
+    id: opaqueTeamId(r.token),
   }));
   const res: TeamsListResponse = { teams };
   return c.json(res);

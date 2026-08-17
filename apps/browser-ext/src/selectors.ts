@@ -130,12 +130,32 @@ const ASSISTANT_HINTS = [
   '[class*="assistant-turn"]',
 ];
 
+/**
+ * Every selector that can identify a bubble, as one comma-joined list.
+ *
+ * The content script queries with this directly instead of walking every
+ * `div, article, li` on the page and asking each one whether it looks like a
+ * bubble. Same results, a fraction of the work, and no ambiguity about which
+ * element in a nesting chain is "the" bubble.
+ */
+export const BUBBLE_HINT_SELECTOR = [...USER_HINTS, ...ASSISTANT_HINTS].join(',');
+
+/**
+ * Classify an element that is already known to be a bubble candidate.
+ *
+ * Matches on the element ITSELF only. This used to also accept
+ * `node.querySelector(sel)` — a match anywhere in the subtree — which meant
+ * every ancestor of a user message classified as a user bubble, all the way up
+ * to the conversation container and `body`. Since the caller walked the DOM
+ * outermost-first and let the outermost match win, a single wrapper div
+ * swallowed the entire thread and got tagged as one giant "user bubble".
+ */
 export function classifyBubble(node: Element): BubbleRole {
   for (const sel of USER_HINTS) {
-    if (node.matches?.(sel) || node.querySelector?.(sel)) return 'user';
+    if (node.matches?.(sel)) return 'user';
   }
   for (const sel of ASSISTANT_HINTS) {
-    if (node.matches?.(sel) || node.querySelector?.(sel)) return 'assistant';
+    if (node.matches?.(sel)) return 'assistant';
   }
   return 'unknown';
 }

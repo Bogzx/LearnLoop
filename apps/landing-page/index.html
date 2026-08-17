@@ -128,8 +128,21 @@
   .accent-italic { font-style: italic; }
 </style>
 
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<!--
+  Production React builds. These were react.development.js /
+  react-dom.development.js, which are several times larger than the minified
+  builds and run every dev-only invariant check and warning path on a public
+  marketing page.
+
+  Known remaining limitation: @babel/standalone still compiles the JSX below
+  in the browser on every page load, and cdn.tailwindcss.com is a dev-time
+  CDN that Tailwind explicitly tells you not to ship. Both want a real build
+  step (esbuild is already used in apps/browser-ext); that is a larger change
+  than this pass, and it also changes the Vercel deploy from "serve static
+  files" to "run a build".
+-->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
 </head>
 <body class="min-h-screen overflow-x-hidden">

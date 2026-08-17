@@ -77,6 +77,15 @@ export interface ExamplesItem {
 }
 export interface ExamplesResponse { items: ExamplesItem[]; }
 
+// GET /search?q=&scope= — free-text search across durable learnings, node
+// rules and graduated prompts. `kind` says which of the three matched.
+export interface SearchItem {
+  kind: 'learning' | 'rule' | 'prompt';
+  body: string;
+  node_path: string;
+}
+export interface SearchResponse { items: SearchItem[]; }
+
 // GET /prompts/proven — every graduated prompt for the team, with the
 // actual overall score from when /coach promoted it. "Proven" is the user-
 // facing framing; under the hood it's status='graduated' filtered by
@@ -298,6 +307,18 @@ export interface CoachResponse {
   missing: MissingHints;
   text: string;              // fully rendered block to relay verbatim, may be ''
 
+  // Set when coaching could not be produced because the scoring LLM failed
+  // (request threw, or returned output we could not parse). `proceed` stays
+  // true — a coaching outage must not block the user's actual work — but the
+  // caller is told, in `text` and here, that this turn was NOT coached.
+  //
+  // Before this existed, that case returned { proceed: true, text: '',
+  // overall: 0 }, which the MCP tool rendered as "no coaching needed" — the
+  // exact same output as a flawless prompt. The tool ran forever, never
+  // coaching and never erroring. Never let a scoring failure be silent.
+  degraded?: boolean;
+  error?: string;            // short machine-readable reason, e.g. 'score_failed'
+
   // Populated when proceed=false. Echo the four fields back unchanged on the
   // next coach() call, with `prompt` set to original + user's reply.
   next_round_inputs?: CoachNextRoundInputs;
@@ -313,12 +334,20 @@ export interface CoachResponse {
 // before any token is configured. Demo simplicity: no per-user
 // permission filter (the user explicitly asked for "all teams").
 //
-// Token is the team's primary key (the value the client sends as
-// X-Team-Token). There is no separate UUID id since the
-// 2026-04-26 token-as-team-key refactor.
+// A team as described to a client.
+//
+// `token` is deliberately NOT here. The team token is the only credential this
+// system has — it grants read on the wiki (which summarises private source
+// code) and write everywhere — and GET /teams used to hand back every tenant's
+// token, unauthenticated, with CORS `*`. One request to a public URL was a
+// full compromise of every team on the server.
+//
+// `id` is an opaque, stable, non-reversible digest of the token. It is safe to
+// display and to use as a React key or a lookup handle, and it cannot be
+// replayed as an X-Team-Token.
 export interface TeamSummary {
   name: string;
-  token: string;
+  id: string;
 }
 export interface TeamsListResponse {
   teams: TeamSummary[];

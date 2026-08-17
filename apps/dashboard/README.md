@@ -21,21 +21,27 @@ companion `2026-04-25-demo-completion-design.md` (A — full dashboard).
 
 From the repo root:
 
+Trailhead is self-hosted: there is no hosted API. Bring one up first —
+`docker compose up` from the repo root (see [`SELFHOSTING.md`](../../SELFHOSTING.md))
+— then start the dashboard:
+
 ```bash
-NEXT_PUBLIC_API_URL=https://trailheadapi-production.up.railway.app \
-NEXT_PUBLIC_TEAM_TOKEN=trailhead_demo_acme_2026 \
-  npm --workspace=apps/dashboard run dev
+npm --workspace=apps/dashboard run dev
 ```
 
 Server runs on **http://localhost:3001** (port 3000 is the API).
 
-To point at a local API instead:
+`NEXT_PUBLIC_API_URL` defaults to `http://localhost:3000`, which is what
+`docker compose up` publishes. To point at a different server:
 
 ```bash
-NEXT_PUBLIC_API_URL=http://localhost:3000 \
+NEXT_PUBLIC_API_URL=https://trailhead.internal.example.com \
 NEXT_PUBLIC_TEAM_TOKEN=trailhead_demo_acme_2026 \
   npm --workspace=apps/dashboard run dev
 ```
+
+If the API is unreachable, the Teams page says so and names
+`NEXT_PUBLIC_API_URL` explicitly rather than showing an empty list.
 
 ## Build
 
@@ -44,8 +50,15 @@ npm --workspace=apps/dashboard run build      # ~5s, static export
 npm --workspace=apps/dashboard run typecheck  # tsc --noEmit
 ```
 
-All four routes prerender as static (`○` in the build output) — they hydrate
-on the client and SWR drives the live data.
+There are five app routes: `/`, `/onboarding`, `/skill-arc`, `/team` and
+`/wiki`. All five are server-rendered on demand (`ƒ` in the build output) —
+`/` because it declares `export const dynamic = 'force-dynamic'`, the other
+four because they read `searchParams` (`?team=`), which opts a route out of
+prerendering in Next 15. The only statically prerendered route is the
+framework's own `/_not-found`, which is why the build reports 7 pages.
+
+SWR still drives the live data on the client; "dynamic" here means the initial
+HTML is rendered per request, not that the data is fetched at build time.
 
 ## Deploy to Vercel
 
@@ -53,8 +66,12 @@ One-time setup:
 
 1. `npm i -g vercel` (or `npx vercel` per command)
 2. From `apps/dashboard/`: `vercel link` — picks a project, writes `.vercel/`
-3. Set env vars in the Vercel dashboard (or `vercel env add`):
-   - `NEXT_PUBLIC_API_URL=https://trailheadapi-production.up.railway.app`
+3. Set env vars in the Vercel dashboard (or `vercel env add`). A deployed
+   dashboard **must** set `NEXT_PUBLIC_API_URL` — the `http://localhost:3000`
+   default only makes sense on a developer's machine, and a Vercel deployment
+   left unset will fail every request from the visitor's browser:
+   - `NEXT_PUBLIC_API_URL=https://<your-self-hosted-api-host>` (must be
+     publicly reachable from the browser, and serve CORS for the dashboard origin)
    - `NEXT_PUBLIC_TEAM_TOKEN=trailhead_demo_acme_2026`
 
 Deploy:

@@ -40,15 +40,13 @@ extension:
 
 ## Pinned demo Chrome (spec §19)
 
-Lock the demo machine to a specific Chrome build. After verifying the
-selectors at hour 6, capture `chrome://version` to:
+The original plan was to lock the demo machine to a specific Chrome build by
+capturing `chrome://version` into `apps/browser-ext/PINNED_CHROME.txt`. That
+file was never created and no build is pinned — treat the selectors as
+unverified against any particular Chrome version.
 
-```
-apps/browser-ext/PINNED_CHROME.txt
-```
-
-Use a separate Chrome profile for the demo (`chrome://settings/manageProfile`)
-so extension state doesn't drift.
+Using a separate Chrome profile (`chrome://settings/manageProfile`) is still
+worthwhile so extension state doesn't drift between runs.
 
 ## Smoke test
 

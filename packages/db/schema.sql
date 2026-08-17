@@ -1,5 +1,8 @@
 -- Trailhead schema — spec §4 (docs/superpowers/specs/2026-04-25-trailhead-design.md)
--- Six tables. No events table (the Claude Code Stop hook replaces NOTIFY/LISTEN).
+-- Eight tables: teams, nodes, learnings, prompts, captures, skill_observations,
+-- wiki_jobs, wiki_job_paths. (The header said "six" from the original spec and
+-- was never updated when the rich-bootstrap job tables landed.)
+-- No events table (the Claude Code Stop hook replaces NOTIFY/LISTEN).
 --
 -- Apply against your Neon database:
 --   psql "$DATABASE_URL" -f packages/db/schema.sql
@@ -35,7 +38,11 @@ CREATE TABLE IF NOT EXISTS nodes (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (team_token, path)
 );
-CREATE INDEX IF NOT EXISTS idx_nodes_team_token_path ON nodes(team_token, path);
+-- NOTE: no separate (team_token, path) index here. The UNIQUE constraint above
+-- already creates one with identical leading columns, so a second was pure
+-- write amplification and wasted space. Dropped — see
+-- migrations/2026-08-17-hot-path-indexes.sql.
+DROP INDEX IF EXISTS idx_nodes_team_token_path;
 
 -- Accumulated learnings (the "AI-managed" content)
 CREATE TABLE IF NOT EXISTS learnings (
@@ -79,6 +86,11 @@ CREATE TABLE IF NOT EXISTS captures (
   scored_dimensions JSONB,                     -- {goal_clarity: 8, ...}
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- GET /team/metrics runs
+--   SELECT ... FROM captures WHERE team_token = $1 AND created_at > $2
+-- and the dashboard polls it every 30s per open viewer. Without this the
+-- table had no index beyond the PK, so every poll was a full sequential scan.
+CREATE INDEX IF NOT EXISTS idx_captures_team_created ON captures(team_token, created_at DESC);
 
 -- Skill arc data — driven by real /score writes (every browser/VS Code prompt).
 -- prompt_hash backs the per-(user, dim, prompt-hash) 30s dedup window from
@@ -94,6 +106,20 @@ CREATE TABLE IF NOT EXISTS skill_observations (
   ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_skill_obs_team_token_dim_ts ON skill_observations(team_token, dimension, ts);
+
+-- The 30s dedup NOT EXISTS probe in writeSkillObservations (apps/api/src/index.ts)
+-- filters on (team_token, user_id, dimension, prompt_hash, ts). The index above
+-- leads with (team_token, dimension) and carries neither user_id nor
+-- prompt_hash, so it could not serve that probe — and the probe runs five times
+-- (once per dimension) on every single /score. This index matches it column for
+-- column.
+CREATE INDEX IF NOT EXISTS idx_skill_obs_dedup
+  ON skill_observations(team_token, user_id, dimension, prompt_hash, ts DESC);
+
+-- GET /skill-arc (WHERE team_token AND ts > $, ORDER BY ts) and the
+-- COUNT(DISTINCT user_id) in GET /team/metrics. Neither filters on dimension,
+-- so neither could use idx_skill_obs_team_token_dim_ts.
+CREATE INDEX IF NOT EXISTS idx_skill_obs_team_ts ON skill_observations(team_token, ts);
 
 -- Cheap-insurance index for the GET /wiki/recent polling query.
 CREATE INDEX IF NOT EXISTS idx_learnings_last_seen_at ON learnings(last_seen_at DESC);

@@ -1,13 +1,15 @@
 {
   "name": "@trailhead/api",
   "version": "0.0.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/gemini.test.ts src/coach-degraded.test.ts src/wiki-export.test.ts"
   },
   "dependencies": {
     "@google/genai": "^1.50.1",

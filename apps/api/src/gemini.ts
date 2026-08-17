@@ -54,7 +54,7 @@ async function tracedGenerate(params: GenContentParams): Promise<GenContentResp>
     },
   });
   try {
-    const resp = await tracedGenerate(params);
+    const resp = await ai.models.generateContent(params);
     if (gen) {
       const u = (resp as unknown as {
         usageMetadata?: {
