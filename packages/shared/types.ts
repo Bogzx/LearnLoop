@@ -77,6 +77,15 @@ export interface ExamplesItem {
 }
 export interface ExamplesResponse { items: ExamplesItem[]; }
 
+// GET /search?q=&scope= — free-text search across durable learnings, node
+// rules and graduated prompts. `kind` says which of the three matched.
+export interface SearchItem {
+  kind: 'learning' | 'rule' | 'prompt';
+  body: string;
+  node_path: string;
+}
+export interface SearchResponse { items: SearchItem[]; }
+
 // GET /prompts/proven — every graduated prompt for the team, with the
 // actual overall score from when /coach promoted it. "Proven" is the user-
 // facing framing; under the hood it's status='graduated' filtered by
