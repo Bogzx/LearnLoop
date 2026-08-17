@@ -334,12 +334,20 @@ export interface CoachResponse {
 // before any token is configured. Demo simplicity: no per-user
 // permission filter (the user explicitly asked for "all teams").
 //
-// Token is the team's primary key (the value the client sends as
-// X-Team-Token). There is no separate UUID id since the
-// 2026-04-26 token-as-team-key refactor.
+// A team as described to a client.
+//
+// `token` is deliberately NOT here. The team token is the only credential this
+// system has — it grants read on the wiki (which summarises private source
+// code) and write everywhere — and GET /teams used to hand back every tenant's
+// token, unauthenticated, with CORS `*`. One request to a public URL was a
+// full compromise of every team on the server.
+//
+// `id` is an opaque, stable, non-reversible digest of the token. It is safe to
+// display and to use as a React key or a lookup handle, and it cannot be
+// replayed as an X-Team-Token.
 export interface TeamSummary {
   name: string;
-  token: string;
+  id: string;
 }
 export interface TeamsListResponse {
   teams: TeamSummary[];

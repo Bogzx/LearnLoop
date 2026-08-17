@@ -1,5 +1,10 @@
 # Roadmap — Browser Extension on Claude.ai (Person B)
 
+> **Historical document.** The host `trailheadapi-production.up.railway.app`
+> referenced below is DELETED and returns 404. Trailhead is self-hosted now:
+> bring an API up with `docker compose up` (see `SELFHOSTING.md`) and use
+> `http://localhost:3000`. Do not copy the URLs below into a config.
+
 **Date:** 2026-04-25 (PoliHack 24h hackathon)
 **Spec:** [`docs/superpowers/specs/2026-04-25-trailhead-design.md`](../superpowers/specs/2026-04-25-trailhead-design.md) — read §6 (Socratic Mode) first
 **Status as of writing:** unblocker complete (shared types locked, Hono stub deployed at `https://trailheadapi-production.up.railway.app`, CORS verified open)

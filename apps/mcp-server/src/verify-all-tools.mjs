@@ -1,9 +1,13 @@
-// Exercise every MCP hero tool against the live Railway API and report what
+// Exercise every MCP hero tool against a running Trailhead API and report what
 // behaves correctly vs. what surfaces an upstream 404. Used as a verification
 // harness — not a unit test.
+//
+// Trailhead is self-hosted: bring the API up with `docker compose up` from the
+// repo root (see SELFHOSTING.md), or point TRAILHEAD_API_URL at your server.
 import { spawn } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveApiUrl } from './api-url.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER = resolve(__dirname, 'index.ts');
@@ -11,7 +15,7 @@ const SERVER = resolve(__dirname, 'index.ts');
 const child = spawn('npx', ['--yes', 'tsx', SERVER], {
   env: {
     ...process.env,
-    TRAILHEAD_API_URL: process.env.TRAILHEAD_API_URL ?? 'https://trailheadapi-production.up.railway.app',
+    TRAILHEAD_API_URL: resolveApiUrl(),
     TRAILHEAD_TEAM_TOKEN: process.env.TRAILHEAD_TEAM_TOKEN ?? 'trailhead_demo_acme_2026',
   },
   stdio: ['pipe', 'pipe', 'pipe'],

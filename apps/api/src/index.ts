@@ -57,6 +57,7 @@ import {
   renderTeachBlock,
 } from '@trailhead/scoring';
 import { applyTeamNameIfPlaceholder, DEMO_TEAM_TOKEN, q, ensureTeam, upsertNode, wipeTeamData } from './db.ts';
+import { createHash } from 'node:crypto';
 import { degradedCoachResponse } from './coach-degraded.ts';
 import { loadWikiTree } from './wiki-tree.ts';
 import { exportFilename, renderWikiMarkdown } from './wiki-export.ts';
@@ -127,9 +128,11 @@ app.use('*', async (c, next) => {
 // existing clients carrying the old token continue to land on the demo team.
 app.use('*', async (c, next) => {
   if (c.req.method === 'OPTIONS' || c.req.path === '/') return next();
-  // /teams is unauthenticated so the popup can populate a Select-team
-  // dropdown before any token is configured.
-  if (c.req.path === '/teams') return next();
+  // /teams used to be exempt here so the popup could populate a Select-team
+  // dropdown before any token was configured. That exemption published every
+  // tenant's credential to the open internet. Clients now resolve their own
+  // team by sending the token they already hold; GET / remains the
+  // unauthenticated reachability probe.
   const token = c.req.header('x-team-token');
   if (!token) return c.json({ error: 'unauthorized', detail: 'missing X-Team-Token' }, 401);
   const teamToken = await ensureTeam(token, { autoCreate: AUTO_CREATE_TEAMS });
@@ -142,6 +145,15 @@ app.use('*', async (c, next) => {
   c.set('team_token', teamToken);
   await next();
 });
+
+// A stable, opaque handle for a team that is safe to hand to a client.
+//
+// SHA-256 of the token, truncated to 16 hex chars. Not reversible, not
+// replayable as an X-Team-Token, and stable across requests so it works as a
+// React key or a client-side lookup handle.
+function opaqueTeamId(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
 
 app.get('/', (c) =>
   c.json({
@@ -161,7 +173,7 @@ app.get('/', (c) =>
       'GET  /wiki/recent?since=ISO',
       'POST /diff',
       'POST /improve',
-      'GET  /teams (unauthenticated)',
+      'GET  /teams (your team only; never returns tokens)',
       'GET  /skill-arc?user_id=&since=ISO',
       'GET  /team/metrics',
       'GET  /wiki/tree',
@@ -1489,16 +1501,27 @@ app.get('/wiki/export', async (c) => {
 });
 
 // ----- GET /teams ------------------------------------------------------------
-// Lists every team with a usable token. Unauthenticated (the popup needs to
-// populate a Select-team dropdown before any token is configured). Demo
-// simplicity: no per-user permission filter.
+// Resolves the CALLER's team. Authenticated, and it never returns a token.
+//
+// This used to be unauthenticated and return every team on the server together
+// with its token — with CORS `*`, so any web page could read it. The team token
+// is the only credential in this system: it grants read on the wiki (which
+// summarises private source code) and write on everything. A single unauth GET
+// therefore compromised every tenant at once. The browser popup's convenience
+// of pre-populating a team dropdown before any token was configured is what
+// paid for that, and it is nowhere near worth the price.
+//
+// The response is a list of one so the TeamsListResponse shape (and every
+// caller that maps over `teams`) keeps working.
 app.get('/teams', async (c) => {
+  const teamToken = c.get('team_token');
   const rows = await q<{ name: string; token: string }>(
-    'SELECT name, token FROM teams ORDER BY name ASC',
+    'SELECT name, token FROM teams WHERE token = $1',
+    [teamToken],
   );
   const teams: TeamSummary[] = rows.map((r) => ({
     name: r.name,
-    token: r.token,
+    id: opaqueTeamId(r.token),
   }));
   const res: TeamsListResponse = { teams };
   return c.json(res);

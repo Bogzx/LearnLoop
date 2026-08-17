@@ -1,0 +1,103 @@
+# Trailhead — self-hosted stack: Postgres + the API.
+#
+#   cp .env.example .env     # then put your Gemini key in it
+#   docker compose up
+#
+# That is the whole setup. The schema is applied to a fresh database
+# automatically, and the API comes up on http://localhost:3000.
+# See SELFHOSTING.md for pointing the clients at it.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trailhead}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trailhead}
+      POSTGRES_DB: ${POSTGRES_DB:-trailhead}
+    volumes:
+      # Named volume: data survives `docker compose down`. Use
+      # `docker compose down -v` to wipe it (see SELFHOSTING.md).
+      - trailhead-pgdata:/var/lib/postgresql/data
+      # Anything in this directory runs, in filename order, the FIRST time the
+      # data directory is initialised — i.e. on a fresh volume only. That is
+      # how the schema gets applied without a manual psql step. schema.sql is
+      # idempotent (every CREATE uses IF NOT EXISTS) so re-running is safe.
+      - ./packages/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      # The API waits on this, so it must mean "ready for queries", not just
+      # "process started". -U/-d avoid a false pass from the bootstrap phase.
+      test:
+        ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-trailhead} -d ${POSTGRES_DB:-trailhead}']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    ports:
+      # Exposed for psql / the seed + migrate scripts in packages/db. Change
+      # POSTGRES_PORT if 5432 is already taken on your machine.
+      #
+      # Bound to 127.0.0.1 deliberately. A bare '5432:5432' publishes on every
+      # interface, which on a laptop means the database is reachable by anyone
+      # on the same café / office network.
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    restart: unless-stopped
+
+  api:
+    build:
+      # Root context: this is an npm workspace monorepo and the install needs
+      # the root lockfile plus every workspace manifest.
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      # Defaults to the postgres service above. Set DATABASE_URL in .env to
+      # point at an external database instead (Neon, RDS, ...).
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-trailhead}:${POSTGRES_PASSWORD:-trailhead}@postgres:5432/${POSTGRES_DB:-trailhead}}
+      # The one thing a stranger must supply. `:?` fails the command up front
+      # with this message rather than building an image that dies on boot.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env (cp .env.example .env) — get one at https://aistudio.google.com/apikey}
+      # Container-internal port. The host mapping below is what you change.
+      PORT: '3000'
+      # Any unknown X-Team-Token spawns its own team.
+      #
+      # The API's own default is FALSE (unauthenticated tenant creation is not
+      # something a reachable server should do). Compose overrides it to true
+      # because `trailhead-mcp init` derives a fresh per-repo token and expects
+      # the server to accept it — without this, local onboarding 401s.
+      #
+      # That trade is only safe because the port below is bound to 127.0.0.1.
+      # If you change that binding to expose this stack on a network, set this
+      # to false and register teams explicitly.
+      TRAILHEAD_AUTO_CREATE_TEAMS: ${TRAILHEAD_AUTO_CREATE_TEAMS:-true}
+      # Guard on DELETE /team/data for the seeded demo team.
+      TRAILHEAD_ALLOW_DEMO_RESET: ${TRAILHEAD_ALLOW_DEMO_RESET:-false}
+      # Optional tracing. Unset = silently disabled with a startup warning.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASEURL: ${LANGFUSE_BASEURL:-https://cloud.langfuse.com}
+    ports:
+      # host:container — set PORT in .env to publish somewhere other than 3000.
+      # Every client default (browser ext, VS Code ext, MCP server, dashboard)
+      # is http://localhost:3000, so changing this means updating those too.
+      #
+      # Bound to 127.0.0.1: the API's only auth is a bearer team token, and
+      # with TRAILHEAD_AUTO_CREATE_TEAMS on (above) any token is accepted. That
+      # combination must not be reachable from the network. Drop the 127.0.0.1
+      # prefix only together with TRAILHEAD_AUTO_CREATE_TEAMS=false.
+      - '127.0.0.1:${PORT:-3000}:3000'
+    depends_on:
+      postgres:
+        # Don't start until Postgres answers pg_isready — the API opens its
+        # pool and runs a startup migration check immediately.
+        condition: service_healthy
+    healthcheck:
+      # GET / is the API's status endpoint (no auth). wget ships with the
+      # busybox userland in node:22-alpine.
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3000/']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  trailhead-pgdata:

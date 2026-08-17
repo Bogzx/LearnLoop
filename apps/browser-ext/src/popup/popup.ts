@@ -1,22 +1,35 @@
-// Popup script. Surfaces three controls:
+// Popup script. Surfaces four controls:
 //   - Coaching on/off switch
+//   - API server — the base URL of the self-hosted Trailhead API. Trailhead
+//     ships no hosted backend, so this is required config; it defaults to
+//     http://localhost:3000 (what `docker compose up` publishes) and is
+//     persisted to chrome.storage.local.<API_URL_KEY>. The content script
+//     watches that key, so a change lands on open tabs without a reload.
 //   - Select context — fetches GET /wiki/tree and lets the user pick a
 //     subtree root; persisted to chrome.storage.local.<CONTEXT_PATH_KEY>
 //     so the content script prepends the rendered subtree to every send.
-//   - Select team — fetches GET /teams and persists the chosen team's
-//     X-Team-Token to chrome.storage.local.<TEAM_TOKEN_KEY>.
+//   - Select team — takes the team token and persists it to
+//     chrome.storage.local.<TEAM_TOKEN_KEY>, then resolves the team's display
+//     name via the authenticated GET /teams.
 //
-// Both pickers cache their first fetch in popup memory so re-opening the
+// That last control used to be a dropdown listing every team on the server,
+// built from an unauthenticated GET /teams that returned each team's token.
+// Clicking a row adopted another tenant's credential, and merely opening the
+// popup fetched all of them. The endpoint now authenticates and returns only
+// the caller's own team, without a token, so switching teams means supplying
+// the token for a team you are actually entitled to.
+//
+// The context picker caches its first fetch in popup memory so re-opening the
 // dropdown is instant. A team change implicitly invalidates the wiki tree
 // (different team → different nodes), so cachedTree is dropped on token
 // change.
 
-import { API_URL } from '../config.ts';
+import { API_URL_KEY, DEFAULT_API_URL } from '../config.ts';
+import { normalizeApiUrl } from '../api-url-state.ts';
 import { TEAM_TOKEN_KEY, TEAM_NAME_KEY } from '../team-state.ts';
 import { CONTEXT_PATH_KEY } from '../context-state.ts';
 import { TEAM_TOKEN as DEFAULT_TEAM_TOKEN } from '../config.ts';
 import type {
-  TeamSummary,
   TeamsListResponse,
   WikiTreeNode,
   WikiTreeResponse,
@@ -37,8 +50,15 @@ const contextStatusEl = document.getElementById('context-status') as HTMLDivElem
 const contextTreeEl = document.getElementById('context-tree') as HTMLUListElement;
 const hintEl = document.getElementById('coaching-hint') as HTMLDivElement;
 const toastEl = document.getElementById('toast') as HTMLDivElement;
+const apiUrlInputEl = document.getElementById('api-url-input') as HTMLInputElement;
+const apiUrlSaveEl = document.getElementById('api-url-save') as HTMLButtonElement;
+const apiUrlStatusEl = document.getElementById('api-url-status') as HTMLDivElement;
 
-let cachedTeams: TeamSummary[] | null = null;
+// Resolved API base URL for this popup session (no trailing slash). Seeded
+// from storage when the popup opens; the Save button rewrites both this and
+// storage. Every fetch below reads it rather than a build-time constant.
+let apiUrl = DEFAULT_API_URL;
+
 let cachedTree: WikiTreeNode[] | null = null;
 // Tree cache is keyed by the team token under which it was fetched. A team
 // switch must drop the tree (different wiki) — we compare against this on
@@ -86,6 +106,114 @@ async function setStoredTeamName(name: string): Promise<void> {
   });
 }
 
+async function getStoredTeamName(): Promise<string | null> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.get(TEAM_NAME_KEY, (v: Record<string, unknown>) => {
+      const stored = v[TEAM_NAME_KEY];
+      resolve(typeof stored === 'string' && stored ? stored : null);
+    });
+  });
+}
+
+// ----- API server ------------------------------------------------------------
+
+async function getStoredApiUrl(): Promise<string> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.get(API_URL_KEY, (v: Record<string, unknown>) => {
+      resolve(normalizeApiUrl(v?.[API_URL_KEY]));
+    });
+  });
+}
+
+async function setStoredApiUrl(url: string): Promise<void> {
+  return new Promise((resolve) => {
+    (chrome as any).storage.local.set({ [API_URL_KEY]: url }, () => resolve());
+  });
+}
+
+function setApiStatus(text: string, kind: 'neutral' | 'ok' | 'error' = 'neutral'): void {
+  apiUrlStatusEl.textContent = text;
+  apiUrlStatusEl.classList.toggle('is-error', kind === 'error');
+  apiUrlStatusEl.classList.toggle('is-ok', kind === 'ok');
+}
+
+// The manifest ships host_permissions for localhost / 127.0.0.1 only. Pointing
+// the extension at a remote self-hosted API needs that origin granted, which
+// MV3 exposes through optional_host_permissions. Requested from the Save click
+// because chrome.permissions.request requires a user gesture. Returns true when
+// we either hold the permission or can't tell — we let the fetch be the judge
+// rather than blocking the user on a guess.
+async function ensureHostPermission(url: string): Promise<boolean> {
+  try {
+    const perms = (chrome as any)?.permissions;
+    if (!perms?.request || !perms?.contains) return true;
+    const origin = `${new URL(url).origin}/*`;
+    const has = await new Promise<boolean>((resolve) => {
+      perms.contains({ origins: [origin] }, (r: boolean) => resolve(Boolean(r)));
+    });
+    if (has) return true;
+    return await new Promise<boolean>((resolve) => {
+      perms.request({ origins: [origin] }, (granted: boolean) => resolve(Boolean(granted)));
+    });
+  } catch {
+    return true;
+  }
+}
+
+// Cheap reachability probe against a no-auth endpoint. Turns "nothing works and
+// I don't know why" into a one-line diagnosis naming the fix.
+async function probeApi(): Promise<void> {
+  setApiStatus(`Checking ${apiUrl}…`);
+  const ac = new AbortController();
+  const timer = window.setTimeout(() => ac.abort(), 4000);
+  try {
+    // GET / is the API's unauthenticated status endpoint. (This used to probe
+    // /teams, which only worked because /teams required no auth — the very
+    // thing that leaked every tenant's token.)
+    const res = await fetch(`${apiUrl}/`, { signal: ac.signal });
+    if (!res.ok) {
+      setApiStatus(`${apiUrl} responded HTTP ${res.status}.`, 'error');
+      return;
+    }
+    setApiStatus(`Connected to ${apiUrl}`, 'ok');
+  } catch {
+    setApiStatus(
+      apiUrl === DEFAULT_API_URL
+        ? `No API at ${apiUrl}. Trailhead is self-hosted — run \`docker compose up\` (see SELFHOSTING.md), or enter your server's URL above.`
+        : `Can't reach ${apiUrl}. Check the server is running, or correct the URL above.`,
+      'error',
+    );
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function saveApiUrl(): Promise<void> {
+  const next = normalizeApiUrl(apiUrlInputEl.value);
+  if (!next) {
+    setApiStatus('Enter a full base URL, e.g. http://localhost:3000', 'error');
+    return;
+  }
+  apiUrlSaveEl.disabled = true;
+  try {
+    const granted = await ensureHostPermission(next);
+    if (!granted) {
+      setApiStatus(`Permission for ${next} denied — the extension can't call it.`, 'error');
+      return;
+    }
+    await setStoredApiUrl(next);
+    apiUrl = next;
+    apiUrlInputEl.value = next;
+    // A different server means a different team and a different wiki.
+    cachedTree = null;
+    cachedTreeForToken = null;
+    showToast('API server saved');
+    await probeApi();
+  } finally {
+    apiUrlSaveEl.disabled = false;
+  }
+}
+
 async function getStoredContextPath(): Promise<string | null> {
   return new Promise((resolve) => {
     (chrome as any).storage.local.get(CONTEXT_PATH_KEY, (v: Record<string, unknown>) => {
@@ -107,15 +235,37 @@ async function clearStoredContextPath(): Promise<void> {
   });
 }
 
+/**
+ * Ask the API which team the stored token belongs to.
+ *
+ * GET /teams is authenticated and returns only the caller's own team. It used
+ * to be unauthenticated and return every team on the server *with its token*,
+ * which is what let this popup show a pick-a-team list — and also handed every
+ * tenant's credential to anyone who asked. Resolving your own team from the
+ * token you already hold is the same convenience without the giveaway.
+ */
+async function resolveTeamName(token: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${apiUrl}/teams`, { headers: { 'X-Team-Token': token } });
+    if (!res.ok) return null;
+    const data = (await res.json()) as TeamsListResponse;
+    return data.teams?.[0]?.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function refreshCurrentTeamName(): Promise<void> {
   const token = await getStoredToken();
-  const team = cachedTeams?.find((t) => t.token === token);
-  // Backfill the cached display name whenever the popup discovers it via
-  // /teams — handles users who picked a team before this feature existed.
-  if (team) await setStoredTeamName(team.name);
-  currentTeamNameEl.textContent = team
-    ? team.name
-    : token === DEFAULT_TEAM_TOKEN ? 'Acme (default)' : token.slice(0, 16) + '…';
+  const cached = await getStoredTeamName();
+  currentTeamNameEl.textContent =
+    cached ?? (token === DEFAULT_TEAM_TOKEN ? 'Acme (default)' : token.slice(0, 16) + '…');
+
+  const name = await resolveTeamName(token);
+  if (name) {
+    await setStoredTeamName(name);
+    currentTeamNameEl.textContent = name;
+  }
 }
 
 async function refreshCurrentContextName(): Promise<void> {
@@ -123,52 +273,94 @@ async function refreshCurrentContextName(): Promise<void> {
   currentContextNameEl.textContent = displayPath(path);
 }
 
-function renderTeamList(teams: TeamSummary[], currentToken: string): void {
-  teamListEl.replaceChildren();
-  for (const team of teams) {
-    const li = document.createElement('li');
-    if (team.token === currentToken) {
-      li.classList.add('is-current');
-      const check = document.createElement('span');
-      check.className = 'check';
-      check.textContent = '✓';
-      li.appendChild(check);
-    }
-    const name = document.createElement('span');
-    name.textContent = team.name;
-    li.appendChild(name);
-    li.addEventListener('click', async () => {
-      await setStoredToken(team.token);
-      // Persist the team's display name alongside the token so the
-      // in-page pill can show "Acme Fintech · Root" instead of just "Root".
-      await setStoredTeamName(team.name);
-      // Picking a different team invalidates the wiki tree cache and
-      // any active context (the path may not exist for the new team).
-      if (cachedTreeForToken !== team.token) {
-        cachedTree = null;
-        cachedTreeForToken = null;
-      }
-      const oldPath = await getStoredContextPath();
-      if (oldPath) {
-        await clearStoredContextPath();
-        await refreshCurrentContextName();
-      }
-      cachedTeams && renderTeamList(cachedTeams, team.token);
-      await refreshCurrentTeamName();
-      closeTeamDropdown();
-      showToast(`Switched to ${team.name}`);
-    });
-    teamListEl.appendChild(li);
+/**
+ * Team switcher.
+ *
+ * This was a list of every team on the server, each row carrying that team's
+ * token, populated from an unauthenticated GET /teams. Clicking a row adopted
+ * someone else's credential. The endpoint no longer discloses tokens, so
+ * switching teams means entering the token for the team you are entitled to —
+ * which is what "switching teams" should always have meant.
+ */
+async function applyTeamToken(next: string): Promise<void> {
+  const token = next.trim();
+  if (!token) {
+    showTeamError('Enter a team token.');
+    return;
   }
-  teamListEl.hidden = false;
-  teamStatusEl.hidden = true;
+  const current = await getStoredToken();
+  teamStatusEl.hidden = false;
+  teamStatusEl.classList.remove('is-error');
+  teamStatusEl.textContent = 'Checking token…';
+
+  const name = await resolveTeamName(token);
+  if (!name) {
+    showTeamError(`${apiUrl} rejected that token, or is unreachable.`);
+    return;
+  }
+
+  await setStoredToken(token);
+  // Persist the display name alongside the token so the in-page pill can show
+  // "Acme Fintech · Root" instead of just "Root".
+  await setStoredTeamName(name);
+  // A different team invalidates the wiki tree cache and any active context
+  // (the path may not exist for the new team).
+  if (token !== current) {
+    cachedTree = null;
+    cachedTreeForToken = null;
+    const oldPath = await getStoredContextPath();
+    if (oldPath) {
+      await clearStoredContextPath();
+      await refreshCurrentContextName();
+    }
+  }
+  await refreshCurrentTeamName();
+  closeTeamDropdown();
+  showToast(`Switched to ${name}`);
 }
 
-function showTeamLoading(): void {
-  teamStatusEl.textContent = 'Loading teams…';
-  teamStatusEl.classList.remove('is-error');
-  teamStatusEl.hidden = false;
-  teamListEl.hidden = true;
+async function renderTeamEditor(): Promise<void> {
+  teamListEl.replaceChildren();
+
+  const li = document.createElement('li');
+  li.className = 'team-editor';
+
+  const label = document.createElement('label');
+  label.textContent = 'Team token';
+  label.htmlFor = 'team-token-input';
+  li.appendChild(label);
+
+  const input = document.createElement('input');
+  input.id = 'team-token-input';
+  input.type = 'text';
+  input.spellcheck = false;
+  input.autocomplete = 'off';
+  input.placeholder = 'e.g. repo_9d01… or trailhead_demo_acme_2026';
+  input.value = await getStoredToken();
+  li.appendChild(input);
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.textContent = 'Use this team';
+  save.addEventListener('click', () => void applyTeamToken(input.value));
+  li.appendChild(save);
+
+  input.addEventListener('keydown', (e) => {
+    if ((e as KeyboardEvent).key === 'Enter') {
+      e.preventDefault();
+      void applyTeamToken(input.value);
+    }
+  });
+
+  const hint = document.createElement('p');
+  hint.className = 'team-hint';
+  hint.textContent =
+    'Your token is your team’s credential. `trailhead-mcp init` derives one per repo and writes it into your MCP config.';
+  li.appendChild(hint);
+
+  teamListEl.appendChild(li);
+  teamListEl.hidden = false;
+  teamStatusEl.hidden = true;
 }
 
 function showTeamError(msg: string): void {
@@ -186,25 +378,7 @@ function closeTeamDropdown(): void {
 async function openTeamDropdown(): Promise<void> {
   teamDropdownEl.hidden = false;
   selectTeamBtn.setAttribute('aria-expanded', 'true');
-  if (cachedTeams) {
-    renderTeamList(cachedTeams, await getStoredToken());
-    return;
-  }
-  showTeamLoading();
-  try {
-    const res = await fetch(`${API_URL}/teams`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as TeamsListResponse;
-    if (!Array.isArray(data.teams) || data.teams.length === 0) {
-      showTeamError('No teams returned by the API.');
-      return;
-    }
-    cachedTeams = data.teams;
-    renderTeamList(cachedTeams, await getStoredToken());
-  } catch (err) {
-    console.warn('[trailhead-popup] /teams fetch failed', err);
-    showTeamError('Couldn’t load teams. Check the API.');
-  }
+  await renderTeamEditor();
 }
 
 // ----- Wiki context picker ---------------------------------------------------
@@ -358,7 +532,7 @@ async function openContextDropdown(): Promise<void> {
   }
   showContextLoading();
   try {
-    const res = await fetch(`${API_URL}/wiki/tree`, {
+    const res = await fetch(`${apiUrl}/wiki/tree`, {
       headers: { 'X-Team-Token': token },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -372,7 +546,8 @@ async function openContextDropdown(): Promise<void> {
     renderContextTree(cachedTree, await getStoredContextPath());
   } catch (err) {
     console.warn('[trailhead-popup] /wiki/tree fetch failed', err);
-    showContextError('Couldn’t load wiki. Check the API.');
+    showContextError(`Couldn’t reach ${apiUrl}. Check the API server below.`);
+    void probeApi();
   }
 }
 
@@ -391,11 +566,35 @@ function showToast(text: string, ms = 1600): void {
   } catch {
     render(true);
   }
+  // Resolve the API server first — the team/context fetches below depend on
+  // it, and the user must be able to SEE which server they're pointed at.
+  try {
+    const stored = await getStoredApiUrl();
+    apiUrl = stored || DEFAULT_API_URL;
+    apiUrlInputEl.value = apiUrl;
+    if (!stored) {
+      setApiStatus(`Using the default ${DEFAULT_API_URL} — no server configured yet.`);
+    }
+  } catch {
+    apiUrlInputEl.value = apiUrl;
+  }
+  void probeApi();
   // Show the current team + context in the button rows even before the
   // user opens either dropdown.
   await refreshCurrentTeamName();
   await refreshCurrentContextName();
 })();
+
+apiUrlSaveEl.addEventListener('click', () => {
+  void saveApiUrl();
+});
+
+apiUrlInputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    void saveApiUrl();
+  }
+});
 
 switchEl.addEventListener('click', async () => {
   try {

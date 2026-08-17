@@ -13,13 +13,49 @@ import { activeFilePath, activeFolderPath } from './paths.ts';
 import { getNonce, getWebviewHtml } from './webview.ts';
 import { applyWikiSnapshot, diffWikiItems, maxSince } from './wiki-diff.ts';
 
+// Trailhead ships no hosted API — the backend is self-hosted, so `trailhead.apiUrl`
+// is required config. This default matches the port apps/api listens on
+// (PORT ?? 3000) and the port the root docker-compose.yml publishes.
+const DEFAULT_API_URL = 'http://localhost:3000';
+
 function readConfig(): api.ApiConfig & { userId: string } {
   const cfg = vscode.workspace.getConfiguration('trailhead');
+  const configured = (cfg.get<string>('apiUrl') ?? '').trim().replace(/\/+$/, '');
   return {
-    apiUrl: cfg.get<string>('apiUrl') ?? 'https://trailheadapi-production.up.railway.app',
+    apiUrl: configured || DEFAULT_API_URL,
     teamToken: cfg.get<string>('teamToken') ?? 'trailhead_demo_acme_2026',
     userId: cfg.get<string>('userId') ?? 'demo',
   };
+}
+
+// A self-hosted API that isn't running fails at the network layer. Undici
+// surfaces that as a TypeError / "fetch failed" — distinct from a 4xx, which
+// resolves normally. Those get a visible, actionable notification instead of
+// an empty sidebar, because silence here reads as "the extension is broken".
+function isUnreachable(err: unknown): boolean {
+  if (err instanceof TypeError) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|network/i.test(msg);
+}
+
+// Latched so a 2s wiki poll against a down server doesn't produce a
+// notification storm. Cleared by noteApiReachable() on the next success, so a
+// server that goes away again re-notifies.
+let apiUnreachableNotified = false;
+
+function noteApiReachable(): void {
+  apiUnreachableNotified = false;
+}
+
+function notifyApiUnreachable(cfg: { apiUrl: string }, err: unknown): void {
+  if (!isUnreachable(err) || apiUnreachableNotified) return;
+  apiUnreachableNotified = true;
+  const isDefault = cfg.apiUrl === DEFAULT_API_URL;
+  const detail = isDefault
+    ? `Trailhead can't reach an API at ${cfg.apiUrl}. Trailhead is self-hosted: start one with \`docker compose up\` from the repo root (see SELFHOSTING.md), or set "trailhead.apiUrl" in Settings to your server's URL.`
+    : `Trailhead can't reach the API at ${cfg.apiUrl}. Check that the server is running, or correct "trailhead.apiUrl" in Settings.`;
+  // Optional-called: the bundle-load test stubs `vscode` with a minimal window.
+  vscode.window.showErrorMessage?.(detail);
 }
 
 class CoachViewProvider implements vscode.WebviewViewProvider {
@@ -77,9 +113,12 @@ class CoachViewProvider implements vscode.WebviewViewProvider {
     const cfg = readConfig();
     try {
       const res = await api.examples(cfg, folder);
+      noteApiReachable();
       this.view?.webview.postMessage({ type: 'examples', items: res.items });
-    } catch {
+    } catch (e) {
       // /examples may not be deployed yet — show empty state, no toast spam.
+      // An unreachable server is a different problem and does get surfaced.
+      notifyApiUnreachable(cfg, e);
       this.view?.webview.postMessage({ type: 'examples', items: [] });
     }
   }
@@ -105,10 +144,14 @@ class CoachViewProvider implements vscode.WebviewViewProvider {
         ac.signal,
       );
       if (ac.signal.aborted) return;
+      noteApiReachable();
       this.view.webview.postMessage({ type: 'score', seq, payload: res });
     } catch (e) {
       if (ac.signal.aborted) return;
-      const msg = (e as Error).message;
+      notifyApiUnreachable(cfg, e);
+      const msg = isUnreachable(e)
+        ? `can't reach the Trailhead API at ${cfg.apiUrl} — check "trailhead.apiUrl" in Settings`
+        : (e as Error).message;
       this.view.webview.postMessage({ type: 'score', seq, error: `score failed: ${msg}` });
     }
   }
@@ -133,8 +176,12 @@ class CoachViewProvider implements vscode.WebviewViewProvider {
     let res: api.WikiRecentResponse;
     try {
       res = await api.wikiRecent(cfg, this.wikiSince);
-    } catch {
-      return; // endpoint may not be deployed; fail silently
+      noteApiReachable();
+    } catch (e) {
+      // Endpoint may not be deployed; that stays silent. An unreachable
+      // server surfaces once (latched) rather than every 2s poll.
+      notifyApiUnreachable(cfg, e);
+      return;
     }
     const toasts = diffWikiItems(this.wikiState, res.items);
     for (const t of toasts) {

@@ -17,8 +17,42 @@ import type {
   WikiTreeResponse,
 } from '@trailhead/shared';
 
-const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'https://trailheadapi-production.up.railway.app';
+// Trailhead ships no hosted API — the backend is self-hosted, so
+// NEXT_PUBLIC_API_URL is required config. The default matches the port
+// apps/api listens on (PORT ?? 3000) and the port the root
+// docker-compose.yml publishes, so a local `docker compose up` just works.
+//
+// Deliberately NOT a module-scope throw: `next build` evaluates this file
+// while prerendering, and a hard failure there would break the build for
+// anyone without env set. We fall back, record that we fell back, and fail
+// loudly at request time instead (see assertConfigured / fetcher below).
+export const DEFAULT_API_URL = 'http://localhost:3000';
+
+const RAW_API_URL = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
 const API_URL = RAW_API_URL.replace(/\/$/, '');
+
+/** False when NEXT_PUBLIC_API_URL was never set and we're on the localhost
+ *  default. Pages use it to explain a failure instead of showing a bare
+ *  "fetch failed". */
+export const IS_API_URL_CONFIGURED = Boolean(process.env.NEXT_PUBLIC_API_URL);
+
+/** Actionable, self-contained message naming the exact variable to set. */
+export function apiConfigHint(): string {
+  return IS_API_URL_CONFIGURED
+    ? `Could not reach the Trailhead API at ${API_URL}. Check that the server is running and that NEXT_PUBLIC_API_URL is correct.`
+    : `Could not reach the Trailhead API at ${API_URL}. NEXT_PUBLIC_API_URL is not set, so the dashboard fell back to the local default. Trailhead is self-hosted — start the API with \`docker compose up\` from the repo root (see SELFHOSTING.md), or set NEXT_PUBLIC_API_URL to your server's base URL.`;
+}
+
+// Wraps a fetch so a network-layer failure (server down, wrong host) becomes
+// the actionable message above rather than an opaque TypeError. Non-2xx
+// responses are the caller's business and pass straight through.
+async function guardedFetch(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (err) {
+    throw new Error(apiConfigHint(), { cause: err });
+  }
+}
 
 // Default fallback when no `?team=` param is present in the URL. Keeps the
 // existing demo-team links (`/wiki`, `/skill-arc`) working without changes.
@@ -34,7 +68,7 @@ function headers(token: string): HeadersInit {
 
 // SWR-friendly fetcher. Throws on non-2xx so SWR's `error` channel fires.
 async function fetcher<T>(path: string, token: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { headers: headers(token) });
+  const res = await guardedFetch(`${API_URL}${path}`, { headers: headers(token) });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`trailhead-api ${path} ${res.status}: ${text.slice(0, 200)}`);
@@ -44,7 +78,7 @@ async function fetcher<T>(path: string, token: string): Promise<T> {
 
 // Public team enumeration — no auth header required server-side.
 async function fetchListTeams(): Promise<TeamsListResponse> {
-  const res = await fetch(`${API_URL}/teams`);
+  const res = await guardedFetch(`${API_URL}/teams`);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`trailhead-api /teams ${res.status}: ${text.slice(0, 200)}`);
@@ -81,7 +115,7 @@ export async function scorePrompt(
   token: string,
   args: { prompt: string; user_id: string; file_path?: string },
 ): Promise<ScoreResponse> {
-  const res = await fetch(`${API_URL}/score`, {
+  const res = await guardedFetch(`${API_URL}/score`, {
     method: 'POST',
     headers: headers(token),
     body: JSON.stringify(args),

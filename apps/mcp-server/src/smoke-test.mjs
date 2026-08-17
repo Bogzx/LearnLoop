@@ -10,6 +10,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import process from 'node:process';
+import { resolveApiUrl } from './api-url.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER = resolve(__dirname, 'index.ts');
@@ -25,7 +26,7 @@ for (const candidate of ['../../../.env', '../../.env', '.env']) {
 
 const env = {
   ...process.env,
-  TRAILHEAD_API_URL: process.env.TRAILHEAD_API_URL ?? 'https://trailheadapi-production.up.railway.app',
+  TRAILHEAD_API_URL: resolveApiUrl(),
   TRAILHEAD_TEAM_TOKEN: process.env.TRAILHEAD_TEAM_TOKEN ?? 'trailhead_demo_acme_2026',
 };
 
