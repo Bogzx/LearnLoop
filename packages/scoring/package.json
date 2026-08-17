@@ -20,7 +20,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/normalize.test.mjs src/extract-prompt.test.mjs src/dedup-invariant.test.mjs"
+    "test": "node --test src/normalize.test.mjs src/extract-prompt.test.mjs src/dedup-invariant.test.mjs src/declarations-match.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
