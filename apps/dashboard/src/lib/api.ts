@@ -4,8 +4,10 @@
 // via GET /teams and routes each link to ?team=<token>; downstream pages read
 // that param and pass it into these calls.
 //
-// Tokens aren't secrets in this design — they're derived from public git
-// remotes. See master spec §3 for the trust model.
+// The token is the API's only credential (read + write + DELETE /team/data
+// for that team), and anything configured here is visible to every visitor of
+// a deployed dashboard. Remote-derived tokens are also computable from the git
+// remote URL. See SELFHOSTING.md → "Security model".
 
 import type {
   ContextResponse,

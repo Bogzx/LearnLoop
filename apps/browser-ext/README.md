@@ -51,8 +51,8 @@ worthwhile so extension state doesn't drift between runs.
 ## Smoke test
 
 ```bash
-bash apps/browser-ext/scripts/smoke.sh           # against live Railway
-bash apps/browser-ext/scripts/smoke.sh --local   # against http://localhost:3000
+bash apps/browser-ext/scripts/smoke.sh           # $TRAILHEAD_API_URL, else http://localhost:3000
+bash apps/browser-ext/scripts/smoke.sh --local   # force http://localhost:3000
 ```
 
 Hits `/score`, `/capture`, `/diff`, `/wiki/recent` with the hardcoded demo
@@ -73,5 +73,8 @@ done with the pinned Chrome build, not in this repo.
 
 ## Talks to
 
-`apps/api` only (Hono on Railway). Hardcoded URL +
-`X-Team-Token: trailhead_demo_acme_2026` (spec §3, no per-team auth in v1).
+`apps/api` only, at the URL set in the popup's **API server** row (default
+`http://localhost:3000`). Sends the popup-selected team token as
+`X-Team-Token`, falling back to the public demo token
+`trailhead_demo_acme_2026`, and `user_id: "demo"` for every user (hardcoded in
+`src/config.ts`).
