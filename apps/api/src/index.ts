@@ -109,8 +109,10 @@ app.use('*', async (c, next) => {
   if (c.req.method === 'OPTIONS' || !langfuse) return next();
   const trace = langfuse.trace({
     name: `${c.req.method} ${c.req.path}`,
+    // The team token is the tenant's only credential, so it never leaves this
+    // process: traces carry the same non-replayable digest GET /teams returns.
     metadata: {
-      team_token: c.req.header('x-team-token') ?? null,
+      team_id: teamIdFromHeader(c.req.header('x-team-token')),
       user_agent: c.req.header('user-agent') ?? null,
     },
   });
@@ -154,6 +156,10 @@ app.use('*', async (c, next) => {
 // React key or a client-side lookup handle.
 function opaqueTeamId(token: string): string {
   return createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
+
+function teamIdFromHeader(token: string | undefined): string | null {
+  return token ? opaqueTeamId(token) : null;
 }
 
 app.get('/', (c) =>
