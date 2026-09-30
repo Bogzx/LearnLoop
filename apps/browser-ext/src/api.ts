@@ -59,6 +59,18 @@ function logFailure(path: string, err: unknown): void {
   console.warn(`${TRAILHEAD_ERROR_TAG} ${path} failed`, err);
 }
 
+// The API marks responses to a legacy (remote-derived) team token with
+// `Deprecation: true`. Say so once per page load, with the fix.
+let legacyWarned = false;
+function noteDeprecation(res: Response): void {
+  if (legacyWarned || res.headers.get('Deprecation') !== 'true') return;
+  legacyWarned = true;
+  console.warn(
+    `${TRAILHEAD_ERROR_TAG} this team uses a legacy token that anyone who knows the repo URL can compute. ` +
+      'Ask your team to run `init --upgrade-legacy` and enter the new secret in the extension popup.',
+  );
+}
+
 function headers(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
@@ -80,6 +92,7 @@ async function call<T>(
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       signal: ac.signal,
     });
+    noteDeprecation(res);
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch (err) {
