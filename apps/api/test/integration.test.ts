@@ -776,6 +776,23 @@ test('rate limit: Gemini routes per IP apply across teams', { skip }, async () =
   });
 });
 
+test('rate limit: a request refused per team does not spend the caller\'s per-IP allowance', { skip }, async () => {
+  await withLimits({ TRAILHEAD_RL_LLM_PER_IP: '2/1h', TRAILHEAD_RL_LLM_PER_TEAM: '1/1h', TRAILHEAD_TRUST_PROXY: 'true' }, async () => {
+    const body = { prompt: '[mid] all-or-none case', user_id: 'u' };
+    const ip = '192.0.2.44';
+    assert.equal((await call('POST', '/score', { token: A.secret, body, ip })).status, 200); // A: team 0 left, IP 1 left
+    const teamLimited = await call('POST', '/score', { token: A.secret, body, ip });
+    assert.equal(teamLimited.status, 429);
+    assert.equal(teamLimited.json.limit, 'llm_per_team');
+    // Before: the refused request had already taken the IP's second token, so
+    // this one was refused as llm_per_ip.
+    assert.equal((await call('POST', '/score', { token: B.secret, body, ip })).status, 200);
+    const ipLimited = await call('POST', '/score', { token: B.secret, body, ip });
+    assert.equal(ipLimited.status, 429);
+    assert.equal(ipLimited.json.limit, 'llm_per_ip');
+  });
+});
+
 test('rate limit: rich bootstrap has its own tighter per-team bucket', { skip }, async () => {
   await withLimits({ TRAILHEAD_RL_BOOTSTRAP_PER_TEAM: '1/1h' }, async () => {
     const body = { folders: ['src/'], files: [{ path: 'src/a.ts', content: 'export {}' }] };

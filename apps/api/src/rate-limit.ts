@@ -73,6 +73,18 @@ export class TokenBucketLimiter {
     private readonly maxKeys = 50_000,
   ) {}
 
+  /** What take() would return, without spending anything. Lets a caller
+   *  that checks several limits for one request refuse it before any bucket
+   *  is charged (take-all-or-none). */
+  peek(key: string, cost = 1): TakeResult {
+    const { capacity, refillPerMs } = this.spec;
+    const prev = this.buckets.get(key);
+    const tokens = prev ? Math.min(capacity, prev.tokens + (this.now() - prev.at) * refillPerMs) : capacity;
+    return tokens >= cost
+      ? { ok: true, retryAfterSec: 0, remaining: Math.floor(tokens - cost) }
+      : { ok: false, retryAfterSec: Math.max(1, Math.ceil((cost - tokens) / refillPerMs / 1000)), remaining: 0 };
+  }
+
   take(key: string, cost = 1): TakeResult {
     const t = this.now();
     const { capacity, refillPerMs } = this.spec;
@@ -158,20 +170,27 @@ export function limitFromEnv(name: LimitName, env: NodeJS.ProcessEnv = process.e
 // One limiter per (name, spec). Keyed on the spec text so changing the env
 // (tests, or a process manager reloading config) starts fresh buckets.
 const limiters = new Map<string, TokenBucketLimiter>();
+// limiterFor runs on every rate-limited request. Resolving the spec is cached
+// on the raw env values, so the env is parsed — and a malformed value warned
+// about — once per distinct value, not on every request.
+const resolved = new Map<string, TokenBucketLimiter | null>();
 
 export function limiterFor(name: LimitName, env: NodeJS.ProcessEnv = process.env): TokenBucketLimiter | null {
+  const cacheKey = `${name}\u0000${env.TRAILHEAD_RATE_LIMIT ?? ''}\u0000${env[ENV[name].env] ?? ''}`;
+  if (resolved.has(cacheKey)) return resolved.get(cacheKey)!;
   const spec = limitFromEnv(name, env);
-  if (!spec) return null;
-  const key = `${name}:${spec.text}`;
-  let l = limiters.get(key);
-  if (!l) {
-    l = new TokenBucketLimiter(spec);
+  let l: TokenBucketLimiter | null = null;
+  if (spec) {
+    const key = `${name}:${spec.text}`;
+    l = limiters.get(key) ?? new TokenBucketLimiter(spec);
     limiters.set(key, l);
   }
+  resolved.set(cacheKey, l);
   return l;
 }
 
 /** Test hook: forget every bucket. */
 export function resetRateLimiters(): void {
   limiters.clear();
+  resolved.clear();
 }

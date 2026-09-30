@@ -72,7 +72,7 @@ import {
   wipeTeamData,
 } from './db.ts';
 import { isValidTeamId, randomTeamId, safeEqual } from './team-auth.ts';
-import { ipRateKey, limiterFor, type LimitName } from './rate-limit.ts';
+import { ipRateKey, limiterFor, type LimitName, type TokenBucketLimiter } from './rate-limit.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { degradedCoachResponse, isUnparseableScore } from './coach-degraded.ts';
 import { intParam, isUuid } from './request-params.ts';
@@ -173,24 +173,33 @@ function clientIp(c: Context<AppEnv>): string {
   }
 }
 
-// Take a token from a named limiter (rate-limit.ts); on refusal, the 429 to
-// return. Retry-After is in whole seconds. Clients treat 429 like any other
-// failure: coaching fails open.
-function rateLimit(c: Context<AppEnv>, name: LimitName, key: string): Response | null {
-  const limiter = limiterFor(name);
-  if (!limiter) return null;
-  const r = limiter.take(key);
-  if (r.ok) return null;
-  c.header('Retry-After', String(r.retryAfterSec));
-  return c.json(
-    {
-      error: 'rate_limited',
-      limit: name,
-      retry_after: r.retryAfterSec,
-      detail: `Too many requests (${name.replace(/_/g, ' ')}: ${limiter.spec.text}). Retry in ${r.retryAfterSec}s.`,
-    },
-    429,
-  );
+// Take a token from each named limiter, all or none: every bucket is checked
+// first, and only when all of them allow the request is a token spent in
+// each. So a request refused by the per-team limit doesn't also use up the
+// caller's per-IP allowance. On refusal, returns the 429 for the first
+// refusing limit. Retry-After is in whole seconds. Clients treat 429 like any
+// other failure: coaching fails open. (Synchronous, so no request can slip in
+// between the checks and the takes.)
+function rateLimit(c: Context<AppEnv>, checks: Array<[LimitName, string]>): Response | null {
+  const active = checks
+    .map(([name, key]) => ({ name, key, limiter: limiterFor(name) }))
+    .filter((x): x is { name: LimitName; key: string; limiter: TokenBucketLimiter } => x.limiter !== null);
+  for (const { name, key, limiter } of active) {
+    const r = limiter.peek(key);
+    if (r.ok) continue;
+    c.header('Retry-After', String(r.retryAfterSec));
+    return c.json(
+      {
+        error: 'rate_limited',
+        limit: name,
+        retry_after: r.retryAfterSec,
+        detail: `Too many requests (${name.replace(/_/g, ' ')}: ${limiter.spec.text}). Retry in ${r.retryAfterSec}s.`,
+      },
+      429,
+    );
+  }
+  for (const { key, limiter } of active) limiter.take(key);
+  return null;
 }
 
 // Langfuse: one trace per HTTP request, stored in AsyncLocalStorage so
@@ -283,10 +292,12 @@ const LLM_ROUTES = new Set(['POST /score', 'POST /coach', 'POST /improve', 'POST
 app.use('*', async (c, next) => {
   const route = `${c.req.method} ${c.req.path}`;
   if (!LLM_ROUTES.has(route)) return next();
-  const limited =
-    rateLimit(c, 'llm_per_ip', clientIp(c)) ??
-    rateLimit(c, 'llm_per_team', c.get('team_token')) ??
-    (route === 'POST /onboard/repo/full' ? rateLimit(c, 'bootstrap_per_team', c.get('team_token')) : null);
+  const checks: Array<[LimitName, string]> = [
+    ['llm_per_ip', clientIp(c)],
+    ['llm_per_team', c.get('team_token')],
+  ];
+  if (route === 'POST /onboard/repo/full') checks.push(['bootstrap_per_team', c.get('team_token')]);
+  const limited = rateLimit(c, checks);
   if (limited) return limited;
   await next();
 });
@@ -1795,7 +1806,7 @@ app.get('/teams', async (c) => {
 // a repo proposes the same id and the second one lands on the 409.
 app.post('/teams', async (c) => {
   // Before the admin check, so the limit also slows admin-token guessing.
-  const limited = rateLimit(c, 'register_per_ip', clientIp(c));
+  const limited = rateLimit(c, [['register_per_ip', clientIp(c)]]);
   if (limited) return limited;
   const { adminToken } = authPolicy();
   if (adminToken !== null && !safeEqual(c.req.header('x-admin-token') ?? '', adminToken)) {
