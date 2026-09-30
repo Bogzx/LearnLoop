@@ -23,6 +23,8 @@ import {
   TOPIC_MODEL,
   TOPIC_SYSTEM_PROMPT,
   buildScoreUserPrompt,
+  fenceUntrusted,
+  UNTRUSTED_NOTE,
 } from '@trailhead/scoring';
 
 if (!process.env.GEMINI_API_KEY) {
@@ -738,11 +740,12 @@ export async function synthesizeDiff(args: {
       contents:
         `Compare these two prompts on the five Trailhead dimensions.\n\n` +
         `USER (${dimsLine(args.user_scores)}):\n${args.user_prompt}\n\n` +
-        `TEAM (${dimsLine(args.team_scores)}):\n${args.team_prompt}\n\n` +
+        // The team prompt is a teammate's graduated prompt — quoted as data.
+        `TEAM (${dimsLine(args.team_scores)}):\n${fenceUntrusted(args.team_prompt, 'team_prompt')}\n\n` +
         `In 2-3 sentences, name ONE prompt-engineering move the team prompt makes that the user's didn't, ` +
         `then phrase how to apply that move next time as a habit (not a question). No bullets, no preamble, ` +
         `no rhetorical "What if..." / "How could..." phrasing.`,
-      config: { temperature: 0.2 },
+      config: { temperature: 0.2, systemInstruction: UNTRUSTED_NOTE },
     }),
     'diff',
   );

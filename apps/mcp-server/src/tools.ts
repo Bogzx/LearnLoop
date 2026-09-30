@@ -16,6 +16,7 @@ import { z } from 'zod';
 import type { ApiClient, ContextResponse, ExamplesResponse, SearchResponse } from './api-client.ts';
 import { runBootstrap, runRichBootstrap } from './bootstrap.ts';
 import type { WikiJobStatusResponse } from '@trailhead/shared';
+import { fenceUntrusted, UNTRUSTED_NOTE, UNTRUSTED_TAG } from '@trailhead/scoring/fence';
 import { resolveUserId } from './user-id.mjs';
 
 // Per-machine anonymous id (src/user-id.mjs) — was a shared 'demo' for
@@ -71,6 +72,12 @@ function trimNodesByDepth<T>(nodes: T[], depth: LookupDepth): T[] {
   if (depth === 'full' || nodes.length <= 1) return nodes;
   const take = depth === 'file' ? 1 : 2;
   return nodes.slice(-take);
+}
+
+// Prefix tool output that contains fenced team content with the rule that
+// the fenced text is data. Output with no fence is returned unchanged.
+export function withUntrustedNote(text: string): string {
+  return text.includes(`<${UNTRUSTED_TAG} `) ? `${UNTRUSTED_NOTE}\n\n${text}` : text;
 }
 
 // Friendly text rendering for the layered HCL bundle. Used by wiki_lookup
@@ -428,20 +435,20 @@ export function registerWikiLookup(server: McpServer, client: ApiClient): void {
             nodes: trimNodesByDepth(ctxRaw.nodes, resolvedDepth),
           };
           sections.push(`# context for ${file_path}`);
-          sections.push(renderContext(ctx, { rulesOnly: rules_only ?? false }));
+          sections.push(fenceUntrusted(renderContext(ctx, { rulesOnly: rules_only ?? false }), 'wiki'));
 
           if (examplesRaw) {
             const rendered = renderExamples(examplesRaw);
             if (rendered) {
               sections.push('# team-graduated prompts');
-              sections.push(rendered);
+              sections.push(fenceUntrusted(rendered, 'team_prompts'));
             }
           }
 
           if (query) {
             const results = searchRaw ?? searchInContext(ctxRaw, query);
             sections.push(`# search results for "${query}" (scoped to ${file_path})`);
-            sections.push(renderSearch(results, query));
+            sections.push(fenceUntrusted(renderSearch(results, query), 'wiki_search'));
           }
         } else if (query) {
           // Free-text search, unscoped. /search is the only path that works
@@ -450,11 +457,13 @@ export function registerWikiLookup(server: McpServer, client: ApiClient): void {
           // non-empty `?path=`). Surface a clear error instead.
           const results = await client.search(query);
           sections.push(`# search results for "${query}"`);
-          sections.push(renderSearch(results, query));
+          sections.push(fenceUntrusted(renderSearch(results, query), 'wiki_search'));
         }
 
+        // Everything fenced above is team-authored; say once, up front, that
+        // it is reference data (packages/scoring/src/fence.mjs).
         return {
-          content: [{ type: 'text' as const, text: sections.join('\n\n') }],
+          content: [{ type: 'text' as const, text: withUntrustedNote(sections.join('\n\n')) }],
         };
       } catch (e) {
         return asError(e);
@@ -803,7 +812,7 @@ export function registerWikiProvenPrompts(server: McpServer, client: ApiClient):
           content: [
             {
               type: 'text' as const,
-              text: `${heading}\n\n${renderProvenPrompts(res.items)}`,
+              text: withUntrustedNote(`${heading}\n\n${fenceUntrusted(renderProvenPrompts(res.items), 'team_prompts')}`),
             },
           ],
         };
