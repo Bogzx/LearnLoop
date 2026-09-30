@@ -244,12 +244,19 @@ Any of them can be `off`; `TRAILHEAD_RATE_LIMIT=off` disables all. Values use
   replicas each enforce their own limit (so the effective limit is N×), and a
   restart resets them. For a multi-replica deploy, put limits in your reverse
   proxy or move the buckets to a shared store such as Redis.
-- **Client IP.** The per-IP key is the TCP peer address. Behind a reverse
-  proxy that would be the proxy itself, so set `TRAILHEAD_TRUST_PROXY=true` to
-  use the first `X-Forwarded-For` entry instead — only when a proxy you
-  control sets that header, or clients could choose their own key. Under the
-  default Docker setup every local client shares one address, which is fine
-  for a single machine.
+- **Client IP.** The per-IP key is the TCP peer address (IPv6 per /64, since
+  one host can use a fresh address from its /64 for every request). Behind a
+  reverse proxy that would be the proxy itself, so set
+  `TRAILHEAD_TRUST_PROXY=true` to use the **last** `X-Forwarded-For` entry
+  instead: the address your proxy appended. Earlier entries are whatever the
+  client sent. This assumes exactly one proxy hop that appends to (or
+  overwrites) the header, as nginx, Caddy and Traefik do. Leave it off without
+  such a proxy, or clients could choose their own key. Under the default
+  Docker setup every local client shares one address, which is fine for a
+  single machine.
+- **Memory.** Each limit keeps at most 50,000 client buckets. Past that, the
+  least recently used are forgotten (those clients start with a full bucket),
+  so a flood of distinct addresses can't grow memory without bound.
 
 Request bodies are capped at 2 MB (24 MB for `/onboard/repo/full`) and
 rejected with `413` before they are read into memory.

@@ -696,6 +696,17 @@ test('rate limit: X-Forwarded-For is ignored unless TRAILHEAD_TRUST_PROXY=true',
   });
 });
 
+test('rate limit: behind a trusted proxy the key is the LAST X-Forwarded-For entry (client-sent ones are ignored)', { skip }, async () => {
+  await withLimits({ TRAILHEAD_RL_REGISTER_PER_IP: '1/1h', TRAILHEAD_TRUST_PROXY: 'true' }, async () => {
+    // nginx/Caddy/Traefik append the real peer to whatever the client sent.
+    assert.equal((await call('POST', '/teams', { body: {}, ip: '10.9.9.1, 198.51.100.77' })).status, 201);
+    assert.equal((await call('POST', '/teams', { body: {}, ip: '10.9.9.2, 198.51.100.77' })).status, 429);
+    // IPv6 clients are keyed per /64.
+    assert.equal((await call('POST', '/teams', { body: {}, ip: '2001:db8:77:1::1' })).status, 201);
+    assert.equal((await call('POST', '/teams', { body: {}, ip: '2001:db8:77:1::2' })).status, 429);
+  });
+});
+
 test('rate limit: Gemini routes per team — 429 writes nothing, other teams and non-LLM routes unaffected', { skip }, async () => {
   await withLimits({ TRAILHEAD_RL_LLM_PER_TEAM: '2/1m', TRAILHEAD_RL_LLM_PER_IP: 'off' }, async () => {
     const body = { prompt: '[mid] rate limit case', user_id: 'rl-user' };
