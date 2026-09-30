@@ -2,7 +2,7 @@
 // Retry-After, per-IP vs per-team keys) is in test/integration.test.ts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { limitFromEnv, limiterFor, parseLimit, resetRateLimiters, TokenBucketLimiter } from './rate-limit.ts';
+import { ipRateKey, limitFromEnv, limiterFor, parseLimit, resetRateLimiters, TokenBucketLimiter } from './rate-limit.ts';
 
 function clock(start = 0) {
   let t = start;
@@ -63,6 +63,38 @@ test('prune drops fully refilled buckets so memory stays bounded', () => {
   c.advance(1_000);
   l.prune();
   assert.equal(l.size, 0);
+});
+
+test('bucket count is hard-capped even when no bucket has refilled (flood of fresh keys)', () => {
+  const c = clock();
+  const l = new TokenBucketLimiter(parseLimit('10/1h')!, c.now, 1_000);
+  for (let i = 0; i < 20_000; i++) {
+    l.take(`k${i}`);
+    c.advance(1);
+  }
+  assert.ok(l.size <= 1_000, `size ${l.size}`);
+});
+
+test('eviction is least-recently-used: an active client keeps its debt through a flood', () => {
+  const c = clock();
+  const l = new TokenBucketLimiter(parseLimit('1/1h')!, c.now, 100);
+  assert.equal(l.take('busy').ok, true);
+  for (let i = 0; i < 1_000; i++) {
+    l.take(`flood${i}`);
+    if (i % 50 === 0) assert.equal(l.take('busy').ok, false, 'busy client is still limited');
+  }
+});
+
+test('ipRateKey: IPv6 per /64, IPv4-mapped as IPv4, IPv4 unchanged', () => {
+  assert.equal(ipRateKey('203.0.113.7'), '203.0.113.7');
+  assert.equal(ipRateKey('::ffff:203.0.113.7'), '203.0.113.7');
+  assert.equal(ipRateKey('2001:db8:1:2:aaaa::1'), '2001:db8:1:2::/64');
+  assert.equal(ipRateKey('2001:db8:1:2:bbbb:cccc:dddd:eeee'), '2001:db8:1:2::/64');
+  assert.equal(ipRateKey('2001:0DB8:0001:0002::9'), '2001:db8:1:2::/64');
+  assert.equal(ipRateKey('2001:db8::1'), '2001:db8:0:0::/64');
+  assert.equal(ipRateKey('fe80::1%eth0'), 'fe80:0:0:0::/64');
+  assert.equal(ipRateKey('::1'), '0:0:0:0::/64');
+  assert.equal(ipRateKey('unknown'), 'unknown');
 });
 
 test('limitFromEnv: defaults, overrides, global off, malformed falls back to default', () => {

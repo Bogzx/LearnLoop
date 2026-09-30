@@ -20,6 +20,8 @@
 //   TRAILHEAD_RL_BOOTSTRAP_PER_TEAM POST /onboard/repo/full, per team (6/1h)
 // A limit of "N/W" allows a burst of N and refills continuously at N per W.
 
+import { isIPv6 } from 'node:net';
+
 export interface LimitSpec {
   capacity: number;
   refillPerMs: number;
@@ -53,6 +55,14 @@ interface Bucket {
   at: number;
 }
 
+// Memory bound: at most maxKeys buckets. Pruning only removes buckets that
+// have refilled completely, which under a flood of fresh keys (one per
+// request) is none of them, so when pruning doesn't get below the cap the
+// least recently used buckets are evicted down to 90% of it. Evicting a
+// bucket forgets that client's debt: under such a flood the limit fails open
+// for the oldest clients, rather than memory and per-request cost growing
+// without bound. The 10% headroom means the O(n) prune runs at most once per
+// maxKeys/10 new keys, not on every request.
 export class TokenBucketLimiter {
   private buckets = new Map<string, Bucket>();
   private ops = 0;
@@ -68,13 +78,26 @@ export class TokenBucketLimiter {
     const { capacity, refillPerMs } = this.spec;
     const prev = this.buckets.get(key);
     const tokens = prev ? Math.min(capacity, prev.tokens + (t - prev.at) * refillPerMs) : capacity;
-    if (++this.ops % 1000 === 0 || this.buckets.size > this.maxKeys) this.prune(t);
+    if (++this.ops % 1000 === 0) this.prune(t);
+    if (!prev && this.buckets.size >= this.maxKeys) this.shrink(t);
+    // delete + set moves the key to the end of the Map's insertion order,
+    // which is what makes the eviction in shrink() least-recently-used.
+    this.buckets.delete(key);
     if (tokens >= cost) {
       this.buckets.set(key, { tokens: tokens - cost, at: t });
       return { ok: true, retryAfterSec: 0, remaining: Math.floor(tokens - cost) };
     }
     this.buckets.set(key, { tokens, at: t });
     return { ok: false, retryAfterSec: Math.max(1, Math.ceil((cost - tokens) / refillPerMs / 1000)), remaining: 0 };
+  }
+
+  private shrink(t: number): void {
+    this.prune(t);
+    const target = Math.floor(this.maxKeys * 0.9);
+    for (const k of this.buckets.keys()) {
+      if (this.buckets.size <= target) break;
+      this.buckets.delete(k);
+    }
   }
 
   /** Drop buckets that have refilled completely — they carry no state. */
@@ -88,6 +111,24 @@ export class TokenBucketLimiter {
   get size(): number {
     return this.buckets.size;
   }
+}
+
+// The key a per-IP limit uses for a client address. IPv6 clients are keyed by
+// their /64: a single host routinely holds a whole /64 and can use a fresh
+// address for every request, which would both skip the limit and grow the
+// bucket table by one entry per request. An IPv4-mapped address
+// (::ffff:1.2.3.4, what a dual-stack socket reports) is keyed as the IPv4.
+export function ipRateKey(ip: string): string {
+  const addr = ip.trim().split('%')[0]!; // drop an IPv6 zone id
+  const mapped = addr.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+  if (mapped) return mapped[1]!;
+  if (!isIPv6(addr)) return addr;
+  const groups = (part: string) => (part ? part.split(':').flatMap((g) => (g.includes('.') ? ['0', '0'] : [g])) : []);
+  const [head, tail] = addr.includes('::') ? addr.split('::') as [string, string] : [addr, undefined];
+  const h = groups(head);
+  const t = tail === undefined ? [] : groups(tail);
+  const all = tail === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t];
+  return `${all.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(':')}::/64`;
 }
 
 export type LimitName = 'register_per_ip' | 'llm_per_team' | 'llm_per_ip' | 'bootstrap_per_team';

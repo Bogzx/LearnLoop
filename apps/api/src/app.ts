@@ -71,7 +71,7 @@ import {
   wipeTeamData,
 } from './db.ts';
 import { isValidTeamId, randomTeamId, safeEqual } from './team-auth.ts';
-import { limiterFor, type LimitName } from './rate-limit.ts';
+import { ipRateKey, limiterFor, type LimitName } from './rate-limit.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { degradedCoachResponse, isUnparseableScore } from './coach-degraded.ts';
 import { intParam, isUuid } from './request-params.ts';
@@ -153,17 +153,20 @@ app.use('*', (c, next) =>
   (c.req.path === '/onboard/repo/full' ? bootstrapBodyLimit : defaultBodyLimit)(c, next),
 );
 
-// The caller's IP for per-IP rate limits: the socket's remote address, or —
-// only when TRAILHEAD_TRUST_PROXY=true, i.e. behind a reverse proxy you
-// control — the first X-Forwarded-For entry. Trusting the header without a
-// proxy would let any client pick its own rate-limit key.
+// The caller's rate-limit key: the socket's remote address, or — only when
+// TRAILHEAD_TRUST_PROXY=true, i.e. behind one reverse proxy you control — the
+// LAST X-Forwarded-For entry, which is the one that proxy appended. Earlier
+// entries come from the client (nginx's $proxy_add_x_forwarded_for, Caddy and
+// Traefik all append to whatever the client sent), so reading the first one
+// would let every request pick its own key. Trusting the header without a
+// proxy would do the same. IPv6 is keyed per /64 (ipRateKey).
 function clientIp(c: Context<AppEnv>): string {
   if (process.env.TRAILHEAD_TRUST_PROXY === 'true') {
-    const fwd = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
-    if (fwd) return fwd;
+    const fwd = c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim();
+    if (fwd) return ipRateKey(fwd);
   }
   try {
-    return getConnInfo(c).remote.address ?? 'unknown';
+    return ipRateKey(getConnInfo(c).remote.address ?? 'unknown');
   } catch {
     return 'unknown'; // no Node socket (app.request() in tests)
   }
