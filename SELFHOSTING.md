@@ -155,6 +155,8 @@ from the git remote URL (`repo_…`). It keeps working while
 `Deprecation` header and `init` prints a warning. To upgrade, one person runs
 `init --upgrade-legacy` in the repo: the team keeps its data and gets a secret,
 and the old token stops working for everyone, so share the new secret.
+A teammate who then runs `init` without it is told to ask for the secret
+(rather than getting a new, empty team).
 Read [Security model](#security-model) before exposing the API beyond localhost.
 
 Then seed the wiki from the repo:
@@ -210,7 +212,12 @@ The defaults are safe for a local setup because both ports are bound to
 - **Turn legacy tokens off** (`TRAILHEAD_ACCEPT_LEGACY_TOKENS=false`) once every
   team has run `init --upgrade-legacy`. A legacy token is
   `repo_` + SHA-256 of the raw remote URL: anyone who knows or guesses the URL
-  can compute it. The API marks every response to one with `Deprecation: true`.
+  can compute it — and can then not only read, write and wipe the team but
+  also call `POST /teams/rotate-secret` first and lock the real team out
+  (recovery needs the operator: `UPDATE teams SET secret_hash = NULL WHERE
+  token = 'repo_…'`, then upgrade again at once). So upgrade promptly. The API
+  marks every response to a legacy token with `Deprecation: true` and logs the
+  number of legacy teams at startup.
 - **Keep `TRAILHEAD_AUTO_CREATE_TEAMS=false`** (the default). With it on, any
   string sent as a token creates a legacy team.
 - **Don't commit `.trailhead-team`.** `init` adds it to `.gitignore`. The MCP

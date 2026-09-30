@@ -9,8 +9,24 @@ if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.
 if (!process.env.GEMINI_API_KEY) { console.error('GEMINI_API_KEY not set'); process.exit(1); }
 
 const { app, ensureRecentMigrations } = await import('./app.ts');
-const { failInterruptedJobs, pool } = await import('./db.ts');
+const { countLegacyTeams, failInterruptedJobs, pool } = await import('./db.ts');
 const { shutdownLangfuse } = await import('./langfuse.ts');
+
+// Legacy tokens default on so pre-2026-09-30 installs keep working, which
+// means every legacy team is open to anyone who can derive its token from the
+// repo URL. Say so once at startup, with the count, rather than only when a
+// legacy token is first used.
+async function warnAboutLegacyTeams(): Promise<void> {
+  if (process.env.TRAILHEAD_ACCEPT_LEGACY_TOKENS === 'false') return;
+  const n = await countLegacyTeams();
+  if (!n) return;
+  console.warn(
+    `[auth] ${n} legacy team(s) still authenticate with their id (repo_… = sha256 of the git remote URL) ` +
+      'because TRAILHEAD_ACCEPT_LEGACY_TOKENS is on. Anyone who knows such a repo URL can read, write and wipe ' +
+      'that team, or rotate its secret and lock the team out. Run `init --upgrade-legacy` in each repo, then ' +
+      'set TRAILHEAD_ACCEPT_LEGACY_TOKENS=false.',
+  );
+}
 
 const port = Number(process.env.PORT ?? 3000);
 let server: ReturnType<typeof serve> | undefined;
@@ -21,6 +37,8 @@ ensureRecentMigrations()
     if (n) console.warn(`[startup] marked ${n} interrupted bootstrap job(s) as failed`);
   })
   .catch((err) => console.warn('[startup] could not check for interrupted jobs', err))
+  .then(() => warnAboutLegacyTeams())
+  .catch((err) => console.warn('[startup] could not count legacy teams', err))
   .finally(() => {
     server = serve({ fetch: app.fetch, port }, (info) => {
       console.log(`trailhead-api listening on http://localhost:${info.port}`);

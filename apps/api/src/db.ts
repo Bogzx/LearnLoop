@@ -91,6 +91,26 @@ export async function resolveTeam(
   return raced.length ? { teamId: raced[0]!.token, legacy: true } : null;
 }
 
+// True when `id` is the id of a team that authenticates with a secret. Used to
+// explain a 401: someone sent a team's id — typically a pre-upgrade repo_…
+// token after a teammate ran `init --upgrade-legacy` — where its secret
+// belongs. Such an id is public by design (POST /teams already answers 409
+// for it), so saying so leaks nothing. Legacy teams are never reported here.
+export async function isSecretTeamId(id: string): Promise<boolean> {
+  const rows = await q('SELECT 1 FROM teams WHERE token = $1 AND secret_hash IS NOT NULL LIMIT 1', [id]);
+  return rows.length > 0;
+}
+
+// Legacy teams (no secret; their id is the credential), excluding the demo
+// team. Reported at startup while TRAILHEAD_ACCEPT_LEGACY_TOKENS is on.
+export async function countLegacyTeams(): Promise<number> {
+  const rows = await q<{ n: string }>(
+    'SELECT count(*) AS n FROM teams WHERE secret_hash IS NULL AND token <> $1',
+    [DEMO_TEAM_TOKEN],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 // Create a team with a freshly minted secret. Returns the secret (the only
 // time it is ever available) or null when the id is taken.
 export async function registerTeam(
