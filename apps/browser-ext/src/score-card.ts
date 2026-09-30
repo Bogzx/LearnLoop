@@ -23,7 +23,7 @@
 import { renderScoreCard } from '@trailhead/score-card';
 import type { MissingHints, ScoreResponse } from '@trailhead/shared';
 import { score as apiScore } from './api.ts';
-import { USER_ID } from './config.ts';
+import { getUserId } from './user-state.ts';
 import { simpleHash } from './hash.ts';
 import { readPrompt, type Selectors } from './selectors.ts';
 import { store } from './store.ts';
@@ -227,7 +227,7 @@ export async function scoreAndShow(prompt: string): Promise<ScoreResponse | null
   activeAbort = ac;
 
   showLoading();
-  const res = await apiScore({ prompt: text, user_id: USER_ID });
+  const res = await apiScore({ prompt: text, user_id: getUserId() });
   if (ac.signal.aborted) return null;
   if (!res) {
     hideCard();

@@ -224,6 +224,19 @@ The defaults are safe for a local setup because both ports are bound to
   repo). The demo team is protected from `DELETE /team/data` and from secret
   rotation, but not from writes.
 
+**Who is who.** Each client sends a `user_id` with scores and captures. It is a
+random UUID generated once per install — browser extension (chrome.storage),
+VS Code (`globalState`), MCP server (`~/.config/trailhead/user-id`) — and is not
+derived from any account, hostname or git identity. It lets the team's server
+chart one person's scores over time (`GET /skill-arc?user_id=…`, "active users"
+on the dashboard), and anyone holding the team secret can read those per-id
+scores. It is **on by default** because per-user progress is the product's
+point; to opt out, untick *Send an anonymous per-install ID* in the extension
+popup, set `trailhead.shareUserId: false` in VS Code, or
+`TRAILHEAD_SHARE_USER_ID=false` for the MCP server — writes are then sent as
+`anonymous` and only count toward team totals. (Before 2026-09-30 every client
+sent the same `demo` id.)
+
 Where prompts go: every scored prompt, any wiki context attached to it, and —
 for the default rich `bootstrap` — the first 8,000 characters of up to 500
 source files (5 levels deep) are sent to Google's Gemini API

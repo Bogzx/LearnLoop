@@ -25,6 +25,7 @@ import { startWikiToastLoop } from './widgets/wiki-toast.ts';
 import { initCoachingState } from './coaching-state.ts';
 import { initApiUrlState } from './api-url-state.ts';
 import { initTeamState } from './team-state.ts';
+import { initUserState } from './user-state.ts';
 import { initContextState } from './context-state.ts';
 import { initContextBundle } from './context-bundle.ts';
 import { mountContextPill } from './widgets/context-pill.ts';
@@ -195,6 +196,7 @@ async function main(): Promise<void> {
   // Same pattern for the popup's Select-team dropdown — every fetch
   // after the user picks a team uses that team's X-Team-Token.
   initTeamState();
+  initUserState();
   // Sticky wiki context: popup writes a node path to chrome.storage,
   // content script reads it sync and prepends the rendered subtree to
   // every Claude.ai send + every /score and /improve call.

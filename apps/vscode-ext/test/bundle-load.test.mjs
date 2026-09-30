@@ -77,13 +77,25 @@ test('bundle loads, activate registers all subscriptions', () => {
     assert.equal(typeof mod.deactivate, 'function');
 
     const subs = [];
-    const ctx = { subscriptions: subs, extensionUri: {} };
+    const state = new Map();
+    const globalState = {
+      get: (k) => state.get(k),
+      update: (k, v) => { state.set(k, v); return Promise.resolve(); },
+    };
+    const ctx = { subscriptions: subs, extensionUri: {}, globalState };
     mod.activate(ctx);
+
+    // A per-install id is generated once and persisted (it replaced the
+    // shared 'demo' id); a second activation reuses it.
+    const id = state.get('trailhead.installUserId');
+    assert.match(id, /^[0-9a-f-]{36}$/);
 
     assert.equal(calls.registerWebviewViewProvider, 1, 'webview provider registered');
     assert.equal(calls.onDidChangeActiveTextEditor, 1, 'editor change listener registered');
     assert.equal(calls.registerCommand, 1, 'refresh command registered');
     assert.equal(subs.length, 3, 'all 3 subscriptions tracked');
+    mod.activate({ subscriptions: [], extensionUri: {}, globalState });
+    assert.equal(state.get('trailhead.installUserId'), id);
 
     mod.deactivate();
   } finally {

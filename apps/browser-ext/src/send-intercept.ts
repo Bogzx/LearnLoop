@@ -20,7 +20,7 @@
 //   - The `pendingNudge` promise machinery (no async coordination needed
 //     once we removed the timer — buttons drive the flow directly).
 import { capture as apiCapture } from './api.ts';
-import { USER_ID } from './config.ts';
+import { getUserId } from './user-state.ts';
 import { augment } from './augment.ts';
 import { simpleHash } from './hash.ts';
 import { readPrompt, writePrompt, type Selectors } from './selectors.ts';
@@ -397,7 +397,7 @@ async function doNativeSend(): Promise<void> {
       surface: 'browser',
       user_prompt: promptForCapture,
       scored_dimensions: entry?.dimensions,
-      user_id: USER_ID,
+      user_id: getUserId(),
     });
     if (res) store.setCaptureId(hash, res.id);
   }

@@ -76,5 +76,6 @@ done with the pinned Chrome build, not in this repo.
 `apps/api` only, at the URL set in the popup's **API server** row (default
 `http://localhost:3000`). Sends the popup-selected team token as
 `X-Team-Token`, falling back to the public demo token
-`trailhead_demo_acme_2026`, and `user_id: "demo"` for every user (hardcoded in
-`src/config.ts`).
+`trailhead_demo_acme_2026`. `user_id` is a random per-install UUID
+(`src/user-state.ts`), or `anonymous` if you untick *Send an anonymous
+per-install ID* in the popup's Privacy section.
