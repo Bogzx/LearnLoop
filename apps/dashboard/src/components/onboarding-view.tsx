@@ -86,10 +86,10 @@ function formatAuthor(author: string | null | undefined): string {
   return author;
 }
 
-export function OnboardingView({ token }: { token: string }) {
+export function OnboardingView() {
   const { data, error, isLoading } = useSWR<WikiTreeResponse>(
-    ['wiki-tree', token],
-    () => api.wikiTree(token),
+    ['wiki-tree'],
+    () => api.wikiTree(),
     { refreshInterval: REFRESH_MS, revalidateOnFocus: true },
   );
 

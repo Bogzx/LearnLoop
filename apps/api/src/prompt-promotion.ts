@@ -1,5 +1,5 @@
-// Auto-promotion of /coach-submitted prompts that score >=7 into the
-// per-folder prompt library (the `prompts` table that /examples, /search,
+// Auto-promotion of /coach-submitted prompts that pass the library gate
+// (promotion-gate.ts) into the per-folder prompt library (the `prompts` table that /examples, /search,
 // and /coach's strong-example lookup all read from).
 //
 // Fired async via setImmediate from /coach so the caller's response time
@@ -15,7 +15,8 @@ import { ancestorPaths, normalizePath } from '@trailhead/scoring';
 import type { DimensionScores } from '@trailhead/shared';
 
 import { q, upsertNode } from './db.ts';
-import { extractPathAndTopic } from './gemini.ts';
+import { extractPathAndTopic, scorePrompt } from './gemini.ts';
+import { passesPromotionGate, type PromotionMode } from './promotion-gate.ts';
 
 interface PromoteArgs {
   teamToken: string;
@@ -26,10 +27,10 @@ interface PromoteArgs {
   // from being shown their own work back as the "this is what good looks
   // like" template (issue #6 from the 2026-04-26 self-test report).
   userId: string;
-  // Reserved so the call site can pass scoring context without a re-shape
-  // later (e.g. min-dim threshold gating). Today the gate lives at the
-  // call site (overall >= 7).
+  // The /coach score that passed the gate (promotion-gate.ts) at the call site.
   dimensions: DimensionScores;
+  // 'auto' → graduated; 'review' → pending_review until a teammate approves.
+  mode: PromotionMode;
   // Overall 0-10 at graduation, persisted on the prompt row so
   // /prompts/proven and the wiki_proven_prompts MCP tool can show the
   // actual score (8 vs 10) rather than only "graduated".
@@ -97,12 +98,23 @@ async function resolveTargetNode(
   return { nodeId, topic };
 }
 
-// Public entry point. Caller must already have validated overall >= 7.
+// Public entry point. The caller has already checked passesPromotionGate on
+// its /coach score. Here we require the second signal: an independent
+// re-score WITHOUT the team-context bundle must pass the same gate.
 // Wraps every error and never throws — promotion is fire-and-forget.
 export async function tryPromotePrompt(args: PromoteArgs): Promise<void> {
   try {
     const trimmed = args.prompt.trim();
     if (!trimmed) return;
+
+    const confirm = await scorePrompt({ prompt: trimmed, file_path: args.filePath ?? undefined });
+    const gate = passesPromotionGate(confirm.dimensions);
+    if (!gate.ok) {
+      console.log(
+        `[promote] not promoted: confirming re-score failed the gate (${gate.reason}, mean ${gate.mean.toFixed(2)})`,
+      );
+      return;
+    }
 
     const { nodeId, topic } = await resolveTargetNode(
       args.teamToken,
@@ -128,12 +140,12 @@ export async function tryPromotePrompt(args: PromoteArgs): Promise<void> {
 
     const inserted = await q<{ id: string }>(
       `INSERT INTO prompts (node_id, template, topic, status, reuse_count, author_user_id, graduated_overall_score)
-       VALUES ($1, $2, $3, 'graduated', 0, $4, $5)
+       VALUES ($1, $2, $3, $6, 0, $4, $5)
        RETURNING id`,
-      [nodeId, trimmed, topic, args.userId || null, args.overall],
+      [nodeId, trimmed, topic, args.userId || null, args.overall, args.mode === 'review' ? 'pending_review' : 'graduated'],
     );
     console.log(
-      `[promote] graduated prompt ${inserted[0]!.id} ` +
+      `[promote] ${args.mode === 'review' ? 'queued for review' : 'graduated'} prompt ${inserted[0]!.id} ` +
       `(node=${nodeId}, topic=${topic ?? 'null'}, author=${args.userId}, overall=${args.overall})`,
     );
   } catch (err) {

@@ -20,14 +20,14 @@
 //   - The `pendingNudge` promise machinery (no async coordination needed
 //     once we removed the timer — buttons drive the flow directly).
 import { capture as apiCapture } from './api.ts';
-import { USER_ID } from './config.ts';
+import { getUserId } from './user-state.ts';
 import { augment } from './augment.ts';
 import { simpleHash } from './hash.ts';
 import { readPrompt, writePrompt, type Selectors } from './selectors.ts';
 import { store } from './store.ts';
 import { hideCard, scoreAndShow } from './score-card.ts';
 import { isCoachingEnabled } from './coaching-state.ts';
-import { getCachedContextBundle } from './context-bundle.ts';
+import { getCachedContextBundle, hasContextBundle } from './context-bundle.ts';
 
 let activeSelectors: Selectors | null = null;
 let sentOnce = false;
@@ -339,8 +339,8 @@ function maybePrependContextToComposer(sel: Selectors): boolean {
   const bareText = readPrompt(sel.textarea);
   if (!bareText.trim()) return false;
   // Defensive — if a bypass path re-enters with already-augmented text we
-  // don't want to nest <team_context> wrappers.
-  if (bareText.startsWith('<team_context>')) return false;
+  // don't want to nest context bundles.
+  if (hasContextBundle(bareText)) return false;
   console.info('[trailhead] prepending context bundle (', bundle.length, 'chars) to composer');
   writePrompt(sel.textarea, `${bundle}\n\n${bareText}`);
   return true;
@@ -397,7 +397,7 @@ async function doNativeSend(): Promise<void> {
       surface: 'browser',
       user_prompt: promptForCapture,
       scored_dimensions: entry?.dimensions,
-      user_id: USER_ID,
+      user_id: getUserId(),
     });
     if (res) store.setCaptureId(hash, res.id);
   }

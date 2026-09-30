@@ -15,6 +15,7 @@
 // Spec refs:
 //   2026-04-25-mcp-plugin-ux-design.md (minimal bootstrap)
 //   2026-04-26-wiki-bootstrap-rich-design.md (rich bootstrap, this rollout)
+import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { basename, extname, join, relative, sep } from 'node:path';
 import type { ApiClient } from './api-client.ts';
@@ -363,7 +364,28 @@ export function discoverFiles(cwd: string, opts: DiscoverOptions = {}): string[]
   walk(cwd, 0);
   // Stable ordering: shallow → deep, alphabetical within each depth. Matches
   // discoverPaths' shape so the bundle reads consistently.
-  return found.sort(sortByDepthThenName);
+  return withoutGitIgnored(cwd, found).sort(sortByDepthThenName);
+}
+
+// Drop paths git ignores. The rich bootstrap uploads file contents to the API
+// (and on to Gemini), and a gitignored file is exactly what a team keeps out
+// of shared places — local config, generated secrets, scratch code. Asks git
+// itself (`check-ignore`), so nested .gitignore files, .git/info/exclude and
+// the global excludes file all count. Outside a git repo, or if git isn't
+// installed, the list is returned unchanged.
+export function withoutGitIgnored(cwd: string, relPaths: string[]): string[] {
+  if (relPaths.length === 0) return relPaths;
+  const r = spawnSync('git', ['check-ignore', '--stdin', '-z'], {
+    cwd,
+    input: relPaths.join('\0'),
+    encoding: 'utf8',
+    timeout: 10_000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  // 0 = some ignored, 1 = none ignored, 128/other/error = not a repo or no git.
+  if (r.error || (r.status !== 0 && r.status !== 1)) return relPaths;
+  const ignored = new Set(r.stdout.split('\0').filter(Boolean));
+  return ignored.size ? relPaths.filter((p) => !ignored.has(p)) : relPaths;
 }
 
 // Read top-level manifest files (package.json / Cargo.toml / pyproject.toml /
@@ -506,7 +528,7 @@ export function buildRichBundle(opts: BuildRichBundleOptions = {}): RichBundle {
   for (const [folder, list] of grouped) {
     const sized = list.map((rel) => {
       let absSize = 0;
-      try { absSize = statSync(join(cwd, rel)).size; } catch {}
+      try { absSize = statSync(join(cwd, rel)).size; } catch { /* vanished or unreadable: size stays 0 */ }
       return { rel, absSize };
     });
     const picked = pickFolderSample(sized, caps.maxFilesPerFolder);

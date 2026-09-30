@@ -3,12 +3,22 @@
 
 import './env.ts';
 import pg from 'pg';
+import { hashSecret, mintSecret } from './team-auth.ts';
 
 if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL not set');
 }
 
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+// An idle pooled client can be dropped by the server (Neon suspends idle
+// computes; any Postgres restart does it). pg then emits 'error' on the pool,
+// and with no listener Node treats it as unhandled and kills the process.
+// The pool discards the broken client and opens a new one on the next query,
+// so logging is all that's needed.
+pool.on('error', (err) => {
+  console.warn('[db] idle client error (discarded; the pool reconnects on next use):', err.message);
+});
 
 // Convenience wrapper that returns rows directly. Most queries here are
 // single-result; the caller picks rows[0] or maps over rows[].
@@ -20,38 +30,109 @@ export async function q<T extends pg.QueryResultRow = pg.QueryResultRow>(
   return res.rows;
 }
 
-// The seeded demo team's token. Kept for the seed scripts and as a fallback
-// target when env override puts the legacy single-tenant path in play. New
-// code resolves the team per-request via ensureTeam().
+// The seeded demo team's id. It is also, deliberately, the demo team's public
+// secret: schema.sql stores sha256('trailhead_demo_acme_2026') as its
+// secret_hash, so the demo keeps working with TRAILHEAD_ACCEPT_LEGACY_TOKENS
+// off. Anyone can read and write the demo team; that is what it is for.
 export const DEMO_TEAM_TOKEN = 'trailhead_demo_acme_2026';
+// sha256('trailhead_demo_acme_2026') — kept in sync with schema.sql.
+export const DEMO_TEAM_SECRET_HASH =
+  '6c8ef50b8ac11089af2feb7c77de7d069a75edb30e740d836417eb387e0e079b';
 
-// Ensure a team row exists for the given token and return the token.
+export interface ResolvedTeam {
+  /** teams.token — the team id every child row is keyed on. Not a secret. */
+  teamId: string;
+  /** True when the caller authenticated with a legacy id-as-credential. */
+  legacy: boolean;
+}
+
+// Resolve an X-Team-Token credential to a team. See team-auth.ts for the model.
 //
-// Returns null when the token is unknown and autoCreate is false. When
-// autoCreate is true, an unknown token spawns a new teams row; concurrent
-// callers race-safely via ON CONFLICT DO NOTHING.
-//
-// Auto-create makes the API behave like "any X-Team-Token spawns its own
-// team," which is the right policy for the hackathon's open-demo posture.
-// Production deploys should set TRAILHEAD_AUTO_CREATE_TEAMS=false and
-// register teams explicitly.
-export async function ensureTeam(
-  token: string,
-  { autoCreate }: { autoCreate: boolean },
-): Promise<string | null> {
-  if (!token) return null;
-  const existing = await q<{ token: string }>(
-    'SELECT token FROM teams WHERE token = $1 LIMIT 1',
-    [token],
+//   1. Secret: sha256(credential) matches teams.secret_hash.
+//   2. Legacy (acceptLegacy): credential equals teams.token of a team that has
+//      NO secret yet. A team that has a secret is never reachable by its id —
+//      that is what makes its id safe to publish.
+//   3. Legacy auto-create (acceptLegacy && autoCreate): an unknown credential
+//      spawns a legacy team keyed on it. RETURNING decides success, so a
+//      credential that collides with an existing team's id (for instance a
+//      secret team's public id) does NOT authenticate as that team.
+export async function resolveTeam(
+  credential: string,
+  { acceptLegacy, autoCreate }: { acceptLegacy: boolean; autoCreate: boolean },
+): Promise<ResolvedTeam | null> {
+  if (!credential) return null;
+  const bySecret = await q<{ token: string }>(
+    'SELECT token FROM teams WHERE secret_hash = $1 LIMIT 1',
+    [hashSecret(credential)],
   );
-  if (existing.length) return existing[0]!.token;
+  if (bySecret.length) return { teamId: bySecret[0]!.token, legacy: false };
+  if (!acceptLegacy) return null;
+
+  const legacy = await q<{ token: string }>(
+    'SELECT token FROM teams WHERE token = $1 AND secret_hash IS NULL LIMIT 1',
+    [credential],
+  );
+  if (legacy.length) return { teamId: legacy[0]!.token, legacy: true };
   if (!autoCreate) return null;
-  await q(
+
+  const created = await q<{ token: string }>(
     `INSERT INTO teams (token, name) VALUES ($1, $2)
-       ON CONFLICT (token) DO NOTHING`,
-    [token, `team:${token.slice(0, 16)}`],
+       ON CONFLICT (token) DO NOTHING
+     RETURNING token`,
+    [credential, `team:${credential.slice(0, 16)}`],
   );
-  return token;
+  if (created.length) return { teamId: created[0]!.token, legacy: true };
+  // Lost a race against another auto-create of the same legacy token: fine,
+  // as long as that row is still secret-less.
+  const raced = await q<{ token: string }>(
+    'SELECT token FROM teams WHERE token = $1 AND secret_hash IS NULL LIMIT 1',
+    [credential],
+  );
+  return raced.length ? { teamId: raced[0]!.token, legacy: true } : null;
+}
+
+// True when `id` is the id of a team that authenticates with a secret. Used to
+// explain a 401: someone sent a team's id — typically a pre-upgrade repo_…
+// token after a teammate ran `init --upgrade-legacy` — where its secret
+// belongs. Such an id is public by design (POST /teams already answers 409
+// for it), so saying so leaks nothing. Legacy teams are never reported here.
+export async function isSecretTeamId(id: string): Promise<boolean> {
+  const rows = await q('SELECT 1 FROM teams WHERE token = $1 AND secret_hash IS NOT NULL LIMIT 1', [id]);
+  return rows.length > 0;
+}
+
+// Legacy teams (no secret; their id is the credential), excluding the demo
+// team. Reported at startup while TRAILHEAD_ACCEPT_LEGACY_TOKENS is on.
+export async function countLegacyTeams(): Promise<number> {
+  const rows = await q<{ n: string }>(
+    'SELECT count(*) AS n FROM teams WHERE secret_hash IS NULL AND token <> $1',
+    [DEMO_TEAM_TOKEN],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+// Create a team with a freshly minted secret. Returns the secret (the only
+// time it is ever available) or null when the id is taken.
+export async function registerTeam(
+  teamId: string,
+  name: string,
+): Promise<{ teamId: string; name: string; secret: string } | null> {
+  const secret = mintSecret();
+  const rows = await q<{ token: string; name: string }>(
+    `INSERT INTO teams (token, name, secret_hash) VALUES ($1, $2, $3)
+       ON CONFLICT (token) DO NOTHING
+     RETURNING token, name`,
+    [teamId, name, hashSecret(secret)],
+  );
+  return rows.length ? { teamId: rows[0]!.token, name: rows[0]!.name, secret } : null;
+}
+
+// Replace a team's secret. For a legacy team this is the upgrade: from now on
+// its id stops working as a credential.
+export async function rotateTeamSecret(teamId: string): Promise<string> {
+  const secret = mintSecret();
+  await q('UPDATE teams SET secret_hash = $2 WHERE token = $1', [teamId, hashSecret(secret)]);
+  return secret;
 }
 
 // Update teams.name to `name` only when the current name looks like the
@@ -136,4 +217,29 @@ export async function wipeTeamData(teamToken: string): Promise<{
   } finally {
     client.release();
   }
+}
+
+// Rich-bootstrap jobs run in-process (setImmediate in /onboard/repo/full), so
+// a restart kills them mid-flight and leaves wiki_jobs rows 'running' forever
+// — the CLI and MCP tool then poll until their own deadline. At startup no
+// job can still be running in this process, so mark leftovers failed with a
+// reason the client shows. Single-process assumption, like the rate limiter:
+// with several API replicas this would fail another replica's live jobs.
+export async function failInterruptedJobs(): Promise<number> {
+  const reason = 'interrupted: the API restarted while this job was running — re-run bootstrap';
+  const jobs = await q<{ id: string }>(
+    `UPDATE wiki_jobs
+        SET status = 'failed', finished_at = NOW(), error = $1
+      WHERE status IN ('pending', 'running')
+      RETURNING id`,
+    [reason],
+  );
+  if (jobs.length) {
+    await q(
+      `UPDATE wiki_job_paths SET status = 'failed', error = $2
+        WHERE job_id = ANY($1::uuid[]) AND status IN ('pending', 'running')`,
+      [jobs.map((j) => j.id), reason],
+    );
+  }
+  return jobs.length;
 }

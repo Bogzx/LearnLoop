@@ -49,3 +49,20 @@ export function degradedCoachResponse(
       `not a judgement of the prompt. Proceed with the original prompt as written.`,
   };
 }
+
+// The fingerprint scorePrompt leaves when Gemini's output could not be parsed:
+// it does not throw, it returns all-zero dimensions with an empty `missing`
+// (see coerceScore in gemini.ts). A genuine all-zero score always carries
+// hints, because the rubric requires one for every dimension below 5. Callers
+// must check this before persisting anything — otherwise a parse failure is
+// recorded as five real 0/10 observations and drags the skill arc and team
+// averages down for a prompt nobody actually scored.
+export function isUnparseableScore(
+  dimensions: DimensionScores,
+  missing: Record<string, unknown>,
+): boolean {
+  return (
+    Object.values(dimensions).every((v) => v === 0) &&
+    Object.keys(missing).length === 0
+  );
+}

@@ -28,6 +28,7 @@ import type {
   WikiRecentItem,
   WikiRecentResponse,
 } from '@trailhead/shared';
+import { readCredential } from './token.mjs';
 
 // Re-exported so existing importers of these names from './api-client.ts'
 // keep working.
@@ -41,6 +42,18 @@ export type {
   WikiRecentItem,
   WikiRecentResponse,
 };
+
+// The API answered 429. `retryAfterSec` comes from the Retry-After header.
+export class RateLimitedError extends Error {
+  constructor(
+    readonly path: string,
+    readonly retryAfterSec: number | null,
+    detail: string,
+  ) {
+    super(`trailhead-api ${path} rate limited${retryAfterSec !== null ? ` — retry in ${retryAfterSec}s` : ''}: ${detail}`);
+    this.name = 'RateLimitedError';
+  }
+}
 
 export interface ApiClientConfig {
   apiUrl: string;
@@ -64,6 +77,11 @@ export class ApiClient {
     const init: RequestInit = { method, headers: this.headers() };
     if (body !== undefined) init.body = JSON.stringify(body);
     const res = await fetch(url, init);
+    if (res.status === 429) {
+      const retry = Number(res.headers.get('retry-after'));
+      const body = (await res.json().catch(() => null)) as { detail?: string } | null;
+      throw new RateLimitedError(path, Number.isFinite(retry) && retry > 0 ? retry : null, body?.detail ?? 'too many requests');
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`trailhead-api ${method} ${path} ${res.status}: ${text}`);
@@ -146,7 +164,10 @@ export class ApiClient {
 
 export function clientFromEnv(): ApiClient {
   const apiUrl = process.env.TRAILHEAD_API_URL;
-  const teamToken = process.env.TRAILHEAD_TEAM_TOKEN;
+  // TRAILHEAD_TEAM_TOKEN → TRAILHEAD_TEAM_FILE → ./.trailhead-team. Configs
+  // generated since 2026-09-30 set TRAILHEAD_TEAM_FILE so the team secret
+  // stays in the gitignored sentinel instead of .mcp.json.
+  const credential = readCredential();
   // Trailhead ships no hosted API. The MCP server is launched by an agent
   // host (Claude Code, Copilot) from a generated config, so an unset value
   // here means that config is wrong — name the variable and the fix rather
@@ -156,14 +177,14 @@ export function clientFromEnv(): ApiClient {
       'TRAILHEAD_API_URL is not set. Trailhead is self-hosted: start an API with ' +
         '`docker compose up` from the repo root (see SELFHOSTING.md), then set ' +
         'TRAILHEAD_API_URL to its base URL (e.g. http://localhost:3000). ' +
-        '`npx trailhead-mcp init` writes this into your MCP config for you.',
+        'The CLI\'s `init` (node apps/mcp-server/bin/cli.mjs init) writes this into your MCP config.',
     );
   }
-  if (!teamToken) {
+  if (!credential) {
     throw new Error(
-      'TRAILHEAD_TEAM_TOKEN is not set. Run `npx trailhead-mcp init` in your repo to ' +
-        'derive and wire one, or set it explicitly.',
+      'No team secret found (checked TRAILHEAD_TEAM_TOKEN, TRAILHEAD_TEAM_FILE and ./.trailhead-team). ' +
+        'Run the CLI\'s `init` in your repo (node apps/mcp-server/bin/cli.mjs init) to register or join a team.',
     );
   }
-  return new ApiClient({ apiUrl, teamToken });
+  return new ApiClient({ apiUrl, teamToken: credential.token });
 }

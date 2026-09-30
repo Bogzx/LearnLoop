@@ -102,7 +102,6 @@ function bucketize(obs: SkillArcResponse['observations']): BucketRow[] {
 }
 
 interface SkillArcChartProps {
-  token: string;
   // Look-back window in hours. Default 24 — covers the demo seed.
   hoursBack?: number;
   // SWR revalidation cadence. 2000 ms during demo; tunable for dev to
@@ -111,20 +110,16 @@ interface SkillArcChartProps {
 }
 
 export function SkillArcChart({
-  token,
   hoursBack = 24,
   refreshInterval = 2000,
 }: SkillArcChartProps) {
-  // Recompute `since` on each render so revalidation stays anchored to
-  // a rolling window. SWR keys must be stable strings, so we round to
-  // the minute — preserves the rolling effect without busting the cache
-  // key on every render.
-  const sinceMs = Math.floor((Date.now() - hoursBack * 60 * 60 * 1000) / 60_000) * 60_000;
-  const since = new Date(sinceMs).toISOString();
-
+  // `since` is computed inside the fetcher, at request time, so every
+  // revalidation stays anchored to a rolling window while the SWR key stays
+  // stable. (Computing it during render called Date.now() on every render —
+  // impure, and it churned the cache key once a minute.)
   const { data, error, isLoading } = useSWR<SkillArcResponse>(
-    ['skill-arc', token, since],
-    () => api.skillArc(token, since),
+    ['skill-arc', hoursBack],
+    () => api.skillArc(new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString()),
     {
       refreshInterval,
       revalidateOnFocus: true,

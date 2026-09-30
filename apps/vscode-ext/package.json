@@ -2,16 +2,24 @@
   "name": "trailhead-vscode",
   "displayName": "Trailhead",
   "description": "Prompt-skill coach in your sidebar — score-card, team-anchored examples, autonomous wiki updates.",
-  "version": "0.0.1",
+  "version": "0.0.1",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/Bogzx/LearnLoop.git", "directory": "apps/vscode-ext" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Bogzx/LearnLoop.git",
+    "directory": "apps/vscode-ext"
+  },
   "private": true,
   "publisher": "trailhead",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onView:trailhead.coach"],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:trailhead.coach"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -49,12 +57,17 @@
         "trailhead.teamToken": {
           "type": "string",
           "default": "trailhead_demo_acme_2026",
-          "description": "Team token sent in the X-Team-Token header."
+          "description": "Your team secret (trailhead_sk_…), sent as X-Team-Token. It is the team's credential: set it in User settings, not a committed .vscode/settings.json. The MCP CLI's `init` saves it in the repo's gitignored .trailhead-team file. The default is the public demo team."
         },
         "trailhead.userId": {
           "type": "string",
-          "default": "demo",
-          "description": "User ID stamped on score / capture writes."
+          "default": "",
+          "description": "Override the user ID stamped on score / capture writes. Empty (default): a random per-install ID, or \"anonymous\" when trailhead.shareUserId is off."
+        },
+        "trailhead.shareUserId": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send a random per-install ID so your team's server can chart your scores over time. Off: writes are sent as \"anonymous\". The ID is not linked to your account or machine."
         }
       }
     }
@@ -63,7 +76,7 @@
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test --experimental-strip-types src/paths.test.mts src/wiki-diff.test.mts test/bundle-load.test.mjs",
+    "test": "npm run build && node --test --experimental-strip-types src/paths.test.mts src/wiki-diff.test.mts src/api.test.mts test/bundle-load.test.mjs",
     "vscode:prepublish": "node esbuild.config.mjs --production"
   },
   "dependencies": {
@@ -72,7 +85,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.85.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
   }
 }

@@ -347,7 +347,26 @@ export interface CoachResponse {
 // replayed as an X-Team-Token.
 export interface TeamSummary {
   name: string;
+  /** Opaque, non-replayable digest — stable handle for UI keys. */
   id: string;
+  /** True when the caller authenticated with a deprecated legacy token. */
+  legacy?: boolean;
+  /** The team's public id. Present only for secret-authenticated teams (a
+   *  legacy team's id is its credential, so it is never echoed). */
+  team_id?: string;
+}
+
+/** POST /teams request. Both fields optional; team_id defaults to random. */
+export interface RegisterTeamRequest {
+  team_id?: string;
+  name?: string;
+}
+/** POST /teams (201) and POST /teams/rotate-secret (200). The secret is
+ *  shown exactly once — the server stores only its SHA-256. */
+export interface TeamSecretResponse {
+  team_id: string;
+  name: string;
+  secret: string;
 }
 export interface TeamsListResponse {
   teams: TeamSummary[];

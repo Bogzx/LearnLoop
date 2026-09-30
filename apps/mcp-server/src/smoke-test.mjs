@@ -50,7 +50,7 @@ child.stdout.on('data', (chunk) => {
     let msg;
     try {
       msg = JSON.parse(line);
-    } catch (e) {
+    } catch {
       console.error('non-JSON stdout:', line);
       continue;
     }

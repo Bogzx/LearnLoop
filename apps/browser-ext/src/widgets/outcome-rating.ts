@@ -3,7 +3,7 @@
 // "Recorded" pill. On null response (fail-open) the chips revert to
 // clickable (spec §6.1).
 import { capture as apiCapture } from '../api.ts';
-import { USER_ID } from '../config.ts';
+import { getUserId } from '../user-state.ts';
 import { simpleHash } from '../hash.ts';
 import { readBubbleText, type Selectors } from '../selectors.ts';
 import { store } from '../store.ts';
@@ -63,7 +63,7 @@ export function mountOutcomeRating(
       ai_response: ai,
       outcome,
       scored_dimensions: entry?.dimensions,
-      user_id: USER_ID,
+      user_id: getUserId(),
     });
     if (!res) {
       // fail-open: revert to chips so the user can retry

@@ -39,7 +39,7 @@ child.stdout.on('data', (c) => {
         pending.get(m.id)(m);
         pending.delete(m.id);
       }
-    } catch {}
+    } catch { /* not a JSON-RPC line (server log noise): ignore */ }
   }
 });
 

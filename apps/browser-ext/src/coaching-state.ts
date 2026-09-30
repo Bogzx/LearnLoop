@@ -18,27 +18,31 @@ export function isCoachingEnabled(): boolean {
   return coachingEnabled;
 }
 
-export function initCoachingState(): void {
-  try {
-    const get = (chrome as any)?.storage?.local?.get;
-    if (typeof get !== 'function') return;
-    get.call((chrome as any).storage.local, COACHING_KEY, (out: Record<string, unknown>) => {
-      // Default: undefined → enabled. Only an explicit `false` disables.
-      coachingEnabled = out[COACHING_KEY] !== false;
-    });
-    const onChanged = (chrome as any)?.storage?.onChanged?.addListener;
-    if (typeof onChanged !== 'function') return;
-    onChanged.call(
-      (chrome as any).storage.onChanged,
-      (changes: Record<string, { newValue?: unknown }>, area: string) => {
-        if (area !== 'local') return;
-        if (!(COACHING_KEY in changes)) return;
-        const v = changes[COACHING_KEY]?.newValue;
-        coachingEnabled = v !== false;
-        console.info('[trailhead] coaching toggled →', coachingEnabled ? 'on' : 'off');
-      },
-    );
-  } catch {
-    // chrome.* unavailable in test environments — leave default.
-  }
+export function initCoachingState(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const get = (chrome as any)?.storage?.local?.get;
+      if (typeof get !== 'function') return resolve();
+      get.call((chrome as any).storage.local, COACHING_KEY, (out: Record<string, unknown>) => {
+        // Default: undefined → enabled. Only an explicit `false` disables.
+        coachingEnabled = out[COACHING_KEY] !== false;
+        resolve();
+      });
+      const onChanged = (chrome as any)?.storage?.onChanged?.addListener;
+      if (typeof onChanged !== 'function') return;
+      onChanged.call(
+        (chrome as any).storage.onChanged,
+        (changes: Record<string, { newValue?: unknown }>, area: string) => {
+          if (area !== 'local') return;
+          if (!(COACHING_KEY in changes)) return;
+          const v = changes[COACHING_KEY]?.newValue;
+          coachingEnabled = v !== false;
+          console.info('[trailhead] coaching toggled →', coachingEnabled ? 'on' : 'off');
+        },
+      );
+    } catch {
+      // chrome.* unavailable in test environments — leave default.
+      resolve();
+    }
+  });
 }

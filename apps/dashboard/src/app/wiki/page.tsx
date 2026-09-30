@@ -1,18 +1,11 @@
 // /wiki — the Karpathy-flavored file-tree wiki view (master spec §17 #5).
-// Reads the team token from `?team=<token>` (set by the team picker on
-// the home page); falls back to the demo token when no param is given.
+// Shows the team this dashboard is configured for (TRAILHEAD_TEAM_TOKEN,
+// server-side); data comes through the read-only /api/trailhead proxy.
 
 import Link from 'next/link';
 import { WikiTree } from '@/components/wiki-tree';
-import { DEFAULT_TEAM_TOKEN } from '@/lib/api';
 
-export default function WikiPage({
-  searchParams,
-}: {
-  searchParams: { team?: string };
-}) {
-  const token = searchParams.team ?? DEFAULT_TEAM_TOKEN;
-
+export default function WikiPage() {
   return (
     <section className="space-y-6">
       <Link
@@ -22,18 +15,15 @@ export default function WikiPage({
         ← Teams
       </Link>
       <header>
-        <h1 className="text-3xl font-semibold tracking-tight">Team's knowledge</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">Team&apos;s knowledge</h1>
         <p className="mt-2 max-w-prose text-muted-foreground">
-          The team's growing curriculum. Path-organized rules and durable
+          The team&apos;s growing curriculum. Path-organized rules and durable
           learnings — promoted from drafts after 3+ reinforcements via the
           MCP tool.
         </p>
-        <p className="mt-1 font-mono text-[11px] text-muted-foreground/70">
-          token: {token}
-        </p>
       </header>
 
-      <WikiTree token={token} />
+      <WikiTree />
     </section>
   );
 }

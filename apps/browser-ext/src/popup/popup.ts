@@ -28,6 +28,7 @@ import { API_URL_KEY, DEFAULT_API_URL } from '../config.ts';
 import { normalizeApiUrl } from '../api-url-state.ts';
 import { TEAM_TOKEN_KEY, TEAM_NAME_KEY } from '../team-state.ts';
 import { CONTEXT_PATH_KEY } from '../context-state.ts';
+import { SHARE_USER_ID_KEY } from '../user-state.ts';
 import { TEAM_TOKEN as DEFAULT_TEAM_TOKEN } from '../config.ts';
 import type {
   TeamsListResponse,
@@ -244,27 +245,45 @@ async function clearStoredContextPath(): Promise<void> {
  * tenant's credential to anyone who asked. Resolving your own team from the
  * token you already hold is the same convenience without the giveaway.
  */
-async function resolveTeamName(token: string): Promise<string | null> {
+async function resolveTeam(token: string): Promise<{ name: string; legacy: boolean } | null> {
   try {
     const res = await fetch(`${apiUrl}/teams`, { headers: { 'X-Team-Token': token } });
     if (!res.ok) return null;
     const data = (await res.json()) as TeamsListResponse;
-    return data.teams?.[0]?.name ?? null;
+    const team = data.teams?.[0];
+    return team ? { name: team.name, legacy: Boolean(team.legacy) } : null;
   } catch {
     return null;
   }
 }
 
+// Legacy tokens (pre-2026-09-30, derived from the git remote URL) still work
+// on servers that accept them, but anyone who knows the repo URL can compute
+// one. Say so wherever the team is shown.
+const LEGACY_HINT =
+  'Legacy team token — anyone who knows the repo URL can compute it. Ask your team to run `init --upgrade-legacy` and use the new secret.';
+
+const DEMO_HINT =
+  'Public demo team — prompts you score here are visible to anyone with the demo secret (it is published in the repo). Enter your team secret to switch.';
+
+// Label + tooltip for the team row. Never paints (part of) a secret; flags the
+// two cases where the credential isn't really private: the public demo team,
+// which unconfigured installs fall back to, and legacy remote-derived tokens.
+function paintTeam(name: string, { demo, legacy }: { demo: boolean; legacy: boolean }): void {
+  currentTeamNameEl.textContent = demo ? `${name} (public demo)` : legacy ? `${name} (legacy)` : name;
+  currentTeamNameEl.title = demo ? DEMO_HINT : legacy ? LEGACY_HINT : '';
+}
+
 async function refreshCurrentTeamName(): Promise<void> {
   const token = await getStoredToken();
+  const demo = token === DEFAULT_TEAM_TOKEN;
   const cached = await getStoredTeamName();
-  currentTeamNameEl.textContent =
-    cached ?? (token === DEFAULT_TEAM_TOKEN ? 'Acme (default)' : token.slice(0, 16) + '…');
+  paintTeam(cached ?? (demo ? 'Acme' : 'Checking…'), { demo, legacy: false });
 
-  const name = await resolveTeamName(token);
-  if (name) {
-    await setStoredTeamName(name);
-    currentTeamNameEl.textContent = name;
+  const team = await resolveTeam(token);
+  if (team) {
+    await setStoredTeamName(team.name);
+    paintTeam(team.name, { demo, legacy: team.legacy });
   }
 }
 
@@ -293,11 +312,12 @@ async function applyTeamToken(next: string): Promise<void> {
   teamStatusEl.classList.remove('is-error');
   teamStatusEl.textContent = 'Checking token…';
 
-  const name = await resolveTeamName(token);
-  if (!name) {
-    showTeamError(`${apiUrl} rejected that token, or is unreachable.`);
+  const team = await resolveTeam(token);
+  if (!team) {
+    showTeamError(`${apiUrl} rejected that secret, or is unreachable.`);
     return;
   }
+  const name = team.name;
 
   await setStoredToken(token);
   // Persist the display name alongside the token so the in-page pill can show
@@ -316,7 +336,7 @@ async function applyTeamToken(next: string): Promise<void> {
   }
   await refreshCurrentTeamName();
   closeTeamDropdown();
-  showToast(`Switched to ${name}`);
+  showToast(team.legacy ? `Switched to ${name} — legacy token, see the team row` : `Switched to ${name}`);
 }
 
 async function renderTeamEditor(): Promise<void> {
@@ -326,16 +346,17 @@ async function renderTeamEditor(): Promise<void> {
   li.className = 'team-editor';
 
   const label = document.createElement('label');
-  label.textContent = 'Team token';
+  label.textContent = 'Team secret';
   label.htmlFor = 'team-token-input';
   li.appendChild(label);
 
   const input = document.createElement('input');
   input.id = 'team-token-input';
-  input.type = 'text';
+  // A credential: don't paint it on screen for shoulder-surfers or screenshots.
+  input.type = 'password';
   input.spellcheck = false;
   input.autocomplete = 'off';
-  input.placeholder = 'e.g. repo_9d01… or trailhead_demo_acme_2026';
+  input.placeholder = 'trailhead_sk_… (from .trailhead-team)';
   input.value = await getStoredToken();
   li.appendChild(input);
 
@@ -355,7 +376,7 @@ async function renderTeamEditor(): Promise<void> {
   const hint = document.createElement('p');
   hint.className = 'team-hint';
   hint.textContent =
-    'Your token is your team’s credential. `trailhead-mcp init` derives one per repo and writes it into your MCP config.';
+    'The secret is your team’s credential. `init` saves it in the repo’s .trailhead-team file (gitignored); teammates share it out of band. The public demo team uses trailhead_demo_acme_2026.';
   li.appendChild(hint);
 
   teamListEl.appendChild(li);
@@ -486,7 +507,7 @@ function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): v
     li.addEventListener('click', async () => {
       const stored = pathForStorage(node.path);
       await setStoredContextPath(stored);
-      cachedTree && renderContextTree(cachedTree, stored);
+      if (cachedTree) renderContextTree(cachedTree, stored);
       await refreshCurrentContextName();
       closeContextDropdown();
       showToast(`Context set: ${displayName(node.path)}`);
@@ -595,6 +616,26 @@ apiUrlInputEl.addEventListener('keydown', (e) => {
     void saveApiUrl();
   }
 });
+
+// Privacy toggle — see src/user-state.ts for what the id is and isn't.
+const shareUserIdEl = document.getElementById('share-user-id') as HTMLInputElement | null;
+if (shareUserIdEl) {
+  try {
+    (chrome as any).storage.local.get(SHARE_USER_ID_KEY, (v: Record<string, unknown>) => {
+      shareUserIdEl.checked = v?.[SHARE_USER_ID_KEY] !== false;
+    });
+  } catch {
+    /* chrome.* unavailable — leave the default */
+  }
+  shareUserIdEl.addEventListener('change', () => {
+    try {
+      (chrome as any).storage.local.set({ [SHARE_USER_ID_KEY]: shareUserIdEl.checked });
+      showToast(shareUserIdEl.checked ? 'Sending your per-install ID' : 'Sending as "anonymous"');
+    } catch {
+      /* ignore */
+    }
+  });
+}
 
 switchEl.addEventListener('click', async () => {
   try {

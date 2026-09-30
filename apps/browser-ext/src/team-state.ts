@@ -47,47 +47,51 @@ function notify(): void {
   }
 }
 
-export function initTeamState(): void {
-  try {
-    const get = (chrome as any)?.storage?.local?.get;
-    if (typeof get !== 'function') return;
-    get.call(
-      (chrome as any).storage.local,
-      [TEAM_TOKEN_KEY, TEAM_NAME_KEY],
-      (out: Record<string, unknown>) => {
-        const storedToken = out[TEAM_TOKEN_KEY];
-        if (typeof storedToken === 'string' && storedToken) {
-          currentToken = storedToken;
-          console.info('[trailhead] team token loaded from storage');
-        }
-        const storedName = out[TEAM_NAME_KEY];
-        if (typeof storedName === 'string' && storedName) {
-          currentName = storedName;
-        }
-      },
-    );
-    const onChanged = (chrome as any)?.storage?.onChanged?.addListener;
-    if (typeof onChanged !== 'function') return;
-    onChanged.call(
-      (chrome as any).storage.onChanged,
-      (changes: Record<string, { newValue?: unknown }>, area: string) => {
-        if (area !== 'local') return;
-        let changed = false;
-        if (TEAM_TOKEN_KEY in changes) {
-          const v = changes[TEAM_TOKEN_KEY]?.newValue;
-          currentToken = typeof v === 'string' && v ? v : DEFAULT_TEAM_TOKEN;
-          console.info('[trailhead] team token changed → using new token for next request');
-          changed = true;
-        }
-        if (TEAM_NAME_KEY in changes) {
-          const v = changes[TEAM_NAME_KEY]?.newValue;
-          currentName = typeof v === 'string' && v ? v : null;
-          changed = true;
-        }
-        if (changed) notify();
-      },
-    );
-  } catch {
-    // chrome.* unavailable — leave default.
-  }
+export function initTeamState(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const get = (chrome as any)?.storage?.local?.get;
+      if (typeof get !== 'function') return resolve();
+      get.call(
+        (chrome as any).storage.local,
+        [TEAM_TOKEN_KEY, TEAM_NAME_KEY],
+        (out: Record<string, unknown>) => {
+          const storedToken = out[TEAM_TOKEN_KEY];
+          if (typeof storedToken === 'string' && storedToken) {
+            currentToken = storedToken;
+            console.info('[trailhead] team token loaded from storage');
+          }
+          const storedName = out[TEAM_NAME_KEY];
+          if (typeof storedName === 'string' && storedName) {
+            currentName = storedName;
+          }
+          resolve();
+        },
+      );
+      const onChanged = (chrome as any)?.storage?.onChanged?.addListener;
+      if (typeof onChanged !== 'function') return;
+      onChanged.call(
+        (chrome as any).storage.onChanged,
+        (changes: Record<string, { newValue?: unknown }>, area: string) => {
+          if (area !== 'local') return;
+          let changed = false;
+          if (TEAM_TOKEN_KEY in changes) {
+            const v = changes[TEAM_TOKEN_KEY]?.newValue;
+            currentToken = typeof v === 'string' && v ? v : DEFAULT_TEAM_TOKEN;
+            console.info('[trailhead] team token changed → using new token for next request');
+            changed = true;
+          }
+          if (TEAM_NAME_KEY in changes) {
+            const v = changes[TEAM_NAME_KEY]?.newValue;
+            currentName = typeof v === 'string' && v ? v : null;
+            changed = true;
+          }
+          if (changed) notify();
+        },
+      );
+    } catch {
+      // chrome.* unavailable — leave default.
+      resolve();
+    }
+  });
 }
