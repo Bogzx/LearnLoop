@@ -920,6 +920,10 @@ app.post('/capture', async (c) => {
 // well below the threshold, so opposite-meaning insights stay distinct.
 const PARAPHRASE_THRESHOLD = 0.7;
 
+// Headroom under Postgres's ~2704-byte btree tuple limit for
+// idx_learnings_node_normalized (the key also carries node_id + tuple header).
+const MAX_INSIGHT_BYTES = 2048;
+
 function bigramSet(normalized: string): Set<string> {
   const tokens = normalized.split(' ').filter(Boolean);
   const out = new Set<string>();
@@ -946,9 +950,19 @@ app.post('/wiki/propose', async (c) => {
   }
   if (!body.insight.trim()) return c.json({ error: 'empty_insight' }, 400);
 
+  // body_normalized is a btree index key, and Postgres rejects index rows over
+  // ~2.7 KB — a longer insight failed the INSERT with a raw 500. Insights are
+  // meant to be one-sentence conventions, so reject oversize ones up front.
+  const bodyNormalized = normalize(body.insight);
+  if (Buffer.byteLength(bodyNormalized, 'utf8') > MAX_INSIGHT_BYTES) {
+    return c.json(
+      { error: 'insight_too_long', detail: `max ${MAX_INSIGHT_BYTES} bytes after normalization` },
+      400,
+    );
+  }
+
   const path = normalizePath(body.node_path);
   const nodeId = await upsertNode(c.get('team_token'), path);
-  const bodyNormalized = normalize(body.insight);
 
   // Step 1: exact match on body_normalized — the cheap fast path. Hits when
   // the user (or LLM) sent the same insight verbatim or with only
