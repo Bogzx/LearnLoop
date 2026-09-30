@@ -11,6 +11,15 @@ if (!process.env.DATABASE_URL) {
 
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
+// An idle pooled client can be dropped by the server (Neon suspends idle
+// computes; any Postgres restart does it). pg then emits 'error' on the pool,
+// and with no listener Node treats it as unhandled and kills the process.
+// The pool discards the broken client and opens a new one on the next query,
+// so logging is all that's needed.
+pool.on('error', (err) => {
+  console.warn('[db] idle client error (discarded; the pool reconnects on next use):', err.message);
+});
+
 // Convenience wrapper that returns rows directly. Most queries here are
 // single-result; the caller picks rows[0] or maps over rows[].
 export async function q<T extends pg.QueryResultRow = pg.QueryResultRow>(
@@ -188,4 +197,29 @@ export async function wipeTeamData(teamToken: string): Promise<{
   } finally {
     client.release();
   }
+}
+
+// Rich-bootstrap jobs run in-process (setImmediate in /onboard/repo/full), so
+// a restart kills them mid-flight and leaves wiki_jobs rows 'running' forever
+// — the CLI and MCP tool then poll until their own deadline. At startup no
+// job can still be running in this process, so mark leftovers failed with a
+// reason the client shows. Single-process assumption, like the rate limiter:
+// with several API replicas this would fail another replica's live jobs.
+export async function failInterruptedJobs(): Promise<number> {
+  const reason = 'interrupted: the API restarted while this job was running — re-run bootstrap';
+  const jobs = await q<{ id: string }>(
+    `UPDATE wiki_jobs
+        SET status = 'failed', finished_at = NOW(), error = $1
+      WHERE status IN ('pending', 'running')
+      RETURNING id`,
+    [reason],
+  );
+  if (jobs.length) {
+    await q(
+      `UPDATE wiki_job_paths SET status = 'failed', error = $2
+        WHERE job_id = ANY($1::uuid[]) AND status IN ('pending', 'running')`,
+      [jobs.map((j) => j.id), reason],
+    );
+  }
+  return jobs.length;
 }
