@@ -18,12 +18,19 @@
 -- has it built-in, but the extension is still required to expose the function.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- Tenancy. Token is the primary key (it's the value the client sends as
--- X-Team-Token), so there's no separate UUID indirection to cache.
+-- Tenancy. `token` is the primary key and the TEAM ID (the column kept its
+-- historical name). Since 2026-09-30 it is not a secret: the credential is a
+-- server-minted secret whose SHA-256 lives in secret_hash, and clients send
+-- the secret as X-Team-Token. Rows with secret_hash NULL are legacy teams,
+-- whose id doubled as the credential; the API accepts those only while
+-- TRAILHEAD_ACCEPT_LEGACY_TOKENS is on. See apps/api/src/team-auth.ts.
 CREATE TABLE IF NOT EXISTS teams (
-  token TEXT PRIMARY KEY,
-  name  TEXT NOT NULL
+  token       TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  secret_hash TEXT
 );
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS secret_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS teams_secret_hash_key ON teams(secret_hash);
 
 -- Wiki tree (one row per folder OR file path).
 -- Folder paths end in '/'; file paths do not. Both shapes coexist after the
@@ -155,6 +162,15 @@ CREATE TABLE IF NOT EXISTS wiki_job_paths (
 
 -- Bootstrap the demo team. Idempotent on (token). Token mirrors the value the
 -- legacy single-tenant build expected, so existing installs continue to work.
-INSERT INTO teams (token, name)
-VALUES ('trailhead_demo_acme_2026', 'Acme Fintech')
+--
+-- The demo team's secret is public on purpose: it is its own id, so
+-- secret_hash = sha256('trailhead_demo_acme_2026') and the demo keeps working
+-- with legacy tokens turned off. Keep in sync with DEMO_TEAM_SECRET_HASH in
+-- apps/api/src/db.ts.
+INSERT INTO teams (token, name, secret_hash)
+VALUES ('trailhead_demo_acme_2026', 'Acme Fintech',
+        '6c8ef50b8ac11089af2feb7c77de7d069a75edb30e740d836417eb387e0e079b')
 ON CONFLICT (token) DO NOTHING;
+UPDATE teams
+   SET secret_hash = '6c8ef50b8ac11089af2feb7c77de7d069a75edb30e740d836417eb387e0e079b'
+ WHERE token = 'trailhead_demo_acme_2026' AND secret_hash IS NULL;
