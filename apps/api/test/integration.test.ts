@@ -773,6 +773,27 @@ test('startup marks bootstrap jobs orphaned by a restart as failed, with a reaso
   assert.equal(untouched.json.status, 'done');
 });
 
+test('the cached team-context bundle is dropped when the wiki is wiped or edited', { skip }, async () => {
+  const reg = await call('POST', '/teams', { body: { team_id: 'team_it_cache' } });
+  const t = reg.json.secret;
+  const system = async () => {
+    scoreRequests.length = 0;
+    await call('POST', '/score', { token: t, body: { prompt: '[mid] cache check', user_id: 'u', context_path: 'src/' } });
+    return scoreRequests.at(-1)?.systemInstruction?.parts?.map((p: any) => p.text).join('') ?? '';
+  };
+  await call('POST', '/onboard/repo', { token: t, body: { paths: ['src/'], initial_rules: { 'src/': 'CACHED-RULE-ONE' } } });
+  assert.ok((await system()).includes('CACHED-RULE-ONE'));
+  // An edit shows up immediately, not after the 60 s TTL.
+  for (let i = 0; i < 3; i++) {
+    await call('POST', '/wiki/propose', { token: t, body: { node_path: 'src/', insight: 'CACHED-LEARNING-TWO' } });
+  }
+  assert.ok((await system()).includes('CACHED-LEARNING-TWO'));
+  // And a wipe removes it immediately.
+  await call('DELETE', '/team/data', { token: t, body: { confirm: true } });
+  const after = await system();
+  assert.ok(!after.includes('CACHED-RULE-ONE') && !after.includes('CACHED-LEARNING-TWO'));
+});
+
 // Must stay last: every route in GET /'s catalog needs a test above.
 test('every advertised route is covered by these tests', { skip }, async () => {
   const r = await call('GET', '/');

@@ -95,7 +95,7 @@ import {
   renderLibraryBanner,
   renderNotPromotedNote,
 } from './promotion-gate.ts';
-import { renderTeamContext } from './team-context.ts';
+import { invalidateTeamContext, renderTeamContext } from './team-context.ts';
 import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
 
 
@@ -1191,6 +1191,7 @@ app.post('/wiki/propose', async (c) => {
     action = promotedToDurable ? 'promoted' : 'reinforced';
   }
 
+  invalidateTeamContext(c.get('team_token'));
   const res: WikiProposeResponse = {
     action,
     current_count: currentCount,
@@ -1928,6 +1929,7 @@ app.delete('/team/data', async (c) => {
     );
   }
   const deleted = await wipeTeamData(teamToken);
+  invalidateTeamContext(teamToken);
   return c.json({ team_token: teamToken, deleted });
 });
 
@@ -2020,6 +2022,7 @@ app.post('/onboard/repo', async (c) => {
     nodes.push({ path, id: row.id });
   }
 
+  invalidateTeamContext(c.get('team_token'));
   const res: OnboardRepoResponse = { nodes_created, nodes };
   return c.json(res);
 });
