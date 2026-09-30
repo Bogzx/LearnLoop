@@ -59,6 +59,7 @@ import {
 import { applyTeamNameIfPlaceholder, DEMO_TEAM_TOKEN, q, ensureTeam, upsertNode, wipeTeamData } from './db.ts';
 import { createHash } from 'node:crypto';
 import { degradedCoachResponse, isUnparseableScore } from './coach-degraded.ts';
+import { intParam, isUuid } from './request-params.ts';
 import { loadWikiTree } from './wiki-tree.ts';
 import { exportFilename, renderWikiMarkdown } from './wiki-export.ts';
 import {
@@ -1085,7 +1086,7 @@ app.get('/context', async (c) => {
 app.get('/examples', async (c) => {
   const filePath = c.req.query('path') ?? '';
   if (!filePath) return c.json({ error: 'missing_path' }, 400);
-  const limit = Math.max(1, Math.min(10, Number(c.req.query('limit') ?? 3)));
+  const limit = intParam(c.req.query('limit'), 3, 1, 10);
   const ancestors = ancestorPaths(filePath);
 
   const rows = await q<{
@@ -1124,9 +1125,8 @@ app.get('/examples', async (c) => {
 // without the score tiebreaker, brand-new 10/10 prompts would rank below
 // older 7/10 prompts that happened to be re-graduated once or twice.
 app.get('/prompts/proven', async (c) => {
-  const minScoreRaw = Number(c.req.query('min_score') ?? 7);
-  const minScore = Number.isFinite(minScoreRaw) ? Math.max(0, Math.min(10, Math.floor(minScoreRaw))) : 7;
-  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') ?? 20)));
+  const minScore = intParam(c.req.query('min_score'), 7, 0, 10);
+  const limit = intParam(c.req.query('limit'), 20, 1, 100);
   const pathScope = c.req.query('path');
   const topic = c.req.query('topic');
   const ancestors = pathScope ? ancestorPaths(pathScope) : null;
@@ -1182,7 +1182,7 @@ app.get('/prompts/proven', async (c) => {
 app.get('/search', async (c) => {
   const query = (c.req.query('q') ?? '').trim();
   if (!query) return c.json({ error: 'missing_q' }, 400);
-  const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') ?? 50)));
+  const limit = intParam(c.req.query('limit'), 50, 1, 100);
   const scope = c.req.query('scope');
   // ILIKE wildcards from user input shouldn't bleed into the pattern. Escape
   // %, _, and the escape char itself so a search for "100%" matches the
@@ -1236,7 +1236,7 @@ app.get('/wiki/recent', async (c) => {
   const sinceParam = c.req.query('since');
   const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 60 * 60 * 1000);
   if (Number.isNaN(since.getTime())) return c.json({ error: 'bad_since' }, 400);
-  const limit = Math.max(1, Math.min(200, Number(c.req.query('limit') ?? 50)));
+  const limit = intParam(c.req.query('limit'), 50, 1, 200);
 
   const rows = await q<{
     id: string;
@@ -1373,7 +1373,7 @@ app.get('/skill-arc', async (c) => {
   const sinceParam = c.req.query('since');
   const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   if (Number.isNaN(since.getTime())) return c.json({ error: 'bad_since' }, 400);
-  const limit = Math.max(1, Math.min(5000, Number(c.req.query('limit') ?? 1000)));
+  const limit = intParam(c.req.query('limit'), 1000, 1, 5000);
 
   const rows = userIdParam
     ? await q<{ dimension: Dimension; score: number; ts: Date }>(
@@ -1855,7 +1855,7 @@ app.post('/onboard/repo/full', async (c) => {
 
 app.get('/onboard/jobs/:id', async (c) => {
   const id = c.req.param('id');
-  if (!id || !/^[0-9a-f-]{8,}$/i.test(id)) {
+  if (!id || !isUuid(id)) {
     return c.json({ error: 'bad_request', detail: 'invalid job id' }, 400);
   }
   const teamToken = c.get('team_token');
