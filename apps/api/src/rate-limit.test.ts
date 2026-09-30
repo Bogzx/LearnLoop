@@ -97,6 +97,39 @@ test('ipRateKey: IPv6 per /64, IPv4-mapped as IPv4, IPv4 unchanged', () => {
   assert.equal(ipRateKey('unknown'), 'unknown');
 });
 
+test('peek reports what take would do without spending', () => {
+  const c = clock();
+  const l = new TokenBucketLimiter(parseLimit('1/1m')!, c.now);
+  assert.equal(l.peek('k').ok, true);
+  assert.equal(l.peek('k').ok, true, 'peek did not spend');
+  assert.equal(l.take('k').ok, true);
+  const p = l.peek('k');
+  assert.equal(p.ok, false);
+  assert.equal(p.retryAfterSec, 60);
+  assert.equal(l.size, 1);
+  assert.equal(l.peek('other').ok, true);
+  assert.equal(l.size, 1, 'peek creates no bucket');
+});
+
+test('limiterFor parses each env value once: a malformed value warns once, not per request', () => {
+  resetRateLimiters();
+  const warnings: unknown[] = [];
+  const realWarn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a); };
+  try {
+    const env = { TRAILHEAD_RL_LLM_PER_IP: 'lots' };
+    const first = limiterFor('llm_per_ip', env);
+    for (let i = 0; i < 100; i++) assert.equal(limiterFor('llm_per_ip', env), first);
+    assert.equal(first!.spec.text, '120/1m');
+    assert.equal(warnings.length, 1);
+    assert.equal(limiterFor('llm_per_ip', { TRAILHEAD_RATE_LIMIT: 'off' }), null);
+    assert.equal(limiterFor('llm_per_ip', { TRAILHEAD_RL_LLM_PER_IP: 'off' }), null);
+  } finally {
+    console.warn = realWarn;
+    resetRateLimiters();
+  }
+});
+
 test('limitFromEnv: defaults, overrides, global off, malformed falls back to default', () => {
   assert.equal(limitFromEnv('register_per_ip', {})!.text, '10/1h');
   assert.equal(limitFromEnv('llm_per_team', {})!.text, '120/1m');
