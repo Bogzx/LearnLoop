@@ -13,7 +13,7 @@
     "dev": "tsx src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test bin/init.test.mjs bin/cli-smoke.test.mjs bin/team-setup.test.mjs src/token.test.mjs src/user-id.test.mjs && tsx --test src/bootstrap.test.ts",
+    "test": "node --test bin/init.test.mjs bin/cli-smoke.test.mjs bin/team-setup.test.mjs src/token.test.mjs src/user-id.test.mjs && tsx --test src/bootstrap.test.ts src/rate-limit-client.test.ts",
     "smoke": "tsx src/smoke-test.mjs",
     "verify": "tsx src/verify-all-tools.mjs",
     "try": "tsx src/harness/try.ts",

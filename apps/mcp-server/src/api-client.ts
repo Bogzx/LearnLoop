@@ -43,6 +43,18 @@ export type {
   WikiRecentResponse,
 };
 
+// The API answered 429. `retryAfterSec` comes from the Retry-After header.
+export class RateLimitedError extends Error {
+  constructor(
+    readonly path: string,
+    readonly retryAfterSec: number | null,
+    detail: string,
+  ) {
+    super(`trailhead-api ${path} rate limited${retryAfterSec !== null ? ` — retry in ${retryAfterSec}s` : ''}: ${detail}`);
+    this.name = 'RateLimitedError';
+  }
+}
+
 export interface ApiClientConfig {
   apiUrl: string;
   teamToken: string;
@@ -65,6 +77,11 @@ export class ApiClient {
     const init: RequestInit = { method, headers: this.headers() };
     if (body !== undefined) init.body = JSON.stringify(body);
     const res = await fetch(url, init);
+    if (res.status === 429) {
+      const retry = Number(res.headers.get('retry-after'));
+      const body = (await res.json().catch(() => null)) as { detail?: string } | null;
+      throw new RateLimitedError(path, Number.isFinite(retry) && retry > 0 ? retry : null, body?.detail ?? 'too many requests');
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`trailhead-api ${method} ${path} ${res.status}: ${text}`);

@@ -76,7 +76,7 @@
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test --experimental-strip-types src/paths.test.mts src/wiki-diff.test.mts test/bundle-load.test.mjs",
+    "test": "npm run build && node --test --experimental-strip-types src/paths.test.mts src/wiki-diff.test.mts src/api.test.mts test/bundle-load.test.mjs",
     "vscode:prepublish": "node esbuild.config.mjs --production"
   },
   "dependencies": {

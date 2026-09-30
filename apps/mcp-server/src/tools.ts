@@ -14,6 +14,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ApiClient, ContextResponse, ExamplesResponse, SearchResponse } from './api-client.ts';
+import { RateLimitedError } from './api-client.ts';
+import type { CoachResponse } from '@trailhead/shared';
 import { runBootstrap, runRichBootstrap } from './bootstrap.ts';
 import type { WikiJobStatusResponse } from '@trailhead/shared';
 import { fenceUntrusted, UNTRUSTED_NOTE, UNTRUSTED_TAG } from '@trailhead/scoring/fence';
@@ -368,10 +370,36 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
           content: [{ type: 'text' as const, text: logText }],
         };
       } catch (e) {
-        return asError(e);
+        // Fail open, like every other surface: an unreachable, erroring or
+        // rate-limited API must never block the user's real work. Same
+        // shape as the API's own degraded response (proceed + non-empty
+        // text), so the host relays why this turn wasn't coached.
+        return coachUnavailable(input.mode ?? 'score', e);
       }
     },
   );
+}
+
+export function coachUnavailable(mode: CoachResponse['mode'], e: unknown) {
+  const rateLimited = e instanceof RateLimitedError;
+  const why = rateLimited
+    ? `the Trailhead API is rate limiting this team or machine${e.retryAfterSec !== null ? ` (retry in ${e.retryAfterSec}s)` : ''}`
+    : `the Trailhead API call failed (${e instanceof Error ? e.message : String(e)})`;
+  const text =
+    `⚠️ Trailhead could not coach this prompt: ${why}. ` +
+    'Proceed with the original prompt as written.';
+  const zeros = { goal_clarity: 0, specificity: 0, context_loading: 0, constraint_articulation: 0, output_specification: 0 };
+  const res: CoachResponse = {
+    proceed: true,
+    mode,
+    overall: 0,
+    dimensions: zeros,
+    missing: {},
+    degraded: true,
+    error: rateLimited ? 'rate_limited' : 'api_unavailable',
+    text,
+  };
+  return { structuredContent: { ...res }, content: [{ type: 'text' as const, text }] };
 }
 
 // =============================================================================
