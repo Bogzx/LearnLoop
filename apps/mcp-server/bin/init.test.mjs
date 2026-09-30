@@ -47,6 +47,28 @@ const baseOpts = (home, cwd) => ({
   wireCopilot: false,
 });
 
+// teamFile (what the CLI passes since 2026-09-30) keeps the secret out of the
+// generated configs; the server reads it from the sentinel at runtime.
+test('teamFile writes TRAILHEAD_TEAM_FILE and no TRAILHEAD_TEAM_TOKEN into both configs', async () => {
+  const home = makeHome();
+  const cwd = makeCwd();
+  try {
+    const teamFile = join(cwd, '.trailhead-team');
+    const opts = { ...baseOpts(home, cwd), teamToken: undefined, teamFile, wireCopilot: true };
+    mkdirSync(join(cwd, '.vscode'), { recursive: true });
+    await applyInit(opts);
+    const claude = readJson(join(cwd, '.mcp.json')).mcpServers.trailhead.env;
+    const copilot = readJson(join(cwd, '.vscode', 'mcp.json')).servers.trailhead.env;
+    for (const env of [claude, copilot]) {
+      assert.equal(env.TRAILHEAD_TEAM_FILE, teamFile);
+      assert.equal('TRAILHEAD_TEAM_TOKEN' in env, false);
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Project-scoped .mcp.json (the new default)
 // ---------------------------------------------------------------------------

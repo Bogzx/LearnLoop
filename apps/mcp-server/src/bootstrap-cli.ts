@@ -36,7 +36,7 @@ import {
   runRichBootstrap,
 } from './bootstrap.ts';
 import type { WikiJobStatusResponse } from '@trailhead/shared';
-import { deriveRepoToken } from './token.mjs';
+import { maskSecret, resolveCliCredential } from './token.mjs';
 import { resolveApiUrl } from './api-url.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,8 +96,9 @@ Default (rich mode — Karpathy-style auto-generated wiki):
   wiki_save manually.
 
 In every mode: node_modules / .git / build output / hidden dirs / archive
-are skipped automatically. Token is auto-derived from cwd (git remote →
-./.trailhead-team) unless overridden. Confirmation prompt unless --yes.
+are skipped automatically. The team secret comes from TRAILHEAD_TEAM_TOKEN /
+TRAILHEAD_TEAM_FILE / ./.trailhead-team (written by \`init\`) unless
+--team-token is passed. Confirmation prompt unless --yes.
 `);
   process.exit(0);
 }
@@ -156,16 +157,30 @@ if (!looksLikeProjectRoot(cwd) && !explicitPaths) {
 }
 
 const explicitToken = flagValues.get('--team-token');
-const tokenInfo = explicitToken
+const found = explicitToken
   ? { token: explicitToken, source: 'flag' as const, remoteUrl: undefined as string | undefined }
-  : deriveRepoToken(cwd);
+  : resolveCliCredential(cwd);
+if (!found) {
+  console.error(
+    '✗ No team secret for this repo (checked --team-token, TRAILHEAD_TEAM_TOKEN, TRAILHEAD_TEAM_FILE, ./.trailhead-team).\n' +
+      '  Run `init` here first (node <LearnLoop>/apps/mcp-server/bin/cli.mjs init) to register or join a team.',
+  );
+  process.exit(1);
+}
+const tokenInfo = found;
+if (tokenInfo.source === 'legacy-remote') {
+  console.warn(
+    '! Using the LEGACY remote-derived token for this repo (deprecated: anyone who knows the git URL can compute it).\n' +
+      '  Run `init --upgrade-legacy` to switch this team to a secret.',
+  );
+}
 const apiUrl = resolveApiUrl(flagValues.get('--api-url'));
 
 const seed = seedFromFiles ? readSeedRules(cwd) : {};
 
 console.log(`Bootstrapping ${richMode ? 'RICH (LLM-populated) ' : ''}wiki for ${cwd}`);
 console.log(`API:    ${apiUrl}`);
-console.log(`Token:  ${tokenInfo.token}  (source: ${tokenInfo.source})`);
+console.log(`Secret: ${maskSecret(tokenInfo.token)}  (source: ${tokenInfo.source})`);
 console.log('');
 
 const client = new ApiClient({ apiUrl, teamToken: tokenInfo.token });

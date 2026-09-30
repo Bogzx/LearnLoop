@@ -1,17 +1,27 @@
-// Token derivation for the multi-tenant API. Keeps each repo's data isolated
-// without forcing the user to manage tokens manually.
+// Team credentials on the client side.
 //
-// Resolution order (deriveRepoToken):
-//   1. TRAILHEAD_TEAM_TOKEN env var       (caller already chose a token)
-//   2. .trailhead-team sentinel in cwd    (sticky, machine-local)
-//   3. `git remote get-url origin`        (deterministic per shared repo)
-//   4. random token + write sentinel      (machine-local, persisted, gitignored)
+// Since 2026-09-30 a team has two things (see apps/api/src/team-auth.ts):
 //
-// Derivation from the git remote URL means everyone on the same repo gets
-// the same team token without coordination. The sentinel fallback keeps
-// repos-without-remotes (scratch projects, pre-publication work) working
-// without polluting another team's data — at the cost that team members
-// can't share unless they share the token explicitly.
+//   - a public TEAM ID. For a repo it is `team_` + sha256 of the NORMALISED
+//     git remote URL, so every clone — https or ssh, with or without `.git` —
+//     proposes the same id (teamIdFromRemote).
+//   - a SECRET minted by the server when the team is registered
+//     (POST /teams). It lives in the gitignored ./.trailhead-team sentinel and
+//     is sent as X-Team-Token. It is never derived from anything.
+//
+// Legacy: before this, the credential WAS sha256(raw remote URL)
+// (tokenFromRemote). The API still accepts such tokens for teams that have
+// not been upgraded, behind TRAILHEAD_ACCEPT_LEGACY_TOKENS; `init` detects a
+// legacy team and offers `--upgrade-legacy`.
+//
+// Runtime credential lookup (readCredential), used by the MCP server and the
+// bootstrap/reset CLIs:
+//   1. TRAILHEAD_TEAM_TOKEN env var        (explicit; also what pre-2026-09-30
+//                                           generated MCP configs contain)
+//   2. TRAILHEAD_TEAM_FILE env var          (path to a sentinel; what `init`
+//                                           now writes into MCP configs, so the
+//                                           secret stays out of .mcp.json)
+//   3. ./.trailhead-team in cwd
 
 import { execSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -38,9 +48,9 @@ export function gitRemoteUrl(cwd) {
   }
 }
 
-// Stable token from a remote URL. SHA-256 → first 16 hex chars is enough to
-// avoid collisions at any sane team scale; `repo_` prefix keeps the value
-// recognizable in DB rows.
+// LEGACY credential derivation — sha256 of the raw remote URL. Kept so `init`
+// can find a pre-2026-09-30 team for this repo and offer to upgrade it; it is
+// no longer used as a credential for new teams.
 export function tokenFromRemote(remoteUrl) {
   const h = createHash('sha256').update(remoteUrl).digest('hex').slice(0, 16);
   return `repo_${h}`;
@@ -75,6 +85,84 @@ export function ensureGitignore(cwd, line) {
   return true;
 }
 
+// Collapse the ways one repo can be spelled into a single key:
+//   https://github.com/Org/Repo.git, git@github.com:org/repo,
+//   ssh://git@github.com:22/org/repo/, https://user:tok@GitHub.com/org/repo
+//   → github.com/org/repo
+// Scheme, userinfo, port, trailing slashes and `.git` are dropped and the
+// result is lowercased (GitHub/GitLab/Bitbucket paths are case-insensitive;
+// a host where they are not would merge repos differing only by case).
+// Anything unrecognised (a local path, file://) is kept, lowercased, minus a
+// trailing `.git` and slashes.
+export function normalizeRemoteUrl(remoteUrl) {
+  let s = String(remoteUrl).trim();
+  let hostPath = null;
+  const scheme = s.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
+  if (scheme && scheme[1].toLowerCase() !== 'file') {
+    let rest = scheme[2];
+    const slash = rest.indexOf('/');
+    let authority = slash === -1 ? rest : rest.slice(0, slash);
+    const path = slash === -1 ? '' : rest.slice(slash);
+    authority = authority.slice(authority.lastIndexOf('@') + 1); // userinfo
+    authority = authority.replace(/:\d*$/, ''); // port
+    // ssh://git@host:org/repo (scp path smuggled into a URL) — treat the
+    // non-numeric "port" as the start of the path.
+    const smuggled = authority.match(/^([^:]+):(.+)$/);
+    hostPath = smuggled ? `${smuggled[1]}/${smuggled[2]}${path}` : `${authority}${path}`;
+  } else if (!scheme) {
+    // scp-like: [user@]host:path  (but not a Windows drive like C:\repo)
+    const scp = s.match(/^(?:[^@/\s]+@)?([^:/\s]+):(?!\/\/)(.+)$/);
+    if (scp && scp[1].length > 1) hostPath = `${scp[1]}/${scp[2]}`;
+  }
+  let out = (hostPath ?? s.replace(/^file:\/\//i, '')).replace(/\\/g, '/');
+  out = out.replace(/\/+/g, '/').replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  return out.toLowerCase();
+}
+
+// Public team id for a repo. Not a secret — safe to print and share.
+export function teamIdFromRemote(remoteUrl) {
+  const h = createHash('sha256').update(normalizeRemoteUrl(remoteUrl)).digest('hex').slice(0, 16);
+  return `team_${h}`;
+}
+
+export function generateRandomTeamId() {
+  return `team_local_${randomBytes(8).toString('hex')}`;
+}
+
+// Show enough of a credential to tell two apart, never enough to use it.
+export function maskSecret(secret) {
+  const s = String(secret ?? '');
+  if (s.length <= 12) return `${s.slice(0, 4)}…`;
+  return `${s.slice(0, Math.min(16, s.length - 8))}…`;
+}
+
+// Runtime credential lookup — see the header comment for the order.
+// Returns { token, source, path? } or null.
+export function readCredential({ env = process.env, cwd = process.cwd() } = {}) {
+  if (env.TRAILHEAD_TEAM_TOKEN) return { token: env.TRAILHEAD_TEAM_TOKEN, source: 'env' };
+  if (env.TRAILHEAD_TEAM_FILE) {
+    const p = resolve(cwd, env.TRAILHEAD_TEAM_FILE);
+    if (existsSync(p)) {
+      const t = readFileSync(p, 'utf8').trim();
+      if (t) return { token: t, source: 'team-file', path: p };
+    }
+  }
+  const sentinel = readSentinel(cwd);
+  if (sentinel) return { token: sentinel, source: 'sentinel', path: join(cwd, SENTINEL_FILENAME) };
+  return null;
+}
+
+// Credential for the bootstrap/reset CLIs: readCredential, then — for
+// installs from before 2026-09-30 that never wrote a sentinel — the legacy
+// remote-derived token, flagged so the caller can print a deprecation note.
+export function resolveCliCredential(cwd, env = process.env) {
+  const found = readCredential({ env, cwd });
+  if (found) return found;
+  const remote = gitRemoteUrl(cwd);
+  if (remote) return { token: tokenFromRemote(remote), source: 'legacy-remote', remoteUrl: remote };
+  return null;
+}
+
 export function generateRandomToken() {
   return `repo_local_${randomBytes(8).toString('hex')}`;
 }
@@ -97,6 +185,8 @@ export function deriveRepoName(cwd, remoteUrl) {
   return basename(resolve(cwd));
 }
 
+// DEPRECATED (pre-2026-09-30 behaviour, kept for external callers): derive a
+// legacy credential. `init` now registers a team instead (bin/team-setup.mjs).
 // Returns: { token, source, remoteUrl? }
 //   source is 'env' | 'sentinel' | 'remote' | 'sentinel-new'
 //   remoteUrl is set only when source === 'remote'

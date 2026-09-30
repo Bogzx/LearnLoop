@@ -118,16 +118,24 @@ function applyDirectiveCompat(filePath, directiveText) {
   return result;
 }
 
+// Env block for the spawned MCP server. `teamFile` (what the CLI passes)
+// points the server at the gitignored ./.trailhead-team sentinel, so the team
+// secret never lands in .mcp.json / .vscode/mcp.json — files that are
+// routinely committed. `teamToken` embeds the credential directly and is kept
+// only for programmatic callers of applyInit.
+function buildServerEnv({ apiUrl, teamToken, teamFile }) {
+  return teamFile
+    ? { TRAILHEAD_API_URL: apiUrl, TRAILHEAD_TEAM_FILE: teamFile }
+    : { TRAILHEAD_API_URL: apiUrl, TRAILHEAD_TEAM_TOKEN: teamToken };
+}
+
 // MCP-server config entry shared between Claude Code (.mcp.json,
 // ~/.claude.json) and the project-scoped form.
-function buildClaudeServerEntry({ entryServer, apiUrl, teamToken }) {
+function buildClaudeServerEntry({ entryServer, apiUrl, teamToken, teamFile }) {
   return {
     command: 'npx',
     args: ['--yes', 'tsx', entryServer],
-    env: {
-      TRAILHEAD_API_URL: apiUrl,
-      TRAILHEAD_TEAM_TOKEN: teamToken,
-    },
+    env: buildServerEnv({ apiUrl, teamToken, teamFile }),
   };
 }
 
@@ -209,6 +217,7 @@ function wireClaudeCode({
   home,
   apiUrl,
   teamToken,
+  teamFile,
   serverEntry,
   autoCoach,
   cwd,
@@ -217,7 +226,7 @@ function wireClaudeCode({
   preservePaths,
 }) {
   const entryServer = preservePaths ? serverEntry : normalize(serverEntry);
-  const entry = buildClaudeServerEntry({ entryServer, apiUrl, teamToken });
+  const entry = buildClaudeServerEntry({ entryServer, apiUrl, teamToken, teamFile });
 
   // (1) Project-scoped .mcp.json — always.
   const projectMcpJsonPath = join(cwd, '.mcp.json');
@@ -270,6 +279,7 @@ function wireCopilot({
   cwd,
   apiUrl,
   teamToken,
+  teamFile,
   serverEntry,
   autoCoach,
   directiveText,
@@ -290,10 +300,7 @@ function wireCopilot({
     type: 'stdio',
     command: 'npx',
     args: ['--yes', 'tsx', entryServer],
-    env: {
-      TRAILHEAD_API_URL: apiUrl,
-      TRAILHEAD_TEAM_TOKEN: teamToken,
-    },
+    env: buildServerEnv({ apiUrl, teamToken, teamFile }),
   };
 
   const before = existingServers.trailhead;
@@ -328,7 +335,10 @@ function wireCopilot({
 // InitOptions:
 //   serverEntry       absolute path to apps/mcp-server/src/index.ts
 //   apiUrl            TRAILHEAD_API_URL value
-//   teamToken         TRAILHEAD_TEAM_TOKEN value
+//   teamFile          absolute path of the ./.trailhead-team sentinel —
+//                     written as TRAILHEAD_TEAM_FILE (preferred; keeps the
+//                     secret out of the generated configs)
+//   teamToken         TRAILHEAD_TEAM_TOKEN value (used only without teamFile)
 //   home?             override homedir() (test hook)
 //   cwd?              override process.cwd() (test hook)
 //   autoCoach?        default true
@@ -366,6 +376,7 @@ export async function applyInit(opts) {
       home,
       apiUrl: opts.apiUrl,
       teamToken: opts.teamToken,
+      teamFile: opts.teamFile,
       serverEntry: opts.serverEntry,
       autoCoach,
       cwd,
@@ -381,6 +392,7 @@ export async function applyInit(opts) {
       cwd,
       apiUrl: opts.apiUrl,
       teamToken: opts.teamToken,
+      teamFile: opts.teamFile,
       serverEntry: opts.serverEntry,
       autoCoach,
       directiveText,
@@ -468,7 +480,11 @@ export async function runInit(opts) {
     );
   } else {
     console.log('');
-    console.log(`Token: ${opts.teamToken}`);
+    if (opts.teamFile) {
+      console.log(`Team secret: read at runtime from ${opts.teamFile} (not written into the MCP configs)`);
+    } else {
+      console.log(`Token: ${opts.teamToken}`);
+    }
     console.log(
       'Coaching directive resource: trailhead://coaching-directive (auto-loaded by clients that support it).',
     );

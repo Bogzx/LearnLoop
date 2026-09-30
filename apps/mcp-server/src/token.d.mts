@@ -17,3 +17,17 @@ export interface DerivedToken {
 
 export function deriveRepoToken(cwd: string): DerivedToken;
 export function deriveRepoName(cwd: string, remoteUrl?: string | null): string;
+
+export function normalizeRemoteUrl(remoteUrl: string): string;
+export function teamIdFromRemote(remoteUrl: string): string;
+export function generateRandomTeamId(): string;
+export function maskSecret(secret: string): string;
+
+export interface Credential {
+  token: string;
+  source: 'env' | 'team-file' | 'sentinel' | 'legacy-remote';
+  path?: string;
+  remoteUrl?: string;
+}
+export function readCredential(opts?: { env?: Record<string, string | undefined>; cwd?: string }): Credential | null;
+export function resolveCliCredential(cwd: string, env?: Record<string, string | undefined>): Credential | null;
