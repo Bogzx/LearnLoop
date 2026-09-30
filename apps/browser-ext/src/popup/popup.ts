@@ -497,7 +497,7 @@ function renderContextTree(nodes: WikiTreeNode[], currentPath: string | null): v
     li.addEventListener('click', async () => {
       const stored = pathForStorage(node.path);
       await setStoredContextPath(stored);
-      cachedTree && renderContextTree(cachedTree, stored);
+      if (cachedTree) renderContextTree(cachedTree, stored);
       await refreshCurrentContextName();
       closeContextDropdown();
       showToast(`Context set: ${displayName(node.path)}`);

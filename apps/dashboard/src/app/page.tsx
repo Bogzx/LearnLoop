@@ -126,7 +126,7 @@ export default async function HomePage() {
                     href="/wiki"
                     className="inline-flex items-center rounded-md border border-border bg-background px-4 py-2 text-sm font-medium transition-colors hover:border-foreground/40 hover:bg-accent"
                   >
-                    Team's knowledge
+                    Team&apos;s knowledge
                   </Link>
                   <Link
                     href="/onboarding"

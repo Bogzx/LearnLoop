@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "license": "MIT",
   "private": true,
-  "description": "Trailhead — prompt-skill coach. PoliHack 2026-04-25. Spec: docs/superpowers/specs/2026-04-25-trailhead-design.md",
+  "description": "Trailhead \u2014 prompt-skill coach. PoliHack 2026-04-25. Spec: docs/superpowers/specs/2026-04-25-trailhead-design.md",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -13,9 +13,16 @@
     "start": "npm --workspace=apps/api run start",
     "typecheck": "npm --workspaces --if-present run typecheck",
     "test": "npm --workspaces --if-present run test",
-    "build": "npm --workspaces --if-present run build"
+    "build": "npm --workspaces --if-present run build",
+    "lint": "eslint ."
   },
   "engines": {
     "node": ">=22.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^16.5.0",
+    "typescript-eslint": "^8.71.0"
   }
 }

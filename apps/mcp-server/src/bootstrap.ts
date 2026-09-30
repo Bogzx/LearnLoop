@@ -506,7 +506,7 @@ export function buildRichBundle(opts: BuildRichBundleOptions = {}): RichBundle {
   for (const [folder, list] of grouped) {
     const sized = list.map((rel) => {
       let absSize = 0;
-      try { absSize = statSync(join(cwd, rel)).size; } catch {}
+      try { absSize = statSync(join(cwd, rel)).size; } catch { /* vanished or unreadable: size stays 0 */ }
       return { rel, absSize };
     });
     const picked = pickFolderSample(sized, caps.maxFilesPerFolder);

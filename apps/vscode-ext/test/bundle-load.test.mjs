@@ -68,7 +68,7 @@ function makeVscodeStub() {
 }
 
 test('bundle loads, activate registers all subscriptions', () => {
-  const { vscode, calls, restore } = makeVscodeStub();
+  const { calls, restore } = makeVscodeStub();
   let mod;
   try {
     delete require.cache[require.resolve(bundlePath)];

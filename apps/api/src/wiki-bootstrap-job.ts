@@ -24,7 +24,6 @@ import { normalize as normalizeBody } from '@trailhead/scoring';
 import type {
   OnboardRepoFullFile,
   OnboardRepoFullRequest,
-  WikiJobPathKind,
 } from '@trailhead/shared';
 import { q, upsertNode } from './db.ts';
 

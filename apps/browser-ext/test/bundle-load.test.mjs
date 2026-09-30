@@ -59,7 +59,7 @@ test('content.js bundle loads in a minimal DOM-like sandbox', async () => {
   const calls = { warn: [], info: [] };
   const win = {
     addEventListener: noop,
-    setTimeout: (fn, _ms) => 0,
+    setTimeout: (_fn, _ms) => 0,
     clearTimeout: noop,
     setInterval: () => 0,
     clearInterval: noop,

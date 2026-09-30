@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Fragment, useMemo, useState, type CSSProperties } from 'react';
 import useSWR from 'swr';
 import type {
   WikiTreeNode,
@@ -182,10 +182,6 @@ function Tree2D({
   const layout = useMemo(() => layoutTree2D(tree, ''), [tree]);
   const { positions, width, height } = layout;
   const [hovered, setHovered] = useState<string | null>(null);
-  const [animTick, setAnimTick] = useState(0);
-  useEffect(() => {
-    setAnimTick((t) => t + 1);
-  }, [selected]);
 
   const edges: Array<{
     from: string;
@@ -314,7 +310,7 @@ function Tree2D({
             };
 
             return (
-              <g key={`up-${animTick}-${child}->${parent}`}>
+              <g key={`up-${selected ?? ''}-${child}->${parent}`}>
                 <path
                   d={d}
                   fill="none"

@@ -53,6 +53,51 @@ jobs:
       - name: build dashboard
         run: npm --workspace=apps/dashboard run build
 
+  lint:
+    name: eslint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: install
+        run: npm ci
+      # Flat config at the repo root (eslint.config.mjs): typescript-eslint
+      # everywhere, eslint-config-next for apps/dashboard.
+      - name: lint
+        run: npm run lint
+
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Reads package-lock.json against the advisory DB; no install needed.
+      # Fails on any high/critical advisory in the full tree (dev included:
+      # the extensions ship what their build tools produce).
+      - name: audit
+        run: npm audit --audit-level=high
+
+  docker:
+    name: docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # The self-hosting quick start is `docker compose up`; make sure the
+      # compose file still parses and the API image still builds from it.
+      - name: compose config
+        run: GEMINI_API_KEY=ci-placeholder docker compose config --quiet
+      - name: build api image
+        run: docker build -f apps/api/Dockerfile -t trailhead-api:ci .
+
   integration:
     name: api integration tests (Postgres)
     runs-on: ubuntu-latest

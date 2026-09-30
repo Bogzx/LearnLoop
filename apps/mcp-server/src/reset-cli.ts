@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 for (const candidate of ['../../../.env', '../../.env', '.env']) {
   const p = resolve(__dirname, candidate);
   if (existsSync(p)) {
-    try { process.loadEnvFile(p); } catch {}
+    try { process.loadEnvFile(p); } catch { /* unreadable .env: carry on with process env */ }
     break;
   }
 }
