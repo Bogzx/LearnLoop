@@ -224,6 +224,36 @@ The defaults are safe for a local setup because both ports are bound to
   repo). The demo team is protected from `DELETE /team/data` and from secret
   rotation, but not from writes.
 
+**Rate limits.** The API limits the calls that cost you something, with
+in-process token buckets (a limit of `N/W` allows a burst of N and refills at N
+per W). Over the limit it answers `429` with `Retry-After`. The clients treat
+that like any other API failure: coaching fails open and the prompt is sent
+uncoached, and the MCP `coach` tool, the extension console and VS Code say why.
+
+| Variable | Default | Limits |
+|---|---|---|
+| `TRAILHEAD_RL_REGISTER_PER_IP` | `10/1h` | `POST /teams` (registration) per client IP |
+| `TRAILHEAD_RL_LLM_PER_TEAM` | `120/1m` | Gemini-backed routes (`/score`, `/coach`, `/improve`, `/diff`, `/onboard/repo/full`) per team |
+| `TRAILHEAD_RL_LLM_PER_IP` | `120/1m` | the same routes per client IP, across teams |
+| `TRAILHEAD_RL_BOOTSTRAP_PER_TEAM` | `6/1h` | `/onboard/repo/full` per team (each run fans out into many Gemini calls) |
+
+Any of them can be `off`; `TRAILHEAD_RATE_LIMIT=off` disables all. Values use
+`s`, `m` or `h` (`30/1m`, `5/10m`). Two caveats:
+
+- **Single process.** Buckets live in the API process's memory. Several
+  replicas each enforce their own limit (so the effective limit is N×), and a
+  restart resets them. For a multi-replica deploy, put limits in your reverse
+  proxy or move the buckets to a shared store such as Redis.
+- **Client IP.** The per-IP key is the TCP peer address. Behind a reverse
+  proxy that would be the proxy itself, so set `TRAILHEAD_TRUST_PROXY=true` to
+  use the first `X-Forwarded-For` entry instead — only when a proxy you
+  control sets that header, or clients could choose their own key. Under the
+  default Docker setup every local client shares one address, which is fine
+  for a single machine.
+
+Request bodies are capped at 2 MB (24 MB for `/onboard/repo/full`) and
+rejected with `413` before they are read into memory.
+
 **Team-authored text is treated as untrusted.** Wiki rules, learnings and
 library prompts are written by anyone holding the team secret, and they are
 fed to LLMs: Gemini's system instructions (scoring, teaching, `/improve`), the

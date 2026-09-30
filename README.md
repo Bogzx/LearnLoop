@@ -352,6 +352,9 @@ Single root `.env.example` — every surface reads from the same set.
 | `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | api | Default `true`. Accept pre-2026-09-30 remote-derived tokens for teams without a secret (deprecated) |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | api | Default `false`. Legacy only: unknown tokens create legacy teams |
 | `TRAILHEAD_SCORE_TEMPERATURE` / `TRAILHEAD_SCORE_THINKING_BUDGET` | api | Scorer sampling (defaults `0.2` / `-1` = dynamic). Measure before changing: `apps/api/eval/` |
+| `TRAILHEAD_RL_REGISTER_PER_IP` / `TRAILHEAD_RL_LLM_PER_TEAM` / `TRAILHEAD_RL_LLM_PER_IP` / `TRAILHEAD_RL_BOOTSTRAP_PER_TEAM` | api | Rate limits as `N/W` (defaults `10/1h`, `120/1m`, `120/1m`, `6/1h`), or `off`. In-process, so per replica — see SELFHOSTING.md |
+| `TRAILHEAD_RATE_LIMIT` | api | `off` disables every rate limit |
+| `TRAILHEAD_TRUST_PROXY` | api | `true` behind your own reverse proxy: per-IP limits key on `X-Forwarded-For` |
 | `TRAILHEAD_EXPOSE_ERRORS` | api | `true` to include the raw error message in 500 responses (local debugging). Default: only a `request_id` that matches the server log |
 | `TRAILHEAD_PROMOTION_MODE` | api | `auto` (default): gated auto-promotion into the library. `review`: promoted prompts wait for a teammate's approval |
 | `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
