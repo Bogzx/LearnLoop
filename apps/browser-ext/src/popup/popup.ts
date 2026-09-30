@@ -263,17 +263,27 @@ async function resolveTeam(token: string): Promise<{ name: string; legacy: boole
 const LEGACY_HINT =
   'Legacy team token — anyone who knows the repo URL can compute it. Ask your team to run `init --upgrade-legacy` and use the new secret.';
 
+const DEMO_HINT =
+  'Public demo team — prompts you score here are visible to anyone with the demo secret (it is published in the repo). Enter your team secret to switch.';
+
+// Label + tooltip for the team row. Never paints (part of) a secret; flags the
+// two cases where the credential isn't really private: the public demo team,
+// which unconfigured installs fall back to, and legacy remote-derived tokens.
+function paintTeam(name: string, { demo, legacy }: { demo: boolean; legacy: boolean }): void {
+  currentTeamNameEl.textContent = demo ? `${name} (public demo)` : legacy ? `${name} (legacy)` : name;
+  currentTeamNameEl.title = demo ? DEMO_HINT : legacy ? LEGACY_HINT : '';
+}
+
 async function refreshCurrentTeamName(): Promise<void> {
   const token = await getStoredToken();
+  const demo = token === DEFAULT_TEAM_TOKEN;
   const cached = await getStoredTeamName();
-  currentTeamNameEl.textContent =
-    cached ?? (token === DEFAULT_TEAM_TOKEN ? 'Acme (default)' : token.slice(0, 16) + '…');
+  paintTeam(cached ?? (demo ? 'Acme' : 'Checking…'), { demo, legacy: false });
 
   const team = await resolveTeam(token);
   if (team) {
     await setStoredTeamName(team.name);
-    currentTeamNameEl.textContent = team.legacy ? `${team.name} (legacy)` : team.name;
-    currentTeamNameEl.title = team.legacy ? LEGACY_HINT : '';
+    paintTeam(team.name, { demo, legacy: team.legacy });
   }
 }
 
