@@ -5,15 +5,8 @@
 
 import Link from 'next/link';
 import { TeamMetricsGrid } from '@/components/team-metrics-grid';
-import { DEFAULT_TEAM_TOKEN } from '@/lib/api';
 
-export default function TeamPage({
-  searchParams,
-}: {
-  searchParams: { team?: string };
-}) {
-  const token = searchParams.team ?? DEFAULT_TEAM_TOKEN;
-
+export default function TeamPage() {
   return (
     <section className="space-y-6">
       <Link
@@ -28,12 +21,9 @@ export default function TeamPage({
           Behavioral metrics — average prompt quality, team reuse rate,
           durable learnings. All KPIs are people-side, not engineering-side.
         </p>
-        <p className="mt-1 font-mono text-[11px] text-muted-foreground/70">
-          token: {token}
-        </p>
       </header>
 
-      <TeamMetricsGrid token={token} />
+      <TeamMetricsGrid />
     </section>
   );
 }

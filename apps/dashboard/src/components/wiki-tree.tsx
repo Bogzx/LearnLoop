@@ -708,10 +708,10 @@ function DetailPanel({
   );
 }
 
-export function WikiTree({ token }: { token: string }) {
+export function WikiTree() {
   const { data, error, isLoading } = useSWR<WikiTreeResponse>(
-    ['wiki-tree', token],
-    () => api.wikiTree(token),
+    ['wiki-tree'],
+    () => api.wikiTree(),
     { refreshInterval: 30_000, revalidateOnFocus: true },
   );
   const [selected, setSelected] = useState<string | null>(null);

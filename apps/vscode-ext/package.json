@@ -2,7 +2,8 @@
   "name": "trailhead-vscode",
   "displayName": "Trailhead",
   "description": "Prompt-skill coach in your sidebar — score-card, team-anchored examples, autonomous wiki updates.",
-  "version": "0.0.1",
+  "version": "0.0.1",
+
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/Bogzx/LearnLoop.git", "directory": "apps/vscode-ext" },
   "private": true,
@@ -49,7 +50,7 @@
         "trailhead.teamToken": {
           "type": "string",
           "default": "trailhead_demo_acme_2026",
-          "description": "Team token sent in the X-Team-Token header."
+          "description": "Your team secret (trailhead_sk_…), sent as X-Team-Token. It is the team's credential: set it in User settings, not a committed .vscode/settings.json. The MCP CLI's `init` saves it in the repo's gitignored .trailhead-team file. The default is the public demo team."
         },
         "trailhead.userId": {
           "type": "string",

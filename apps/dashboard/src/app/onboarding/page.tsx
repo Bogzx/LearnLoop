@@ -4,15 +4,8 @@
 
 import Link from 'next/link';
 import { OnboardingView } from '@/components/onboarding-view';
-import { DEFAULT_TEAM_TOKEN } from '@/lib/api';
 
-export default function OnboardingPage({
-  searchParams,
-}: {
-  searchParams: { team?: string };
-}) {
-  const token = searchParams.team ?? DEFAULT_TEAM_TOKEN;
-
+export default function OnboardingPage() {
   return (
     <section className="space-y-6">
       <Link
@@ -27,12 +20,9 @@ export default function OnboardingPage({
           New to the team? Start here. The prompts the team reuses most and the
           patterns that have stuck — distilled from real usage, no docs to read.
         </p>
-        <p className="mt-1 font-mono text-[11px] text-muted-foreground/70">
-          token: {token}
-        </p>
       </header>
 
-      <OnboardingView token={token} />
+      <OnboardingView />
     </section>
   );
 }
