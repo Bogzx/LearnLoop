@@ -175,6 +175,18 @@ async function eventually(check: () => Promise<boolean>, what: string, ms = 3000
   assert.fail(`timed out waiting for: ${what}`);
 }
 
+// Rich-bootstrap jobs run in the background (setImmediate). Wait until no
+// job path is still pending/running, so the pool isn't closed under them.
+async function waitForBackgroundJobs(ms = 15_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const busy = await count(`SELECT count(*) n FROM wiki_job_paths WHERE status IN ('pending', 'running')`);
+    if (busy === 0) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  await new Promise((r) => setTimeout(r, 200)); // promotion work is not tracked in a table
+}
+
 // Registered in `before`.
 const A = { id: 'team_it_alpha', secret: '' };
 const B = { id: 'team_it_bravo', secret: '' };
@@ -202,10 +214,11 @@ before(async () => {
 
 after(async () => {
   if (skip) return;
-  globalThis.fetch = realFetch;
-  // Let fire-and-forget work (prompt promotion, bootstrap jobs) settle before
-  // the pool closes under it.
-  await new Promise((r) => setTimeout(r, 300));
+  // The Gemini stub stays installed until the process exits: fire-and-forget
+  // work (prompt promotion, rich-bootstrap jobs fanning out per file) can
+  // outlive the last test, and restoring the real fetch here once let a
+  // background job send real requests to Google with the fake test key.
+  await waitForBackgroundJobs();
   await closePool?.();
   await db?.end();
 });
