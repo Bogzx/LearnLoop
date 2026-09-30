@@ -6,7 +6,7 @@
 //   - capture/diff/wikiRecent route to the right paths
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { capture, diff, score, wikiRecent } from './api.ts';
+import { capture, diff, noteRateLimit, score, wikiRecent } from './api.ts';
 import { TEAM_TOKEN } from './config.ts';
 
 interface FetchCall {
@@ -140,5 +140,26 @@ test('network error returns null instead of throwing', async () => {
     assert.equal(res, null);
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+test('429 → null (fail open), with one rate-limit warning per minute', async () => {
+  const stub = withFetchStub(() => new Response('{}', { status: 429, headers: { 'Retry-After': '30' } }));
+  const warnings: unknown[][] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    assert.equal(await score({ prompt: 'x', user_id: 'u' }), null);
+    const limited = warnings.filter((w) => String(w[0]).includes('rate limiting'));
+    assert.equal(limited.length, 1);
+    assert.match(String(limited[0]![0]), /retry in 30s/);
+    // Throttled: another 429 within the minute logs nothing new.
+    const res = new Response('{}', { status: 429 });
+    assert.equal(noteRateLimit(res, Date.now() + 1_000), true);
+    assert.equal(warnings.filter((w) => String(w[0]).includes('rate limiting')).length, 1);
+    assert.equal(noteRateLimit(new Response('{}', { status: 200 })), false);
+  } finally {
+    console.warn = realWarn;
+    stub.restore();
   }
 });

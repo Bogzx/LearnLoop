@@ -71,6 +71,23 @@ function noteDeprecation(res: Response): void {
   );
 }
 
+// 429 = the team's server is rate limiting this team or IP. The request
+// fails open like any other error; say why in the console, at most once a
+// minute so a busy tab doesn't flood it.
+let lastRateLimitLog = 0;
+export function noteRateLimit(res: Response, now = Date.now()): boolean {
+  if (res.status !== 429) return false;
+  if (now - lastRateLimitLog >= 60_000) {
+    lastRateLimitLog = now;
+    const retry = res.headers.get('Retry-After');
+    console.warn(
+      `${TRAILHEAD_ERROR_TAG} the Trailhead API is rate limiting this team or network` +
+        `${retry ? ` (retry in ${retry}s)` : ''} — prompts are sent uncoached until then.`,
+    );
+  }
+  return true;
+}
+
 function headers(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
@@ -93,6 +110,7 @@ async function call<T>(
       signal: ac.signal,
     });
     noteDeprecation(res);
+    noteRateLimit(res);
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch (err) {
@@ -145,6 +163,7 @@ export async function coach(body: CoachRequest): Promise<CoachResponse | null> {
       body: JSON.stringify(enriched),
       signal: ac.signal,
     });
+    noteRateLimit(res);
     if (!res.ok) return null;
     return (await res.json()) as CoachResponse;
   } catch (err) {
@@ -170,6 +189,7 @@ export async function improve(body: ImproveRequest): Promise<ImproveResponse | n
       body: JSON.stringify(enriched),
       signal: ac.signal,
     });
+    noteRateLimit(res);
     if (!res.ok) return null;
     return (await res.json()) as ImproveResponse;
   } catch (err) {
