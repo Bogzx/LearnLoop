@@ -65,7 +65,7 @@ Endpoints implemented in `apps/api/src/index.ts`:
 | `GET  /` | Health + endpoint catalog (unauth) |
 | `GET  /teams` | Resolves the caller's own team (authenticated). Never returns tokens — `{ name, id }` where `id` is an opaque digest |
 | `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
-| `POST /coach` | Stateless 3-round teach→reveal coaching loop |
+| `POST /coach` | Stateless teach→reveal coaching loop, capped at 5 rounds |
 | `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
 | `POST /wiki/propose` | Normalize + dedup an insight on `(node_id, body_normalized)`, increment `reinforcement_count`, promote `draft → durable` at ≥ 3 |
 | `GET  /context?path=` | Ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
@@ -278,6 +278,11 @@ npm run dev
 
 The API refuses to boot without `DATABASE_URL` and `GEMINI_API_KEY`.
 
+Before exposing the API beyond `localhost`, read
+[SELFHOSTING.md → Security model](SELFHOSTING.md#security-model): the team token
+is the only credential, and the token `init` derives from a git remote can be
+computed by anyone who knows the remote URL.
+
 ### Run individual surfaces
 
 ```bash
@@ -322,7 +327,7 @@ Single root `.env.example` — every surface reads from the same set.
 | `LANGFUSE_PUBLIC_KEY` | api | Optional. Hosted Langfuse public key (`pk-lf-…`) |
 | `LANGFUSE_SECRET_KEY` | api | Optional. Hosted Langfuse secret key (`sk-lf-…`) |
 | `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
-| `TEAM_TOKEN` | clients | Demo single-tenant secret, sent as `X-Team-Token` |
+| `TEAM_TOKEN` | — | Documentation only: the public demo team's token. The API does not read it; clients hardcode the same value as their fallback |
 | `PORT` | api | Defaults to 3000; Railway injects automatically |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | api | `false` to disable on-the-fly team creation |
 | `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
@@ -361,7 +366,7 @@ Single root `.env.example` — every surface reads from the same set.
    user prompts.
 3. In Claude Code or Copilot Chat, the MCP server's `coach` tool is called
    first. Server returns `proceed: false` plus a teach-block when the score
-   is low; the host LLM relays the block, gathers a reply, calls back. Three
+   is low; the host LLM relays the block, gathers a reply, calls back. Five
    rounds max, then a reveal block shows the score arc and prompt diff.
 4. When the user states a teamwide convention, `wiki_save` calls
    `POST /wiki/propose`. Server-side normalize + dedup means repeated calls
