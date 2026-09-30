@@ -103,7 +103,10 @@ change takes effect immediately on any open Claude.ai tab, no reload needed.
 
 The manifest ships permission for `localhost` and `127.0.0.1`. Pointing the
 extension at any other host triggers a one-time Chrome permission prompt when
-you save.
+you save; until it is granted, requests are refused with a console message
+saying so. API calls are made by the extension's background service worker,
+not by the Claude.ai page, so Chrome's Local Network Access protection
+(which blocks public sites from calling `localhost`) doesn't get in the way.
 
 ### VS Code extension
 

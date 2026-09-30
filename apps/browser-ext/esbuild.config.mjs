@@ -1,5 +1,6 @@
 // Bundles src/content.ts → dist/content.js (the content script Chrome
-// loads on claude.ai pages) and src/popup/popup.ts → dist/popup.js (the
+// loads on claude.ai pages), src/background.ts → dist/background.js (the MV3
+// service worker that makes every API request) and src/popup/popup.ts → dist/popup.js (the
 // browser-action popup logic). Also copies manifest.json and popup.html
 // straight into dist/ so `dist/` is the directory you load unpacked.
 import * as esbuild from 'esbuild';
@@ -34,6 +35,13 @@ const contentConfig = {
   outfile: resolve(distDir, 'content.js'),
 };
 
+// MV3 service worker: performs every API request (see src/worker-core.ts).
+const backgroundConfig = {
+  ...baseConfig,
+  entryPoints: [resolve(__dirname, 'src/background.ts')],
+  outfile: resolve(distDir, 'background.js'),
+};
+
 const popupConfig = {
   ...baseConfig,
   entryPoints: [resolve(__dirname, 'src/popup/popup.ts')],
@@ -66,8 +74,10 @@ if (watch) {
     ],
   });
   const ctxPopup = await esbuild.context(popupConfig);
+  const ctxBackground = await esbuild.context(backgroundConfig);
   await ctxContent.watch();
   await ctxPopup.watch();
+  await ctxBackground.watch();
 } else {
-  await Promise.all([esbuild.build(contentConfig), esbuild.build(popupConfig)]);
+  await Promise.all([esbuild.build(contentConfig), esbuild.build(popupConfig), esbuild.build(backgroundConfig)]);
 }
