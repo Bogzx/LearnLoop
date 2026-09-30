@@ -69,7 +69,7 @@ import {
   wipeTeamData,
 } from './db.ts';
 import { isValidTeamId, randomTeamId, safeEqual } from './team-auth.ts';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { degradedCoachResponse, isUnparseableScore } from './coach-degraded.ts';
 import { intParam, isUuid } from './request-params.ts';
 import { loadWikiTree } from './wiki-tree.ts';
@@ -129,7 +129,7 @@ app.use(
   cors({
     origin: '*',
     allowHeaders: ['Content-Type', 'X-Team-Token', 'X-Admin-Token'],
-    exposeHeaders: ['Deprecation', 'X-Trailhead-Warning'],
+    exposeHeaders: ['Deprecation', 'X-Trailhead-Warning', 'X-Request-Id'],
     allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   }),
 );
@@ -2127,9 +2127,23 @@ app.get('/onboard/jobs/:id', async (c) => {
 });
 
 // Surface unhandled errors as 500 with a one-line shape clients can show.
+// Unhandled errors → 500 with a short request id that also appears in the
+// server log, so a report can be matched to its stack trace. The error
+// message itself is NOT returned by default: it can carry Postgres internals
+// or a whole upstream Gemini error body. Set TRAILHEAD_EXPOSE_ERRORS=true
+// (local debugging) to include it as `detail` again.
 app.onError((err, c) => {
-  console.error('[trailhead-api]', err);
-  return c.json({ error: 'internal_error', detail: String((err as { message?: string }).message ?? err) }, 500);
+  const requestId = randomUUID().slice(0, 8);
+  console.error(`[trailhead-api] ${requestId} ${c.req.method} ${c.req.path}`, err);
+  c.header('X-Request-Id', requestId);
+  const body: { error: string; request_id: string; detail?: string } = {
+    error: 'internal_error',
+    request_id: requestId,
+  };
+  if (process.env.TRAILHEAD_EXPOSE_ERRORS === 'true') {
+    body.detail = String((err as { message?: string }).message ?? err);
+  }
+  return c.json(body, 500);
 });
 
 // Lightweight startup migration. The full schema is applied via

@@ -371,8 +371,16 @@ test('/score writes nothing when Gemini fails (500)', { skip }, async () => {
   try {
     const r = await call('POST', '/score', { token: A.secret, body: { prompt: 'upstream failure case', user_id: 'alice' } });
     assert.equal(r.status, 500);
+    // A request id to match the server log — and no upstream error body.
+    assert.match(r.json.request_id, /^[0-9a-f]{8}$/);
+    assert.equal(r.headers.get('x-request-id'), r.json.request_id);
+    assert.ok(!r.text.includes('stubbed upstream failure'));
+    process.env.TRAILHEAD_EXPOSE_ERRORS = 'true';
+    const verbose = await call('POST', '/score', { token: A.secret, body: { prompt: 'upstream failure case 2', user_id: 'alice' } });
+    assert.match(verbose.json.detail, /stubbed upstream failure/);
   } finally {
     geminiMode = 'ok';
+    delete process.env.TRAILHEAD_EXPOSE_ERRORS;
   }
   assert.equal(await obsFor(A.id), before);
 });
