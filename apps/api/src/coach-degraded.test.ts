@@ -18,7 +18,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DIMENSIONS } from '@trailhead/shared';
 import type { DimensionScores } from '@trailhead/shared';
-import { degradedCoachResponse, degradeDetail } from './coach-degraded.ts';
+import { degradedCoachResponse, degradeDetail, isUnparseableScore } from './coach-degraded.ts';
 
 const ZEROS = Object.fromEntries(DIMENSIONS.map((d) => [d, 0])) as DimensionScores;
 
@@ -77,4 +77,19 @@ test('mode is preserved so the caller can still branch on it', () => {
   for (const mode of ['score', 'skip_reveal', 'augment'] as const) {
     assert.equal(degradedCoachResponse(mode, ZEROS, 'score_failed').mode, mode);
   }
+});
+
+// isUnparseableScore gates persistence in /score and /coach. A false positive
+// drops a real score; a false negative writes five fake 0/10 observations.
+test('isUnparseableScore flags the all-zero + no-hints parse-failure fingerprint', () => {
+  assert.equal(isUnparseableScore(ZEROS, {}), true);
+});
+
+test('isUnparseableScore does not flag a genuine all-zero score (it carries hints)', () => {
+  assert.equal(isUnparseableScore(ZEROS, { goal_clarity: 'no outcome stated' }), false);
+});
+
+test('isUnparseableScore does not flag any non-zero score, hints or not', () => {
+  const dims = { ...ZEROS, specificity: 3 };
+  assert.equal(isUnparseableScore(dims, {}), false);
 });

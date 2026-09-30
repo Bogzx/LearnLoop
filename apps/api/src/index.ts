@@ -58,7 +58,7 @@ import {
 } from '@trailhead/scoring';
 import { applyTeamNameIfPlaceholder, DEMO_TEAM_TOKEN, q, ensureTeam, upsertNode, wipeTeamData } from './db.ts';
 import { createHash } from 'node:crypto';
-import { degradedCoachResponse } from './coach-degraded.ts';
+import { degradedCoachResponse, isUnparseableScore } from './coach-degraded.ts';
 import { loadWikiTree } from './wiki-tree.ts';
 import { exportFilename, renderWikiMarkdown } from './wiki-export.ts';
 import {
@@ -255,6 +255,13 @@ app.post('/score', async (c) => {
     file_path: body.file_path,
     team_context: teamContext ?? undefined,
   });
+  // Parse failure comes back as all-zero + no hints rather than a throw (see
+  // isUnparseableScore). Report it as an upstream failure and write nothing:
+  // persisting it would record five fake 0/10 observations for this user.
+  if (isUnparseableScore(result.dimensions, result.missing)) {
+    console.error('[api] /score scorePrompt returned unparseable output (zero+empty fingerprint)');
+    return c.json({ error: 'score_unparseable' }, 502);
+  }
   const overall = overallScore(result.dimensions);
 
   await writeSkillObservations(
@@ -505,9 +512,7 @@ app.post('/coach', async (c) => {
   // hints for the dims < 5. When we detect the zero+empty fingerprint,
   // treat it as "Gemini failed, no coaching this turn" rather than
   // pretending the user wrote a perfectly empty prompt. Spec §7.
-  const allZero = DIMENSIONS.every((d) => scoreResult.dimensions[d] === 0);
-  const noMissing = Object.keys(scoreResult.missing).length === 0;
-  if (allZero && noMissing) {
+  if (isUnparseableScore(scoreResult.dimensions, scoreResult.missing)) {
     console.error('[api] /coach scorePrompt returned unparseable output (zero+empty fingerprint)');
     return c.json(
       degradedCoachResponse(mode, scoreResult.dimensions, 'score_unparseable'),
