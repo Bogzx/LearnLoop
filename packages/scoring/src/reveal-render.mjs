@@ -10,7 +10,19 @@
 // natively. Claude Code TUI also renders the markdown subset.
 
 import { DIMENSION_TEACH } from './teach-templates.mjs';
-import { codeFence } from './fence.mjs';
+import { codeFence, fenceUntrusted, UNTRUSTED_NOTE } from './fence.mjs';
+
+// A strong example / rewrite shown in coach output. Usually it is a
+// teammate's prompt from the team library (fromTeam), relayed verbatim into
+// Claude Code / Copilot context by the MCP coach tool — team-authored text,
+// so it gets the same treatment as wiki content elsewhere: the untrusted-data
+// rule, then the example fenced as <team_content> around a code block it
+// can't escape. A Gemini-written rewrite (the fallback) is ours and is only
+// code-fenced.
+function renderExample(text, fromTeam) {
+  const block = codeFence(text);
+  return fromTeam ? `${UNTRUSTED_NOTE}\n${fenceUntrusted(block, 'team_prompt')}` : block;
+}
 
 const DIMS = [
   'goal_clarity',
@@ -123,6 +135,7 @@ export function renderTeachBlock({
   tip,
   dimensions,
   overall,
+  strongExampleFromTeam = false,
 }) {
   const tpl = DIMENSION_TEACH[targetDim];
   if (!tpl) {
@@ -164,11 +177,11 @@ export function renderTeachBlock({
   lines.push(tpl.why);
   if (strongExample && strongExample.trim()) {
     lines.push('');
-    lines.push('**Strong example:**');
-    // codeFence, not a literal ```: the example may be a teammate's prompt
-    // from the library, and one containing ``` would otherwise close the
-    // block and have the rest of it rendered (and read) as instructions.
-    lines.push(codeFence(strongExample.trim()));
+    lines.push(strongExampleFromTeam ? "**Strong example** (from your team's library):" : '**Strong example:**');
+    // codeFence, not a literal ```: an example containing ``` would otherwise
+    // close the block and have the rest of it rendered (and read) as
+    // instructions. A library example is also fenced as team content.
+    lines.push(renderExample(strongExample.trim(), strongExampleFromTeam));
     if (tip && tip.trim()) {
       lines.push(`_Why it works: ${tip.trim()}_`);
     }
@@ -239,6 +252,7 @@ export function renderSkipReveal({
   noProgressDim,
   summary,
   overall,
+  strongRewriteFromTeam = false,
 }) {
   const wouldHaveImproved = DIMS.filter((d) => (originalDimensions?.[d] ?? 0) < 5);
   const calloutLine = wouldHaveImproved.length
@@ -268,7 +282,7 @@ export function renderSkipReveal({
     lines.push('');
   }
   lines.push(prefix);
-  lines.push(codeFence(inlinePrompt(strongRewrite ?? '')));
+  lines.push(renderExample(inlinePrompt(strongRewrite ?? ''), strongRewriteFromTeam));
   if (calloutLine) lines.push(calloutLine);
   // Same fail-open pattern as renderSuccessReveal — Gemini-written takeaway
   // appended after the templated arc, omitted on helper failure.

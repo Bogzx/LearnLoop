@@ -558,6 +558,18 @@ test('/coach: promotion lands in the caller\'s library only; /prompts/proven, /e
   const bCoach = await call('POST', '/coach', { token: B.secret, body: { prompt: 'fix it', user_id: 'bob', file_path: 'src/pay/ledger.ts' } });
   assert.equal(bCoach.json.proceed, false);
   assert.ok(!bCoach.text.includes('idempotency keys'));
+  assert.ok(!bCoach.json.text.includes('<team_content'), 'a Gemini rewrite is not fenced as team content');
+
+  // A teammate's weak prompt in A is coached with A's library prompt, which is
+  // team-authored: the untrusted note comes first, then the example fenced.
+  const aWeak = await call('POST', '/coach', { token: A.secret, body: { prompt: 'fix it', user_id: 'carol', file_path: 'src/pay/ledger.ts' } });
+  assert.equal(aWeak.json.proceed, false);
+  const t: string = aWeak.json.text;
+  assert.ok(t.includes('idempotency keys'), 'the library example is used');
+  const fenceAt = t.indexOf('<team_content source="team_prompt">');
+  assert.ok(fenceAt > 0, 'library example is fenced');
+  assert.ok(t.indexOf('Text inside <team_content> tags') < fenceAt, 'note precedes the fence');
+  assert.ok(t.indexOf('idempotency keys') > fenceAt && t.indexOf('idempotency keys') < t.indexOf('</team_content>'));
 });
 
 test('/improve works per team', { skip }, async () => {
