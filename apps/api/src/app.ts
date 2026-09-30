@@ -88,6 +88,12 @@ import {
 } from './gemini.ts';
 import { langfuse, withTrace } from './langfuse.ts';
 import { tryPromotePrompt } from './prompt-promotion.ts';
+import {
+  passesPromotionGate,
+  promotionMode,
+  renderLibraryBanner,
+  renderNotPromotedNote,
+} from './promotion-gate.ts';
 import { renderTeamContext } from './team-context.ts';
 import { bundleFromRequest, runJob } from './wiki-bootstrap-job.ts';
 
@@ -233,6 +239,8 @@ app.get('/', (c) =>
       'GET  /examples?path=',
       'GET  /prompts/proven?min_score=&path=&topic=&limit=',
       'GET  /search?q=&scope=',
+      'GET  /prompts/pending (TRAILHEAD_PROMOTION_MODE=review)',
+      'POST /prompts/:id/review',
       'GET  /wiki/recent?since=ISO',
       'POST /diff',
       'POST /improve',
@@ -482,16 +490,29 @@ async function getStrongExample(args: {
   return { example: fallback.rewritten_prompt, tip: fallback.tip };
 }
 
-// Library banner emitted on every /coach response that triggers prompt
-// promotion (overall >= 7 in mode=score). Lives in `text` so a forgetful
-// host LLM can't drop it — the previous "directive instructs the model to
-// append one sentence" approach was reliable only when the host remembered
-// the rule. This wording is the canonical one referenced in the directive.
-function renderLibraryBanner(overall: number): string {
-  return (
-    `### ✅ Your prompt scored **${overall}/10** and joined your team's library\n` +
-    `_Future prompts in this folder will be coached against it._`
-  );
+// Library promotion for a /coach prompt that needs no (more) coaching.
+// Checks the gate (promotion-gate.ts: unrounded mean >= 7, no dimension < 5)
+// synchronously and, if it passes, schedules the background promotion, which
+// re-scores independently before inserting. Returns the line for `text` —
+// it ships in `text` so a forgetful host LLM can't drop it, and it never
+// claims more than has happened.
+function promoteIfEligible(args: {
+  teamToken: string;
+  userId: string;
+  prompt: string;
+  filePath: string | null;
+  dimensions: DimensionScores;
+  overall: number;
+}): string {
+  const gate = passesPromotionGate(args.dimensions);
+  if (!gate.ok) return renderNotPromotedNote(args.overall, gate);
+  const mode = promotionMode();
+  // Fire-and-forget: off the response path, fail-open inside
+  // tryPromotePrompt. MCP-only by call site (only /coach promotes).
+  setImmediate(() => {
+    void tryPromotePrompt({ ...args, mode });
+  });
+  return renderLibraryBanner(args.overall, mode);
 }
 
 // Round-state token. Compresses the four `next_round_inputs` fields into a
@@ -689,25 +710,15 @@ app.post('/coach', async (c) => {
       overall,
       dimensions: scoreResult.dimensions,
       missing: scoreResult.missing,
-      // The graduation banner ships in `text` itself so a forgetful host LLM
-      // can't drop the only signal that the team's library grew. Was
-      // previously delegated to a CLAUDE.md "append one sentence" rule that
-      // hosts sometimes ignored.
-      text: renderLibraryBanner(overall),
-    };
-    // Fire-and-forget auto-promotion to the team's prompt library. Off the
-    // response path, fail-open inside tryPromotePrompt. MCP-only by call
-    // site (only /coach calls this — browser ext / VS Code ext don't).
-    setImmediate(() => {
-      void tryPromotePrompt({
+      text: promoteIfEligible({
         teamToken,
         userId: body.user_id,
         prompt: body.prompt,
         filePath: body.file_path ?? null,
         dimensions: scoreResult.dimensions,
         overall,
-      });
-    });
+      }),
+    };
     return c.json(res);
   }
 
@@ -778,7 +789,16 @@ app.post('/coach', async (c) => {
         finalDimensions: scoreResult.dimensions,
         summary,
       }) +
-      `\n\n${renderLibraryBanner(overall)}`;
+      // The user iterated through coaching and landed a >=7 prompt — the
+      // final form is the promotion candidate.
+      `\n\n${promoteIfEligible({
+        teamToken,
+        userId: body.user_id,
+        prompt: body.prompt,
+        filePath: body.file_path ?? null,
+        dimensions: scoreResult.dimensions,
+        overall,
+      })}`;
     const res: CoachResponse = {
       proceed: true,
       mode: 'score',
@@ -787,18 +807,6 @@ app.post('/coach', async (c) => {
       missing: scoreResult.missing,
       text,
     };
-    // Fire-and-forget auto-promotion (round 2+ success). The user iterated
-    // through coaching and landed a >=7 prompt — promote the final form.
-    setImmediate(() => {
-      void tryPromotePrompt({
-        teamToken,
-        userId: body.user_id,
-        prompt: body.prompt,
-        filePath: body.file_path ?? null,
-        dimensions: scoreResult.dimensions,
-        overall,
-      });
-    });
     return c.json(res);
   }
 
@@ -1265,6 +1273,57 @@ app.get('/prompts/proven', async (c) => {
     })),
   };
   return c.json(res);
+});
+
+// ----- GET /prompts/pending + POST /prompts/:id/review ------------------------
+// Review queue for TRAILHEAD_PROMOTION_MODE=review (promotion-gate.ts): /coach
+// promotions land as 'pending_review' and only join the library when approved.
+// Anyone holding the team secret can review — user ids are self-asserted, so
+// "a teammate other than the author" is a team convention, not enforced.
+app.get('/prompts/pending', async (c) => {
+  const rows = await q<{
+    id: string; template: string; topic: string | null; graduated_overall_score: number;
+    author_user_id: string | null; node_path: string; created_at: Date;
+  }>(
+    `SELECT p.id, p.template, p.topic, p.graduated_overall_score, p.author_user_id,
+            n.path AS node_path, p.created_at
+       FROM prompts p
+       JOIN nodes n ON n.id = p.node_id
+      WHERE n.team_token = $1 AND p.status = 'pending_review'
+      ORDER BY p.created_at ASC
+      LIMIT 200`,
+    [c.get('team_token')],
+  );
+  return c.json({
+    items: rows.map((r) => ({ ...r, created_at: r.created_at.toISOString() })),
+  });
+});
+
+app.post('/prompts/:id/review', async (c) => {
+  const id = c.req.param('id');
+  if (!isUuid(id)) return c.json({ error: 'bad_request', detail: 'invalid prompt id' }, 400);
+  const body = await c.req.json<{ approve?: unknown }>().catch(() => null);
+  if (!body || typeof body.approve !== 'boolean') {
+    return c.json({ error: 'bad_request', detail: 'body must be { "approve": true | false }' }, 400);
+  }
+  // Scoped through nodes.team_token: another team's prompt id is a 404.
+  const rows = body.approve
+    ? await q<{ id: string }>(
+        `UPDATE prompts p SET status = 'graduated'
+           FROM nodes n
+          WHERE p.id = $1 AND p.node_id = n.id AND n.team_token = $2 AND p.status = 'pending_review'
+          RETURNING p.id`,
+        [id, c.get('team_token')],
+      )
+    : await q<{ id: string }>(
+        `DELETE FROM prompts p
+          USING nodes n
+          WHERE p.id = $1 AND p.node_id = n.id AND n.team_token = $2 AND p.status = 'pending_review'
+          RETURNING p.id`,
+        [id, c.get('team_token')],
+      );
+  if (!rows.length) return c.json({ error: 'not_found' }, 404);
+  return c.json({ id, status: body.approve ? 'graduated' : 'rejected' });
 });
 
 // ----- GET /search?q=&scope= -------------------------------------------------

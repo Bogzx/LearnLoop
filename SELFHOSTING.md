@@ -224,6 +224,26 @@ The defaults are safe for a local setup because both ports are bound to
   repo). The demo team is protected from `DELETE /team/data` and from secret
   rotation, but not from writes.
 
+**Team-authored text is treated as untrusted.** Wiki rules, learnings and
+library prompts are written by anyone holding the team secret, and they are
+fed to LLMs: Gemini's system instructions (scoring, teaching, `/improve`), the
+browser extension's context bundle in your Claude.ai messages, and Claude
+Code / Copilot via the MCP tools. All three wrap that text in
+`<team_content>` tags with a rule that it is reference data, and neutralise any
+copy of the tag inside it so it can't close the fence early; coach reveals put
+examples in a markdown fence the example can't break out of. That is a
+mitigation, not a guarantee.
+
+**Getting into the library is gated.** A `/coach` prompt is promoted only if
+the *exact* average of its five scores is ≥ 7.0 and no dimension is below 5,
+**and** an independent re-score without the team's wiki context agrees (one
+extra Gemini call per candidate). Set `TRAILHEAD_PROMOTION_MODE=review` to also
+require a teammate's approval: candidates wait in `GET /prompts/pending` until
+someone calls `POST /prompts/:id/review` with `{"approve": true}` (or `false`
+to discard). The default is `auto` so the library grows without admin work;
+`review` trades that for a human check. Anyone with the team secret can
+review — user ids are self-asserted, so "not the author" is a convention.
+
 **Who is who.** Each client sends a `user_id` with scores and captures. It is a
 random UUID generated once per install — browser extension (chrome.storage),
 VS Code (`globalState`), MCP server (`~/.config/trailhead/user-id`) — and is not

@@ -75,6 +75,8 @@ services:
       # registration, which is fine while the port below is bound to
       # 127.0.0.1. Set it before exposing the API on a network.
       TRAILHEAD_ADMIN_TOKEN: ${TRAILHEAD_ADMIN_TOKEN:-}
+      # auto (default) | review — see .env.example / SELFHOSTING.md.
+      TRAILHEAD_PROMOTION_MODE: ${TRAILHEAD_PROMOTION_MODE:-auto}
       # Guard on DELETE /team/data for the seeded demo team.
       TRAILHEAD_ALLOW_DEMO_RESET: ${TRAILHEAD_ALLOW_DEMO_RESET:-false}
       # Optional tracing. Unset = silently disabled with a startup warning.

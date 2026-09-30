@@ -43,9 +43,13 @@ Every prompt is scored 0–10 on:
 4. `constraint_articulation` — what *must not* change, perf/style limits
 5. `output_specification` — desired shape of the response
 
-`overall = mean of the five dims`. Below 7 triggers coaching; ≥ 7 lands
-silently. The rubric is concrete enough that a human reviewer could apply it —
-the LLM is the implementation, not the product.
+`overall = round(mean of the five dims)`. Below 7 triggers coaching; ≥ 7 lands
+silently. Joining the team's prompt library is stricter: the unrounded mean
+must be ≥ 7.0, no dimension below 5, and an independent re-score must agree
+(optionally plus a teammate's review — see SELFHOSTING.md → Security model).
+The rubric is concrete enough that a human reviewer could apply it — the LLM
+is the implementation, not the product. Scores come from an LLM and vary run
+to run; `apps/api/eval/` measures how much.
 
 ---
 
@@ -74,6 +78,10 @@ Pre-2026-09-30 tokens derived from the git remote still work behind
 | `POST /wiki/propose` | Normalize + dedup an insight on `(node_id, body_normalized)`, increment `reinforcement_count`, promote `draft → durable` at ≥ 3 |
 | `GET  /context?path=` | Ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
 | `GET  /examples?path=` | Top graduated prompts for an ancestor of a file path |
+| `GET  /prompts/proven` | The team's graduated prompts, filterable by score, path, topic |
+| `GET  /prompts/pending` | Library candidates awaiting review (`TRAILHEAD_PROMOTION_MODE=review`) |
+| `POST /prompts/:id/review` | `{ approve: true }` graduates a pending prompt, `false` discards it |
+| `GET  /search?q=&scope=` | Substring search over rules, durable learnings and graduated prompts |
 | `GET  /wiki/recent?since=ISO` | Polling endpoint for the VS Code wiki-toast surface |
 | `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, asks Gemini to narrate the difference |
 | `POST /improve` | Multi-turn Gemini-driven prompt rewrite, capped at 5 user replies |
@@ -340,6 +348,7 @@ Single root `.env.example` — every surface reads from the same set.
 | `TRAILHEAD_ADMIN_TOKEN` | api | When set, `POST /teams` (registration) requires it as `X-Admin-Token` |
 | `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | api | Default `true`. Accept pre-2026-09-30 remote-derived tokens for teams without a secret (deprecated) |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | api | Default `false`. Legacy only: unknown tokens create legacy teams |
+| `TRAILHEAD_PROMOTION_MODE` | api | `auto` (default): gated auto-promotion into the library. `review`: promoted prompts wait for a teammate's approval |
 | `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
 | `TRAILHEAD_API_URL` | dashboard | Server-side, runtime. Where the dashboard fetches (fallback: legacy `NEXT_PUBLIC_API_URL`) |
 | `TRAILHEAD_TEAM_TOKEN` | dashboard | Server-side, runtime. The team secret; never sent to the browser (fallback: legacy `NEXT_PUBLIC_TEAM_TOKEN`) |
