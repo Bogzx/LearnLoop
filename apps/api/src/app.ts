@@ -558,11 +558,12 @@ async function getStrongExample(args: {
   file_path?: string;
   target_dims: Dimension[];
   team_context: string | null;
-}): Promise<{ example: string; tip: string }> {
+}): Promise<{ example: string; tip: string; fromTeam: boolean }> {
   const wiki = args.file_path
     ? await fetchTopGraduatedForPath(args.teamToken, args.file_path, args.userId)
     : await fetchTopGraduatedForTeam(args.teamToken, args.userId);
-  if (wiki) return { example: wiki, tip: '' };
+  // fromTeam: a teammate's text — the renderers fence it as untrusted.
+  if (wiki) return { example: wiki, tip: '', fromTeam: true };
 
   const fallback = await rewriteForDims({
     prompt: args.prompt,
@@ -571,7 +572,7 @@ async function getStrongExample(args: {
     team_context: args.team_context ?? undefined,
   });
   // Empty strings on Gemini failure — render block falls back accordingly.
-  return { example: fallback.rewritten_prompt, tip: fallback.tip };
+  return { example: fallback.rewritten_prompt, tip: fallback.tip, fromTeam: false };
 }
 
 // Library promotion for a /coach prompt that needs no (more) coaching.
@@ -764,6 +765,7 @@ app.post('/coach', async (c) => {
     const text = strong.example
       ? renderSkipReveal({
           strongRewrite: strong.example,
+          strongRewriteFromTeam: strong.fromTeam,
           originalDimensions: originalDims,
           reason: 'skip',
           summary,
@@ -820,6 +822,7 @@ app.post('/coach', async (c) => {
       targetDim: lowest,
       targetScore: scoreResult.dimensions[lowest],
       strongExample: strong.example,
+      strongExampleFromTeam: strong.fromTeam,
       tip: strong.tip,
       dimensions: scoreResult.dimensions,
       overall,
@@ -933,6 +936,7 @@ app.post('/coach', async (c) => {
     const text = strong.example
       ? renderSkipReveal({
           strongRewrite: strong.example,
+          strongRewriteFromTeam: strong.fromTeam,
           originalDimensions: originalDims,
           reason: 'no_progress',
           noProgressDim: previousLowest ?? undefined,
@@ -1006,6 +1010,7 @@ app.post('/coach', async (c) => {
       targetDim: lowest,
       targetScore: scoreResult.dimensions[lowest],
       strongExample: strong.example,
+      strongExampleFromTeam: strong.fromTeam,
       previousLowestDim:
         previousLowest && previousLowest !== lowest ? previousLowest : undefined,
       acknowledgment,

@@ -21,6 +21,10 @@ export interface RenderTeachBlockArgs {
   // Overall 0-10. When set, surfaces in the header banner with a
   // traffic-light emoji.
   overall?: number;
+  // True when strongExample is a teammate's prompt from the team library
+  // (not a Gemini rewrite): it is then preceded by the untrusted-content note
+  // and fenced as <team_content>.
+  strongExampleFromTeam?: boolean;
 }
 export declare function renderTeachBlock(args: RenderTeachBlockArgs): string;
 
@@ -47,5 +51,7 @@ export interface RenderSkipRevealArgs {
   summary?: string;
   // Optional overall for the skip header banner.
   overall?: number;
+  // Same as RenderTeachBlockArgs.strongExampleFromTeam, for strongRewrite.
+  strongRewriteFromTeam?: boolean;
 }
 export declare function renderSkipReveal(args: RenderSkipRevealArgs): string;
