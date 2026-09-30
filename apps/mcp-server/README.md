@@ -8,10 +8,22 @@ MCP SDK.
 
 ## Install
 
+The package is not published to npm (`private: true`), so `trailhead-mcp`
+does not resolve. Run the CLI from a clone of this repo — every
+`trailhead-mcp` command below assumes this alias:
+
 ```sh
+git clone https://github.com/Bogzx/LearnLoop && (cd LearnLoop && npm install)
+alias trailhead-mcp="node $PWD/LearnLoop/apps/mcp-server/bin/cli.mjs"
+
 cd <your repo root>
-npx trailhead-mcp init
+trailhead-mcp init --api-url http://localhost:3000
 ```
+
+The generated `.mcp.json` / `.vscode/mcp.json` point at `src/index.ts` in that
+clone by absolute path, so keep the clone where it is. They also embed the team
+token — see [Team tokens are not secrets](#team-tokens-are-not-secrets) before
+committing them.
 
 Per-repo install. Each repo gets its own team token (auto-derived from the
 git remote, deterministic across teammates) so wikis don't collide between
@@ -49,12 +61,26 @@ both have `src/api/`) end up in different teams and don't collide.
 The init command prints which source it picked. To switch a repo's team,
 edit/delete `.trailhead-team` and re-run init, or pass `--team-token`.
 
+### Team tokens are not secrets
+
+The team token is the API's only credential: whoever holds it can read the
+team's wiki (which the rich bootstrap fills with summaries of your source),
+write to it, and `DELETE /team/data`. A token derived from the git remote is
+`repo_` + the first 16 hex chars of SHA-256 of the remote URL — anyone who knows
+or guesses the URL can compute it, and it is written in plain text into
+`.mcp.json` and `.vscode/mcp.json`.
+
+That is fine for the default setup, where the API is bound to `127.0.0.1`. If
+your API is reachable by anyone else, pass `--team-token` with a random value
+(e.g. `openssl rand -hex 16`), share it with teammates out of band, and keep the
+generated MCP config files out of version control.
+
 ### Flags
 
 ```
 trailhead-mcp init
   [--team-token <t>]   use this exact token (skips auto-derivation)
-  [--api-url <url>]    override TRAILHEAD_API_URL (defaults to the deployed API)
+  [--api-url <url>]    override TRAILHEAD_API_URL (default http://localhost:3000)
   [--no-claude-code]   skip Claude Code wiring even if detected
   [--no-copilot]       skip Copilot wiring even if detected
   [--no-auto-coach]    skip writing the directive to *.md (tools still register)
@@ -63,26 +89,27 @@ trailhead-mcp init
 
 ## Hero tools
 
-Four tools, intentionally collapsed from the previous seven-tool surface so
+Five tools, intentionally collapsed from the previous seven-tool surface so
 Copilot's tool selector reliably picks the right one:
 
 | Tool | When to call it | Routes to |
 |------|-----------------|-----------|
-| `coach` | Before answering any code task | `POST /score` (+ `buildAugmentation` when `mode='augment'`) |
+| `coach` | Before answering any code task | `POST /coach` (server-side teach → reveal loop, up to 5 rounds) |
 | `wiki_lookup` | Before writing code in a known file, or when asked about team conventions | `GET /context` + `GET /examples` (file_path) and/or `GET /search` (query) |
 | `wiki_save` | When the user states a teamwide convention | `POST /wiki/propose` |
-| `wiki_bootstrap` | When the user asks to set up Trailhead for a new repo | `POST /onboard/repo` (idempotent path upsert) |
+| `wiki_bootstrap` | When the user asks to set up Trailhead for a new repo | `POST /onboard/repo` (skeleton) or `POST /onboard/repo/full` (rich) |
+| `wiki_proven_prompts` | When the user wants the team's proven prompts | `GET /prompts/proven` |
 
 Plus `ping` for health checks.
 
 ## Bootstrap
 
 ```sh
-npx trailhead-mcp bootstrap            # default: rich mode (LLM-populated)
-npx trailhead-mcp bootstrap --yes      # skip the prompt
-npx trailhead-mcp bootstrap --dry-run  # preview without POSTing
-npx trailhead-mcp bootstrap --minimal  # skeleton only (no LLM, fast, free)
-npx trailhead-mcp bootstrap --paths "src/api/,src/db/"   # explicit paths
+trailhead-mcp bootstrap            # default: rich mode (LLM-populated)
+trailhead-mcp bootstrap --yes      # skip the prompt
+trailhead-mcp bootstrap --dry-run  # preview without POSTing
+trailhead-mcp bootstrap --minimal  # skeleton only (no LLM, fast, free)
+trailhead-mcp bootstrap --paths "src/api/,src/db/"   # explicit paths
 ```
 
 **Default is rich mode** (Karpathy-style auto-generated wiki). The CLI
@@ -114,8 +141,8 @@ init wrote — so two repos never share a wiki tree.
 ## Reset
 
 ```sh
-npx trailhead-mcp reset           # confirmation prompt
-npx trailhead-mcp reset --yes     # skip the prompt
+trailhead-mcp reset           # confirmation prompt
+trailhead-mcp reset --yes     # skip the prompt
 ```
 
 Wipes ALL wiki data (nodes, learnings, prompts, captures, skill
@@ -157,8 +184,8 @@ in `src/tools.ts` (the constants `COACH_DESC`, `WIKI_LOOKUP_DESC`,
 ## End-to-end smoke
 
 `npm run smoke` spawns the MCP server, sends real JSON-RPC, and exercises
-each hero tool against the live Railway API (or whatever
-`TRAILHEAD_API_URL` points at). Use when changing tool internals or the
+each hero tool against the API at `TRAILHEAD_API_URL` (default
+`http://localhost:3000`). Use when changing tool internals or the
 API contract.
 
 `npm run verify` is a lighter variant that prints a tool-by-tool result
@@ -168,12 +195,11 @@ table without strict assertions.
 
 ```sh
 cd ~/code/my-other-project
-npx trailhead-mcp init                  # auto-token from git remote, per-repo wiring
-npx trailhead-mcp bootstrap             # walk cwd, create wiki nodes
+trailhead-mcp init                  # auto-token from git remote, per-repo wiring
+trailhead-mcp bootstrap             # walk cwd, create wiki nodes
 # ... use Claude Code / Copilot normally; the wiki for THIS repo grows ...
-npx trailhead-mcp reset                 # if you want to wipe and start over
+trailhead-mcp reset                 # if you want to wipe and start over
 ```
 
 The wiki is fully isolated from any other repo's wiki. The demo team's
-seeded data (visible on the dashboard at the deployed URL) is also
-unaffected.
+seeded data is also unaffected.

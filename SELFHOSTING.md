@@ -118,21 +118,25 @@ setting rather than showing an empty sidebar.
 
 ### MCP server (Claude Code / Copilot)
 
-From the repo you want coached:
+The MCP package is not published to npm, so `npx trailhead-mcp` does not work.
+Run the CLI by path from this clone (after `npm install` at the root). It acts
+on the current directory, so run it from the repo you want coached:
 
 ```bash
-npx trailhead-mcp init --api-url http://localhost:3000
+cd /path/to/your/repo
+node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs init --api-url http://localhost:3000
 ```
 
 That writes `.mcp.json` (and `.vscode/mcp.json` for Copilot) with
 `TRAILHEAD_API_URL` set, and derives a team token from your git remote so
 teammates cloning the same repo land in the same team. You can also set
-`TRAILHEAD_API_URL` in your environment instead.
+`TRAILHEAD_API_URL` in your environment instead. Read
+[Security model](#security-model) before exposing the API beyond localhost.
 
 Then seed the wiki from the repo:
 
 ```bash
-npx trailhead-mcp bootstrap
+node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs bootstrap
 ```
 
 ### Dashboard
@@ -152,6 +156,44 @@ NEXT_PUBLIC_API_URL=http://localhost:8080 npm run dev --workspace=apps/dashboard
 must set `NEXT_PUBLIC_API_URL` before `next build`, and the API must be
 reachable from the visitor's browser. When it isn't set, the Teams page says so
 and names the variable.
+
+---
+
+## Security model
+
+The API has one credential: the team token sent as `X-Team-Token`. Holding it
+grants read on that team's wiki — which the rich bootstrap fills with summaries
+of your source code — and write on everything, including `DELETE /team/data`.
+Tenants are isolated from each other only by knowing different tokens.
+
+The defaults are safe **because** both ports are bound to `127.0.0.1`. Before
+you make the API reachable from anywhere else, know that:
+
+- **Remote-derived tokens are guessable.** `init` derives the token as `repo_` +
+  the first 16 hex chars of SHA-256 of `git remote get-url origin`. Anyone who
+  knows (or guesses) a repo's URL can compute it. On a shared server, create
+  tokens with `init --team-token "$(openssl rand -hex 16)"` and share them out of
+  band.
+- **`init` writes the token in plain text** into `.mcp.json` and
+  `.vscode/mcp.json`. Don't commit those files if the token matters.
+- **Set `TRAILHEAD_AUTO_CREATE_TEAMS=false`.** With it on, any string creates a
+  tenant, so anyone who can reach the port can spend your Gemini quota.
+- **A deployed dashboard publishes its token.** The dashboard renders
+  `NEXT_PUBLIC_TEAM_TOKEN` into its `?team=` links, and the charts call the API
+  from the visitor's browser with it in `X-Team-Token`. Treat a public
+  dashboard as making that team world-readable and -writable.
+- **The demo token `trailhead_demo_acme_2026` is public** (it is in this repo).
+  The demo team is protected from `DELETE /team/data` but not from writes.
+
+Where prompts go: every scored prompt, any wiki context attached to it, and —
+for the default rich `bootstrap` — the first 8,000 characters of up to 500
+source files (5 levels deep) are sent to Google's Gemini API
+using your `GEMINI_API_KEY`. When `LANGFUSE_*` keys are set, the same model
+inputs and outputs are also sent to Langfuse. The browser extension's 👍/🤷/👎
+chips store the prompt *and Claude's full reply* in the `captures` table.
+`bootstrap` picks files by extension (so `.env` and key files are never read)
+but does not read `.gitignore`, so a gitignored `.ts`/`.py`/… file inside the
+walk depth is uploaded too.
 
 ---
 
