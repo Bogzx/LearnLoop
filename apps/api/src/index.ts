@@ -237,11 +237,28 @@ async function writeSkillObservations(
   );
 }
 
+// Upper bound on any prompt text handed to Gemini. Every scored character is
+// billed to the operator's GEMINI_API_KEY, and without a cap one request can
+// carry an arbitrarily large body. 64K chars (~16K tokens) is far above a real
+// chat prompt, pasted code included; clients already fail open on non-2xx, so
+// an over-cap prompt is simply sent uncoached.
+const MAX_PROMPT_CHARS = 64_000;
+
+function promptTooLong(...texts: (string | undefined)[]): boolean {
+  return texts.some((t) => typeof t === 'string' && t.length > MAX_PROMPT_CHARS);
+}
+
+const PROMPT_TOO_LONG = {
+  error: 'prompt_too_long',
+  detail: `max ${MAX_PROMPT_CHARS} characters`,
+} as const;
+
 app.post('/score', async (c) => {
   const body = await c.req.json<ScoreRequest>().catch(() => null);
   if (!body || typeof body.prompt !== 'string' || typeof body.user_id !== 'string') {
     return c.json({ error: 'bad_request' }, 400);
   }
+  if (promptTooLong(body.prompt)) return c.json(PROMPT_TOO_LONG, 413);
 
   // Optional sticky wiki context from the popup picker. Bundle is rendered
   // out-of-band and prepended to Gemini's system instruction so the rubric
@@ -451,6 +468,7 @@ app.post('/coach', async (c) => {
   if (!body || typeof body.prompt !== 'string' || typeof body.user_id !== 'string') {
     return c.json({ error: 'bad_request' }, 400);
   }
+  if (promptTooLong(body.prompt, body.original_prompt)) return c.json(PROMPT_TOO_LONG, 413);
 
   // Round-token shorthand. When present, decode and use as authoritative
   // round state — overrides any individual field the caller also sent.
@@ -1295,6 +1313,7 @@ app.post('/diff', async (c) => {
   if (!body || typeof body.user_prompt !== 'string' || typeof body.user_id !== 'string') {
     return c.json({ error: 'bad_request' }, 400);
   }
+  if (promptTooLong(body.user_prompt)) return c.json(PROMPT_TOO_LONG, 413);
 
   const ancestors = body.file_path ? ancestorPaths(body.file_path) : [''];
   const topic = await extractTopic(body.user_prompt);
@@ -1573,6 +1592,9 @@ app.post('/improve', async (c) => {
     ) {
       return c.json({ error: 'bad_request' }, 400);
     }
+  }
+  if (promptTooLong(body.original_prompt, ...body.history.map((t) => t.text))) {
+    return c.json(PROMPT_TOO_LONG, 413);
   }
 
   // Server-side cap: if the user has already replied IMPROVE_TURN_CAP times,
