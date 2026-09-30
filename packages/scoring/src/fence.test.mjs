@@ -26,9 +26,9 @@ test('lookalike closing tags are neutralised too (fullwidth, invisible chars, ho
     fullwidth_bracket: '＜/team_content＞',
     small_form_bracket: '﹤/team_content﹥',
     angle_quote: '‹/team_content›',
-    zero_width_space_in_name: '</team​_content>',
-    zwj_after_bracket: '<‍/team_content>',
-    soft_hyphen_for_underscore: '</team­content>',
+    zero_width_space_in_name: '</team\u200B_content>',
+    zwj_after_bracket: '<\u200D/team_content>',
+    soft_hyphen_for_underscore: '</team\u00ADcontent>',
     cyrillic_homoglyphs: '</tеаm_соntent>',
     greek_capitals: '</ΤΕΑΜ_CONTENT>',
     hyphen: '</team-content>',
@@ -52,7 +52,7 @@ test('neutralising is linear-time on hostile input', () => {
   const inputs = [
     `<team${' '.repeat(200_000)}x`,
     `<team${' '.repeat(100_000)}_${' '.repeat(100_000)}x`,
-    `<${'​'.repeat(200_000)}x`,
+    `<${'\u200B'.repeat(200_000)}x`,
     `<${' '.repeat(50)}`.repeat(20_000),
   ];
   const t = Date.now();
