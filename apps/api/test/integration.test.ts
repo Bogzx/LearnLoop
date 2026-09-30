@@ -341,6 +341,28 @@ test('rotate-secret: new secret works, old one is dead; upgrades a legacy team',
   cover('POST /teams/rotate-secret');
 });
 
+test('401 for an upgraded team\'s id says it is an id, not a secret; unknown and legacy ids say nothing more', { skip }, async () => {
+  await db.query(`INSERT INTO teams (token, name) VALUES ('repo_upgraded_it_01', 'up2')`);
+  const up = await call('POST', '/teams/rotate-secret', { token: 'repo_upgraded_it_01' });
+  assert.equal(up.status, 200);
+  const stale = await call('GET', '/teams', { token: 'repo_upgraded_it_01' });
+  assert.equal(stale.status, 401);
+  assert.equal(stale.json.reason, 'team_id_not_secret');
+  assert.ok(!stale.text.includes(up.json.secret));
+  assert.equal((await call('GET', '/wiki/tree', { token: A.id })).json.reason, 'team_id_not_secret');
+  assert.equal((await call('GET', '/teams', { token: 'repo_never_existed_01' })).json.reason, undefined);
+  // A legacy team (no secret) is not revealed when legacy tokens are off.
+  await db.query(`INSERT INTO teams (token, name) VALUES ('repo_still_legacy_01', 'l')`);
+  process.env.TRAILHEAD_ACCEPT_LEGACY_TOKENS = 'false';
+  try {
+    const off = await call('GET', '/teams', { token: 'repo_still_legacy_01' });
+    assert.equal(off.status, 401);
+    assert.equal(off.json.reason, undefined);
+  } finally {
+    process.env.TRAILHEAD_ACCEPT_LEGACY_TOKENS = 'true';
+  }
+});
+
 test('the demo team works through its public secret', { skip }, async () => {
   const r = await call('GET', '/teams', { token: 'trailhead_demo_acme_2026' });
   assert.equal(r.status, 200);

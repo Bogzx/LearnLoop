@@ -11,6 +11,8 @@
 //           sha256(raw remote URL)): use it with a deprecation warning, or
 //           with --upgrade-legacy mint it a secret (POST /teams/rotate-secret)
 //           — its data stays, the old token stops working for everyone.
+//           If a teammate already upgraded it (401 team_id_not_secret), stop
+//           with join instructions instead of registering a second team.
 //        b. register team_<sha256(normalised remote)> (POST /teams). 201 →
 //           we hold the secret. 409 → the team exists: that is the join flow,
 //           ask a teammate for the secret.
@@ -69,7 +71,9 @@ export async function probeCredential({ apiUrl, token, fetchImpl = fetch }) {
     const t = r.body.teams[0];
     return { ok: true, legacy: Boolean(t.legacy), name: t.name, teamId: t.team_id ?? null };
   }
-  return { ok: false, status: r.status, error: r.error };
+  // reason 'team_id_not_secret': the credential is the id of a team that has
+  // a secret, e.g. a repo_… token after a teammate ran --upgrade-legacy.
+  return { ok: false, status: r.status, error: r.error, reason: r.body?.reason ?? null };
 }
 
 function unreachable(apiUrl, err) {
@@ -117,7 +121,10 @@ export async function setupTeam({
     if (!probe.ok) {
       throw new TeamSetupError(
         `The API at ${apiUrl} rejected the ${given.source} credential (${maskSecret(given.token)}, HTTP ${probe.status}).\n` +
-          '  Check you copied the whole team secret, or remove ./.trailhead-team and re-run init to register a team.',
+          (probe.reason === 'team_id_not_secret'
+            ? '  That is the team\'s id, not its secret: the team now uses a secret (a teammate probably ran\n' +
+              '  --upgrade-legacy). Ask them for it (their ./.trailhead-team) and run: init --team-token <secret>'
+            : '  Check you copied the whole team secret, or remove ./.trailhead-team and re-run init to register a team.'),
         'rejected',
       );
     }
@@ -153,6 +160,18 @@ export async function setupTeam({
       writeSentinel(cwd, legacyToken);
       notes.push(legacyNote());
       return { token: legacyToken, source: 'legacy-remote', teamId: null, name: probe.name, legacy: true, validated: true, notes };
+    }
+    // This repo's legacy team has been upgraded to a secret by a teammate.
+    // Registering team_<hash> here would silently start a second, empty team
+    // for the same repo; the team to join is the upgraded one.
+    if (!probe.ok && probe.reason === 'team_id_not_secret' && !teamIdOverride) {
+      throw new TeamSetupError(
+        `This repo's team (${legacyToken}) was upgraded to a team secret by a teammate.\n` +
+          '  To join it, ask them for the secret (their ./.trailhead-team) and run:\n' +
+          '    init --team-token <secret>\n' +
+          '  To start a separate team instead, pass --team-id <new-id>.',
+        'join_required',
+      );
     }
   }
 

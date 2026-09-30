@@ -21,7 +21,9 @@ function repo({ remote = REMOTE } = {}) {
 }
 
 // Minimal fake of the API's team endpoints. `teams` maps credential → team.
-function fakeApi({ teams = {}, registered = new Set(), adminToken = null } = {}) {
+// `upgraded` holds ids of teams that have a secret: sending one as a credential
+// gets the API's 401 { reason: 'team_id_not_secret' }.
+function fakeApi({ teams = {}, registered = new Set(), adminToken = null, upgraded = new Set() } = {}) {
   const calls = [];
   const fetchImpl = async (url, init) => {
     const path = url.slice(API.length);
@@ -31,6 +33,7 @@ function fakeApi({ teams = {}, registered = new Set(), adminToken = null } = {})
     const json = (status, obj) => ({ status, json: async () => obj });
     if (init.method === 'GET' && path === '/teams') {
       const t = teams[token];
+      if (!t && upgraded.has(token)) return json(401, { error: 'unauthorized', reason: 'team_id_not_secret' });
       return t ? json(200, { teams: [{ name: t.name, id: 'x', legacy: t.legacy, ...(t.legacy ? {} : { team_id: t.id }) }] }) : json(401, {});
     }
     if (init.method === 'POST' && path === '/teams') {
@@ -125,6 +128,51 @@ test('--upgrade-legacy mints a secret for the legacy team and replaces the senti
     assert.equal(r.legacy, false);
     assert.equal(r.teamId, legacy); // data stays in the same team
     assert.equal(sentinel(dir), `trailhead_sk_rotated_${legacy}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy team already upgraded by a teammate → join_required, no second team registered', async () => {
+  const dir = repo();
+  try {
+    const legacy = tokenFromRemote(REMOTE);
+    const api = fakeApi({ upgraded: new Set([legacy]) });
+    await assert.rejects(
+      setupTeam({ cwd: dir, apiUrl: API, env: {}, fetchImpl: api.fetchImpl }),
+      (err) => err instanceof TeamSetupError && err.code === 'join_required' && /upgraded/.test(err.message) && /--team-token/.test(err.message),
+    );
+    assert.equal(api.calls.filter((c) => c.method === 'POST').length, 0, 'nothing registered');
+    assert.equal(api.registered.size, 0);
+    assert.equal(existsSync(join(dir, '.trailhead-team')), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy team upgraded, but --team-id given → registers the separate team as asked', async () => {
+  const dir = repo();
+  try {
+    const api = fakeApi({ upgraded: new Set([tokenFromRemote(REMOTE)]) });
+    const r = await setupTeam({ cwd: dir, apiUrl: API, env: {}, teamIdOverride: 'team_fork', fetchImpl: api.fetchImpl });
+    assert.equal(r.source, 'registered');
+    assert.equal(r.teamId, 'team_fork');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('stale repo_ sentinel after a teammate upgraded → rejected, and the message says why', async () => {
+  const dir = repo();
+  try {
+    const legacy = tokenFromRemote(REMOTE);
+    writeFileSync(join(dir, '.trailhead-team'), `${legacy}\n`);
+    const api = fakeApi({ upgraded: new Set([legacy]) });
+    await assert.rejects(
+      setupTeam({ cwd: dir, apiUrl: API, env: {}, fetchImpl: api.fetchImpl }),
+      (err) => err instanceof TeamSetupError && err.code === 'rejected' && /team's id, not its secret/.test(err.message),
+    );
+    assert.equal(sentinel(dir), legacy, 'sentinel untouched');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

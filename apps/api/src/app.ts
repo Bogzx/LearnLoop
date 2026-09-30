@@ -63,6 +63,7 @@ import {
   applyTeamNameIfPlaceholder,
   DEMO_TEAM_SECRET_HASH,
   DEMO_TEAM_TOKEN,
+  isSecretTeamId,
   q,
   registerTeam,
   resolveTeam,
@@ -237,6 +238,19 @@ app.use('*', async (c, next) => {
   const isProbe = c.req.method === 'GET' && c.req.path === '/teams';
   const team = await resolveTeam(token, { ...policy, autoCreate: policy.autoCreate && !isProbe });
   if (!team) {
+    if (await isSecretTeamId(token)) {
+      return c.json(
+        {
+          error: 'unauthorized',
+          reason: 'team_id_not_secret',
+          detail:
+            'This is a team id, not its secret: the team authenticates with a server-minted secret ' +
+            '(if this was an old repo_… token, a teammate has upgraded the team). Ask a teammate ' +
+            'for the secret (their ./.trailhead-team) and run `init --team-token <secret>`.',
+        },
+        401,
+      );
+    }
     return c.json(
       { error: 'unauthorized', detail: 'unknown team token' },
       401,
