@@ -57,17 +57,24 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env (cp .env.example .env) — get one at https://aistudio.google.com/apikey}
       # Container-internal port. The host mapping below is what you change.
       PORT: '3000'
-      # Any unknown X-Team-Token spawns its own team.
+      # Team credentials (see SELFHOSTING.md → Security model). `init`
+      # registers each repo's team via POST /teams and gets a server-minted
+      # secret, so nothing here needs changing for a local setup.
       #
-      # The API's own default is FALSE (unauthenticated tenant creation is not
-      # something a reachable server should do). Compose overrides it to true
-      # because `trailhead-mcp init` derives a fresh per-repo token and expects
-      # the server to accept it — without this, local onboarding 401s.
-      #
-      # That trade is only safe because the port below is bound to 127.0.0.1.
-      # If you change that binding to expose this stack on a network, set this
-      # to false and register teams explicitly.
-      TRAILHEAD_AUTO_CREATE_TEAMS: ${TRAILHEAD_AUTO_CREATE_TEAMS:-true}
+      # Pre-2026-09-30 tokens (repo_…, derived from the git remote URL) keep
+      # working for teams that have not been upgraded. Deprecated: set false
+      # once every team has run `init --upgrade-legacy`.
+      TRAILHEAD_ACCEPT_LEGACY_TOKENS: ${TRAILHEAD_ACCEPT_LEGACY_TOKENS:-true}
+      # With legacy tokens accepted, an unknown X-Team-Token spawns a legacy
+      # team — unauthenticated tenant creation. It used to default true here
+      # because the old `init` invented tokens offline; the new `init`
+      # registers instead, so it is off. Only for throwaway demo deploys.
+      TRAILHEAD_AUTO_CREATE_TEAMS: ${TRAILHEAD_AUTO_CREATE_TEAMS:-false}
+      # Set to restrict POST /teams (team registration) to holders of this
+      # value (sent as X-Admin-Token / `init --admin-token`). Empty = open
+      # registration, which is fine while the port below is bound to
+      # 127.0.0.1. Set it before exposing the API on a network.
+      TRAILHEAD_ADMIN_TOKEN: ${TRAILHEAD_ADMIN_TOKEN:-}
       # Guard on DELETE /team/data for the seeded demo team.
       TRAILHEAD_ALLOW_DEMO_RESET: ${TRAILHEAD_ALLOW_DEMO_RESET:-false}
       # Optional tracing. Unset = silently disabled with a startup warning.
@@ -79,10 +86,10 @@ services:
       # Every client default (browser ext, VS Code ext, MCP server, dashboard)
       # is http://localhost:3000, so changing this means updating those too.
       #
-      # Bound to 127.0.0.1: the API's only auth is a bearer team token, and
-      # with TRAILHEAD_AUTO_CREATE_TEAMS on (above) any token is accepted. That
-      # combination must not be reachable from the network. Drop the 127.0.0.1
-      # prefix only together with TRAILHEAD_AUTO_CREATE_TEAMS=false.
+      # Bound to 127.0.0.1. Before dropping that prefix to expose the API,
+      # set TRAILHEAD_ADMIN_TOKEN (so strangers can't register teams and
+      # spend your Gemini quota), keep TRAILHEAD_AUTO_CREATE_TEAMS=false, and
+      # plan to turn TRAILHEAD_ACCEPT_LEGACY_TOKENS off.
       - '127.0.0.1:${PORT:-3000}:3000'
     depends_on:
       postgres:

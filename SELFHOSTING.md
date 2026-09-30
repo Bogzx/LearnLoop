@@ -59,7 +59,9 @@ ones you are most likely to touch:
 | `PORT` | `3000` | Something else already owns port 3000. Changing this means updating each client's API URL too. |
 | `POSTGRES_PORT` | `5432` | You already run Postgres locally. |
 | `DATABASE_URL` | *(the bundled Postgres)* | Use an external database (Neon, RDS) instead of the container. |
-| `TRAILHEAD_AUTO_CREATE_TEAMS` | `true` | Set `false` to stop unknown team tokens from creating teams on the fly. |
+| `TRAILHEAD_ADMIN_TOKEN` | *(empty)* | Set it to restrict team registration to people you give it to. Do this before exposing the API. |
+| `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | `true` | Set `false` once every team has upgraded from a pre-2026-09-30 token. |
+| `TRAILHEAD_AUTO_CREATE_TEAMS` | `false` | Legacy only: let unknown tokens create teams on the fly. Throwaway demos only. |
 
 ### Data management
 
@@ -127,11 +129,33 @@ cd /path/to/your/repo
 node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs init --api-url http://localhost:3000
 ```
 
-That writes `.mcp.json` (and `.vscode/mcp.json` for Copilot) with
-`TRAILHEAD_API_URL` set, and derives a team token from your git remote so
-teammates cloning the same repo land in the same team. You can also set
-`TRAILHEAD_API_URL` in your environment instead. Read
-[Security model](#security-model) before exposing the API beyond localhost.
+That registers the repo's team on the API, saves the team **secret** the
+server mints in `./.trailhead-team` (added to `.gitignore`), and writes
+`.mcp.json` (and `.vscode/mcp.json` for Copilot) pointing at that file — the
+secret itself is never written into the MCP configs. You can also set
+`TRAILHEAD_API_URL` in your environment instead of passing `--api-url`.
+
+**Teammates join** rather than register. Their `init` proposes the same team id
+(it is derived from the repo's remote URL, normalised so https and ssh clones
+agree), the API answers "already registered", and `init` tells them to get the
+secret from someone on the team — it is in that person's `.trailhead-team` —
+and run:
+
+```bash
+node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs init --team-token trailhead_sk_...
+```
+
+Share the secret the way you'd share any credential (password manager, DM),
+not in the repo. The same secret goes into the browser extension popup
+(**Select team**) and VS Code (`trailhead.teamToken`, in *User* settings).
+
+**Upgrading from a pre-2026-09-30 install.** Old installs use a token derived
+from the git remote URL (`repo_…`). It keeps working while
+`TRAILHEAD_ACCEPT_LEGACY_TOKENS=true` (the default) — responses carry a
+`Deprecation` header and `init` prints a warning. To upgrade, one person runs
+`init --upgrade-legacy` in the repo: the team keeps its data and gets a secret,
+and the old token stops working for everyone, so share the new secret.
+Read [Security model](#security-model) before exposing the API beyond localhost.
 
 Then seed the wiki from the repo:
 
@@ -145,45 +169,60 @@ node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs bootstrap
 npm run dev --workspace=apps/dashboard
 ```
 
-Runs on <http://localhost:3001> and reads the API at `NEXT_PUBLIC_API_URL`,
-defaulting to `http://localhost:3000`. To point elsewhere:
+Runs on <http://localhost:3001> and shows one team: the one whose secret is in
+`TRAILHEAD_TEAM_TOKEN` (default: the public demo team), from the API at
+`TRAILHEAD_API_URL` (default `http://localhost:3000`):
 
 ```bash
-NEXT_PUBLIC_API_URL=http://localhost:8080 npm run dev --workspace=apps/dashboard
+TRAILHEAD_API_URL=http://localhost:8080 \
+TRAILHEAD_TEAM_TOKEN="$(cat /path/to/your/repo/.trailhead-team)" \
+  npm run dev --workspace=apps/dashboard
 ```
 
-`NEXT_PUBLIC_*` values are baked in at build time, so a **deployed** dashboard
-must set `NEXT_PUBLIC_API_URL` before `next build`, and the API must be
-reachable from the visitor's browser. When it isn't set, the Teams page says so
-and names the variable.
+Both are read on the server at runtime. The browser never gets the secret:
+client-side charts go through the dashboard's own read-only proxy
+(`/api/trailhead/*`, GET only). The API only has to be reachable from the
+dashboard server, not from visitors. The old `NEXT_PUBLIC_API_URL` /
+`NEXT_PUBLIC_TEAM_TOKEN` names still work as fallbacks but are deprecated.
 
 ---
 
 ## Security model
 
-The API has one credential: the team token sent as `X-Team-Token`. Holding it
-grants read on that team's wiki — which the rich bootstrap fills with summaries
-of your source code — and write on everything, including `DELETE /team/data`.
-Tenants are isolated from each other only by knowing different tokens.
+Each team has two things:
 
-The defaults are safe **because** both ports are bound to `127.0.0.1`. Before
-you make the API reachable from anywhere else, know that:
+- a **team id** — public. For a repo it is `team_` + a hash of the normalised
+  git remote URL, so every clone proposes the same one. Safe to print or share.
+- a **team secret** (`trailhead_sk_…`) — the credential, sent as
+  `X-Team-Token`. The API mints it when the team is registered
+  (`POST /teams`, which `init` calls) and stores only its SHA-256. Holding it
+  grants read on that team's wiki — which the rich bootstrap fills with
+  summaries of your source code — and write on everything, including
+  `DELETE /team/data`. Rotate it with `POST /teams/rotate-secret`.
 
-- **Remote-derived tokens are guessable.** `init` derives the token as `repo_` +
-  the first 16 hex chars of SHA-256 of `git remote get-url origin`. Anyone who
-  knows (or guesses) a repo's URL can compute it. On a shared server, create
-  tokens with `init --team-token "$(openssl rand -hex 16)"` and share them out of
-  band.
-- **`init` writes the token in plain text** into `.mcp.json` and
-  `.vscode/mcp.json`. Don't commit those files if the token matters.
-- **Set `TRAILHEAD_AUTO_CREATE_TEAMS=false`.** With it on, any string creates a
-  tenant, so anyone who can reach the port can spend your Gemini quota.
-- **A deployed dashboard publishes its token.** The dashboard renders
-  `NEXT_PUBLIC_TEAM_TOKEN` into its `?team=` links, and the charts call the API
-  from the visitor's browser with it in `X-Team-Token`. Treat a public
-  dashboard as making that team world-readable and -writable.
-- **The demo token `trailhead_demo_acme_2026` is public** (it is in this repo).
-  The demo team is protected from `DELETE /team/data` but not from writes.
+The defaults are safe for a local setup because both ports are bound to
+`127.0.0.1`. Before making the API reachable from anywhere else:
+
+- **Set `TRAILHEAD_ADMIN_TOKEN`.** Registration is open otherwise: anyone who
+  can reach the port can create teams and spend your Gemini quota, and can
+  *squat* a repo's derived team id before the real team registers it. With it
+  set, pass it to `init --admin-token` (or hand people pre-made secrets).
+- **Turn legacy tokens off** (`TRAILHEAD_ACCEPT_LEGACY_TOKENS=false`) once every
+  team has run `init --upgrade-legacy`. A legacy token is
+  `repo_` + SHA-256 of the raw remote URL: anyone who knows or guesses the URL
+  can compute it. The API marks every response to one with `Deprecation: true`.
+- **Keep `TRAILHEAD_AUTO_CREATE_TEAMS=false`** (the default). With it on, any
+  string sent as a token creates a legacy team.
+- **Don't commit `.trailhead-team`.** `init` adds it to `.gitignore`. The MCP
+  configs it writes reference the file instead of containing the secret. Old
+  configs that embed `TRAILHEAD_TEAM_TOKEN` still work — re-run `init` to
+  switch them over.
+- **A deployed dashboard is a read-only window on its team.** It keeps the
+  secret server-side, but anyone who can open it can read that team's wiki and
+  metrics through it. Put it behind your SSO/VPN if that matters.
+- **The demo team's secret `trailhead_demo_acme_2026` is public** (it is in this
+  repo). The demo team is protected from `DELETE /team/data` and from secret
+  rotation, but not from writes.
 
 Where prompts go: every scored prompt, any wiki context attached to it, and —
 for the default rich `bootstrap` — the first 8,000 characters of up to 500

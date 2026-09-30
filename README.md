@@ -56,14 +56,18 @@ backend, all sharing the same TypeScript contract.
 
 ### `apps/api` — Hono backend (TypeScript, Node 22, Postgres)
 
-Single source of truth. Multi-tenant by `X-Team-Token` header, with optional
-auto-creation of new teams on unknown tokens (`TRAILHEAD_AUTO_CREATE_TEAMS`).
-Endpoints implemented in `apps/api/src/index.ts`:
+Single source of truth. Multi-tenant: each team has a public team id and a
+server-minted secret (only its SHA-256 is stored), sent as `X-Team-Token`.
+Pre-2026-09-30 tokens derived from the git remote still work behind
+`TRAILHEAD_ACCEPT_LEGACY_TOKENS` (deprecated). Routes are in
+`apps/api/src/app.ts` (`index.ts` just serves them):
 
 | Method + Path | What it does |
 |---|---|
 | `GET  /` | Health + endpoint catalog (unauth) |
-| `GET  /teams` | Resolves the caller's own team (authenticated). Never returns tokens — `{ name, id }` where `id` is an opaque digest |
+| `POST /teams` | Register a team (unauth; gated by `TRAILHEAD_ADMIN_TOKEN` when set). Returns `{ team_id, name, secret }` once; `409` if the id is taken — the join flow |
+| `POST /teams/rotate-secret` | New secret for the caller's team; the old credential stops working. Upgrades a legacy team |
+| `GET  /teams` | Resolves the caller's own team. Never returns the secret — `{ name, id, legacy, team_id? }` (`id` is an opaque digest; `team_id` only for non-legacy teams) |
 | `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
 | `POST /coach` | Stateless teach→reveal coaching loop, capped at 5 rounds |
 | `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
@@ -145,12 +149,16 @@ Plus a `ping` for health checks.
 
 CLI subcommands (`bin/cli.mjs`):
 
-- `trailhead-mcp init` — per-repo install. Writes `.mcp.json` + `CLAUDE.md`
-  for Claude Code and `.vscode/mcp.json` + `.github/copilot-instructions.md`
-  for Copilot. Idempotent. Token derivation order: `--team-token` →
-  `TRAILHEAD_TEAM_TOKEN` → `.trailhead-team` sentinel → SHA-256 of
-  `git remote get-url origin` → random `repo_local_*` token written to
-  `.trailhead-team` and added to `.gitignore`.
+- `trailhead-mcp init` — per-repo install. Sets up the repo's team, then writes
+  `.mcp.json` + `CLAUDE.md` for Claude Code and `.vscode/mcp.json` +
+  `.github/copilot-instructions.md` for Copilot. Idempotent. Credential order:
+  `--team-token` → `TRAILHEAD_TEAM_TOKEN` → `.trailhead-team` → otherwise
+  register `team_<hash of the normalised remote URL>` via `POST /teams` and save
+  the returned secret in `.trailhead-team` (gitignored). If the team is already
+  registered, `init` explains how to join (get the secret from a teammate,
+  `--team-token`). `--upgrade-legacy` moves a pre-2026-09-30 team to a secret.
+  The MCP configs reference `.trailhead-team` (`TRAILHEAD_TEAM_FILE`) instead
+  of embedding the secret.
 - `trailhead-mcp bootstrap` — walks the cwd, bundles source files, posts to
   `/onboard/repo/full`. Default rich mode shows a live progress bar. Flags:
   `--minimal`, `--paths`, `--force`, `--dry-run`, `--yes`.
@@ -201,7 +209,7 @@ Eight tables in `packages/db/schema.sql`:
   30 s dedup window
 - `wiki_jobs` + `wiki_job_paths` — async rich-bootstrap state
 
-The demo team (`Acme Fintech`, token `trailhead_demo_acme_2026`) is hardcoded
+The demo team (`Acme Fintech`, public secret `trailhead_demo_acme_2026`) is hardcoded
 into the schema with a fixed UUID so every surface can reference it without a
 lookup.
 
@@ -279,9 +287,9 @@ npm run dev
 The API refuses to boot without `DATABASE_URL` and `GEMINI_API_KEY`.
 
 Before exposing the API beyond `localhost`, read
-[SELFHOSTING.md → Security model](SELFHOSTING.md#security-model): the team token
-is the only credential, and the token `init` derives from a git remote can be
-computed by anyone who knows the remote URL.
+[SELFHOSTING.md → Security model](SELFHOSTING.md#security-model): set
+`TRAILHEAD_ADMIN_TOKEN`, and turn legacy tokens off once your teams have
+upgraded.
 
 ### Run individual surfaces
 
@@ -329,12 +337,14 @@ Single root `.env.example` — every surface reads from the same set.
 | `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
 | `TEAM_TOKEN` | — | Documentation only: the public demo team's token. The API does not read it; clients hardcode the same value as their fallback |
 | `PORT` | api | Defaults to 3000; Railway injects automatically |
-| `TRAILHEAD_AUTO_CREATE_TEAMS` | api | `false` to disable on-the-fly team creation |
+| `TRAILHEAD_ADMIN_TOKEN` | api | When set, `POST /teams` (registration) requires it as `X-Admin-Token` |
+| `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | api | Default `true`. Accept pre-2026-09-30 remote-derived tokens for teams without a secret (deprecated) |
+| `TRAILHEAD_AUTO_CREATE_TEAMS` | api | Default `false`. Legacy only: unknown tokens create legacy teams |
 | `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
-| `NEXT_PUBLIC_API_URL` | dashboard | Where the dashboard fetches |
-| `NEXT_PUBLIC_TEAM_TOKEN` | dashboard | Team token surfaced to the browser |
+| `TRAILHEAD_API_URL` | dashboard | Server-side, runtime. Where the dashboard fetches (fallback: legacy `NEXT_PUBLIC_API_URL`) |
+| `TRAILHEAD_TEAM_TOKEN` | dashboard | Server-side, runtime. The team secret; never sent to the browser (fallback: legacy `NEXT_PUBLIC_TEAM_TOKEN`) |
 | `trailhead.apiUrl` / `.teamToken` / `.userId` | vscode-ext | VS Code settings |
-| `TRAILHEAD_API_URL` / `TRAILHEAD_TEAM_TOKEN` | mcp-server | Per-repo MCP config |
+| `TRAILHEAD_API_URL` / `TRAILHEAD_TEAM_FILE` / `TRAILHEAD_TEAM_TOKEN` | mcp-server | Per-repo MCP config. `init` writes `TEAM_FILE` (path to `.trailhead-team`); `TEAM_TOKEN` overrides it |
 
 ---
 
@@ -342,8 +352,9 @@ Single root `.env.example` — every surface reads from the same set.
 
 - **API** → Railway. `railway.json` declares `npm --workspace=apps/api start`
   with healthcheck on `/`.
-- **Dashboard** → Vercel. Set `NEXT_PUBLIC_API_URL` and
-  `NEXT_PUBLIC_TEAM_TOKEN`, then `vercel --prod` from `apps/dashboard/`.
+- **Dashboard** → Vercel. Set `TRAILHEAD_API_URL` and `TRAILHEAD_TEAM_TOKEN`
+  (server-side env), then `vercel --prod` from `apps/dashboard/`. Anyone who
+  can open it can read that team's data (read-only), so restrict access.
 - **Landing page** → Vercel — already live at
   <https://learnloop-gules.vercel.app/>.
 - **Browser extension** → loaded unpacked from `apps/browser-ext/dist/`.
