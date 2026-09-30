@@ -28,6 +28,7 @@ import { API_URL_KEY, DEFAULT_API_URL } from '../config.ts';
 import { normalizeApiUrl } from '../api-url-state.ts';
 import { TEAM_TOKEN_KEY, TEAM_NAME_KEY } from '../team-state.ts';
 import { CONTEXT_PATH_KEY } from '../context-state.ts';
+import { SHARE_USER_ID_KEY } from '../user-state.ts';
 import { TEAM_TOKEN as DEFAULT_TEAM_TOKEN } from '../config.ts';
 import type {
   TeamsListResponse,
@@ -605,6 +606,26 @@ apiUrlInputEl.addEventListener('keydown', (e) => {
     void saveApiUrl();
   }
 });
+
+// Privacy toggle — see src/user-state.ts for what the id is and isn't.
+const shareUserIdEl = document.getElementById('share-user-id') as HTMLInputElement | null;
+if (shareUserIdEl) {
+  try {
+    (chrome as any).storage.local.get(SHARE_USER_ID_KEY, (v: Record<string, unknown>) => {
+      shareUserIdEl.checked = v?.[SHARE_USER_ID_KEY] !== false;
+    });
+  } catch {
+    /* chrome.* unavailable — leave the default */
+  }
+  shareUserIdEl.addEventListener('change', () => {
+    try {
+      (chrome as any).storage.local.set({ [SHARE_USER_ID_KEY]: shareUserIdEl.checked });
+      showToast(shareUserIdEl.checked ? 'Sending your per-install ID' : 'Sending as "anonymous"');
+    } catch {
+      /* ignore */
+    }
+  });
+}
 
 switchEl.addEventListener('click', async () => {
   try {

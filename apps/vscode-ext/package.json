@@ -54,8 +54,13 @@
         },
         "trailhead.userId": {
           "type": "string",
-          "default": "demo",
-          "description": "User ID stamped on score / capture writes."
+          "default": "",
+          "description": "Override the user ID stamped on score / capture writes. Empty (default): a random per-install ID, or \"anonymous\" when trailhead.shareUserId is off."
+        },
+        "trailhead.shareUserId": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send a random per-install ID so your team's server can chart your scores over time. Off: writes are sent as \"anonymous\". The ID is not linked to your account or machine."
         }
       }
     }

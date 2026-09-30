@@ -33,7 +33,7 @@ import type {
   MissingHints,
 } from '@trailhead/shared';
 import { coach as apiCoach } from '../api.ts';
-import { USER_ID } from '../config.ts';
+import { getUserId } from '../user-state.ts';
 import { writePrompt, type Selectors } from '../selectors.ts';
 import { resetCard } from '../score-card.ts';
 import { augmentAndSend, markApproved } from '../send-intercept.ts';
@@ -141,14 +141,14 @@ export function openImproveChat(
     const body = nextInputs
       ? {
           prompt,
-          user_id: USER_ID,
+          user_id: getUserId(),
           mode: 'score' as const,
           original_prompt: nextInputs.original_prompt,
           original_dimensions: nextInputs.original_dimensions,
           previous_dimensions: nextInputs.previous_dimensions,
           round: nextInputs.round,
         }
-      : { prompt, user_id: USER_ID, mode: 'score' as const };
+      : { prompt, user_id: getUserId(), mode: 'score' as const };
     const res = await apiCoach(body);
     handleCoachResponse(res);
   };

@@ -343,7 +343,8 @@ Single root `.env.example` — every surface reads from the same set.
 | `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
 | `TRAILHEAD_API_URL` | dashboard | Server-side, runtime. Where the dashboard fetches (fallback: legacy `NEXT_PUBLIC_API_URL`) |
 | `TRAILHEAD_TEAM_TOKEN` | dashboard | Server-side, runtime. The team secret; never sent to the browser (fallback: legacy `NEXT_PUBLIC_TEAM_TOKEN`) |
-| `trailhead.apiUrl` / `.teamToken` / `.userId` | vscode-ext | VS Code settings |
+| `trailhead.apiUrl` / `.teamToken` / `.userId` / `.shareUserId` | vscode-ext | VS Code settings. `userId` empty = random per-install id; `shareUserId: false` sends `anonymous` |
+| `TRAILHEAD_USER_ID` / `TRAILHEAD_SHARE_USER_ID` | mcp-server | Override the per-machine anonymous id, or `false` to send `anonymous` (see SELFHOSTING.md → Security model) |
 | `TRAILHEAD_API_URL` / `TRAILHEAD_TEAM_FILE` / `TRAILHEAD_TEAM_TOKEN` | mcp-server | Per-repo MCP config. `init` writes `TEAM_FILE` (path to `.trailhead-team`); `TEAM_TOKEN` overrides it |
 
 ---

@@ -16,10 +16,11 @@ import { z } from 'zod';
 import type { ApiClient, ContextResponse, ExamplesResponse, SearchResponse } from './api-client.ts';
 import { runBootstrap, runRichBootstrap } from './bootstrap.ts';
 import type { WikiJobStatusResponse } from '@trailhead/shared';
+import { resolveUserId } from './user-id.mjs';
 
-// User-id is hardcoded to 'demo' — the MCP server has no real auth, matching
-// the rest of the demo posture.
-const COACH_USER_ID = 'demo';
+// Per-machine anonymous id (src/user-id.mjs) — was a shared 'demo' for
+// everyone. Resolved once per server process.
+const COACH_USER_ID = resolveUserId();
 
 // 5-dim score block. Returned as a factory rather than a shared constant
 // because zod-to-json-schema dedupes shared object identity into `$ref`
