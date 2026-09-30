@@ -76,6 +76,13 @@ services:
       # 127.0.0.1. Set it before exposing the API on a network.
       TRAILHEAD_ADMIN_TOKEN: ${TRAILHEAD_ADMIN_TOKEN:-}
       TRAILHEAD_EXPOSE_ERRORS: ${TRAILHEAD_EXPOSE_ERRORS:-false}
+      # Rate limits — defaults live in apps/api/src/rate-limit.ts; empty = default.
+      TRAILHEAD_RATE_LIMIT: ${TRAILHEAD_RATE_LIMIT:-on}
+      TRAILHEAD_RL_REGISTER_PER_IP: ${TRAILHEAD_RL_REGISTER_PER_IP:-}
+      TRAILHEAD_RL_LLM_PER_TEAM: ${TRAILHEAD_RL_LLM_PER_TEAM:-}
+      TRAILHEAD_RL_LLM_PER_IP: ${TRAILHEAD_RL_LLM_PER_IP:-}
+      TRAILHEAD_RL_BOOTSTRAP_PER_TEAM: ${TRAILHEAD_RL_BOOTSTRAP_PER_TEAM:-}
+      TRAILHEAD_TRUST_PROXY: ${TRAILHEAD_TRUST_PROXY:-false}
       # auto (default) | review — see .env.example / SELFHOSTING.md.
       TRAILHEAD_PROMOTION_MODE: ${TRAILHEAD_PROMOTION_MODE:-auto}
       # Guard on DELETE /team/data for the seeded demo team.

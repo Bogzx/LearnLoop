@@ -3,7 +3,9 @@
 // directly against a real Postgres). Importing this module opens the pg pool
 // and requires DATABASE_URL and GEMINI_API_KEY to be set.
 import './env.ts';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
+import { getConnInfo } from '@hono/node-server/conninfo';
+import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import type {
@@ -69,6 +71,7 @@ import {
   wipeTeamData,
 } from './db.ts';
 import { isValidTeamId, randomTeamId, safeEqual } from './team-auth.ts';
+import { limiterFor, type LimitName } from './rate-limit.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { degradedCoachResponse, isUnparseableScore } from './coach-degraded.ts';
 import { intParam, isUuid } from './request-params.ts';
@@ -129,10 +132,62 @@ app.use(
   cors({
     origin: '*',
     allowHeaders: ['Content-Type', 'X-Team-Token', 'X-Admin-Token'],
-    exposeHeaders: ['Deprecation', 'X-Trailhead-Warning', 'X-Request-Id'],
+    exposeHeaders: ['Deprecation', 'X-Trailhead-Warning', 'X-Request-Id', 'Retry-After'],
     allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   }),
 );
+
+// Request body caps, enforced while reading (Content-Length or streamed), so
+// an oversized body is rejected before it is buffered and JSON-parsed. The
+// per-field caps in the handlers (prompt length, bundle size…) still apply;
+// these just bound memory. /onboard/repo/full carries a source bundle capped
+// at 16 MB of file content, so it gets room for that plus JSON overhead.
+// 2 MB: /improve can legitimately carry ~10 turns of up to 64K chars each.
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_BOOTSTRAP_BODY_BYTES = 24 * 1024 * 1024;
+const tooLarge = (max: number) => (c: Context<AppEnv>) =>
+  c.json({ error: 'payload_too_large', detail: `request body over ${max / (1024 * 1024)} MB` }, 413);
+const defaultBodyLimit = bodyLimit({ maxSize: MAX_BODY_BYTES, onError: tooLarge(MAX_BODY_BYTES) });
+const bootstrapBodyLimit = bodyLimit({ maxSize: MAX_BOOTSTRAP_BODY_BYTES, onError: tooLarge(MAX_BOOTSTRAP_BODY_BYTES) });
+app.use('*', (c, next) =>
+  (c.req.path === '/onboard/repo/full' ? bootstrapBodyLimit : defaultBodyLimit)(c, next),
+);
+
+// The caller's IP for per-IP rate limits: the socket's remote address, or —
+// only when TRAILHEAD_TRUST_PROXY=true, i.e. behind a reverse proxy you
+// control — the first X-Forwarded-For entry. Trusting the header without a
+// proxy would let any client pick its own rate-limit key.
+function clientIp(c: Context<AppEnv>): string {
+  if (process.env.TRAILHEAD_TRUST_PROXY === 'true') {
+    const fwd = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+    if (fwd) return fwd;
+  }
+  try {
+    return getConnInfo(c).remote.address ?? 'unknown';
+  } catch {
+    return 'unknown'; // no Node socket (app.request() in tests)
+  }
+}
+
+// Take a token from a named limiter (rate-limit.ts); on refusal, the 429 to
+// return. Retry-After is in whole seconds. Clients treat 429 like any other
+// failure: coaching fails open.
+function rateLimit(c: Context<AppEnv>, name: LimitName, key: string): Response | null {
+  const limiter = limiterFor(name);
+  if (!limiter) return null;
+  const r = limiter.take(key);
+  if (r.ok) return null;
+  c.header('Retry-After', String(r.retryAfterSec));
+  return c.json(
+    {
+      error: 'rate_limited',
+      limit: name,
+      retry_after: r.retryAfterSec,
+      detail: `Too many requests (${name.replace(/_/g, ' ')}: ${limiter.spec.text}). Retry in ${r.retryAfterSec}s.`,
+    },
+    429,
+  );
+}
 
 // Langfuse: one trace per HTTP request, stored in AsyncLocalStorage so
 // gemini.ts can hang generations off it without us having to thread the
@@ -202,6 +257,20 @@ app.use('*', async (c, next) => {
       );
     }
   }
+  await next();
+});
+
+// Rate limits for the routes that spend Gemini quota, checked after auth so
+// the per-team bucket is keyed on the resolved team id (never the secret).
+const LLM_ROUTES = new Set(['POST /score', 'POST /coach', 'POST /improve', 'POST /diff', 'POST /onboard/repo/full']);
+app.use('*', async (c, next) => {
+  const route = `${c.req.method} ${c.req.path}`;
+  if (!LLM_ROUTES.has(route)) return next();
+  const limited =
+    rateLimit(c, 'llm_per_ip', clientIp(c)) ??
+    rateLimit(c, 'llm_per_team', c.get('team_token')) ??
+    (route === 'POST /onboard/repo/full' ? rateLimit(c, 'bootstrap_per_team', c.get('team_token')) : null);
+  if (limited) return limited;
   await next();
 });
 
@@ -1702,6 +1771,9 @@ app.get('/teams', async (c) => {
 // `init` derives team_id from the normalised git remote URL, so every clone of
 // a repo proposes the same id and the second one lands on the 409.
 app.post('/teams', async (c) => {
+  // Before the admin check, so the limit also slows admin-token guessing.
+  const limited = rateLimit(c, 'register_per_ip', clientIp(c));
+  if (limited) return limited;
   const { adminToken } = authPolicy();
   if (adminToken !== null && !safeEqual(c.req.header('x-admin-token') ?? '', adminToken)) {
     return c.json(
