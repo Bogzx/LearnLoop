@@ -35,11 +35,11 @@ this function do", "how should I structure X".
 1. Call `coach({ prompt: <user's exact message>, file_path: <if known> })`.
 2. The tool returns `{ proceed, text, next_round_inputs?, ... }`.
 3. **If `proceed: true`:** if `text` is non-empty, relay it verbatim to
-   the user. Then produce your answer. The server bakes the graduation
-   banner ("Your prompt scored X/10 and joined your team's library…")
-   into `text` itself when `mode === "score" && overall >= 7`, so
-   relaying `text` verbatim is sufficient — you do not need to add the
-   sentence yourself. Done.
+   the user. Then produce your answer. The server bakes the library
+   banner ("Your prompt scored X/10 and was submitted to your team's
+   library…", or a note saying why it wasn't) into `text` itself when
+   `mode === "score" && overall >= 7`, so relaying `text` verbatim is
+   sufficient — you do not need to add the sentence yourself. Done.
 4. **If `proceed: false`:** relay `text` verbatim, wait for the user's
    reply, then call `coach` again with:
    - `prompt`: the user's reply concatenated to the previous prompt

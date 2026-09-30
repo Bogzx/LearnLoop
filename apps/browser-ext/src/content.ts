@@ -7,6 +7,9 @@
 //   6. start the MutationObserver on the message-list root
 //   7. start the wiki-toast 2s poll loop
 //
+// All API traffic goes through the extension's service worker (api.ts →
+// background.ts); this script never fetches the API itself.
+//
 // Top-level safety net: window 'error' / 'unhandledrejection' swallow only
 // errors that originate inside our extension (we tag our stack frames with
 // TRAILHEAD_ERROR_TAG via the api.ts console.warn line). Anything else
@@ -25,6 +28,7 @@ import { startWikiToastLoop } from './widgets/wiki-toast.ts';
 import { initCoachingState } from './coaching-state.ts';
 import { initApiUrlState } from './api-url-state.ts';
 import { initTeamState } from './team-state.ts';
+import { initUserState } from './user-state.ts';
 import { initContextState } from './context-state.ts';
 import { initContextBundle } from './context-bundle.ts';
 import { mountContextPill } from './widgets/context-pill.ts';
@@ -185,20 +189,24 @@ async function main(): Promise<void> {
     console.info(`${TRAILHEAD_ERROR_TAG} disabled via storage flag`);
     return;
   }
-  // Subscribe to the coaching toggle so the popup switch takes effect
-  // live — no page reload needed.
-  initCoachingState();
-  // Trailhead is self-hosted: the API base URL is user config, edited in
-  // the popup's "API server" row. Seed it before any fetch so requests go
-  // to the user's server rather than the localhost default.
-  initApiUrlState();
-  // Same pattern for the popup's Select-team dropdown — every fetch
-  // after the user picks a team uses that team's X-Team-Token.
-  initTeamState();
-  // Sticky wiki context: popup writes a node path to chrome.storage,
-  // content script reads it sync and prepends the rendered subtree to
-  // every Claude.ai send + every /score and /improve call.
-  initContextState();
+  // Load every popup-controlled setting from chrome.storage BEFORE the first
+  // request or poll, and keep each live via chrome.storage.onChanged:
+  //   - coaching toggle, API server URL (for error messages; the service
+  //     worker reads it itself for every request), selected team, the
+  //     per-install user id, and the sticky wiki context path.
+  // Before, these loaded asynchronously while tryStart() was already polling,
+  // so the first requests could go out with defaults. Capped at 3 s so a
+  // wedged storage callback can't keep the extension from mounting.
+  await Promise.race([
+    Promise.all([
+      initCoachingState(),
+      initApiUrlState(),
+      initTeamState(),
+      initUserState(),
+      initContextState(),
+    ]),
+    new Promise((resolve) => setTimeout(resolve, 3_000)),
+  ]);
   initContextBundle();
   attachGlobalGuard();
   if (document.readyState === 'loading') {

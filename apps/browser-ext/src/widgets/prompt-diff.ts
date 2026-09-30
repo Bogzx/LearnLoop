@@ -4,7 +4,7 @@
 // refetch (spec §4.4).
 import { renderScoreCard } from '@trailhead/score-card';
 import { diff as apiDiff } from '../api.ts';
-import { USER_ID } from '../config.ts';
+import { getUserId } from '../user-state.ts';
 import { parseDiffResponse } from '../diff-parse.ts';
 import { simpleHash } from '../hash.ts';
 import { readBubbleText } from '../selectors.ts';
@@ -106,7 +106,7 @@ export function mountPromptDiff(bubble: HTMLElement): void {
     placeholder.textContent = 'Comparing…';
     panel.appendChild(placeholder);
 
-    const res = await apiDiff({ user_prompt: text, user_id: USER_ID });
+    const res = await apiDiff({ user_prompt: text, user_id: getUserId() });
     loading = false;
     if (res) store.setDiff(hash, { data: res });
     renderPanel(parseDiffResponse(res));

@@ -16,7 +16,6 @@ export const DEFAULT_API_URL = 'http://localhost:3000';
 export const API_URL_KEY = 'trailhead.apiUrl';
 
 export const TEAM_TOKEN = 'trailhead_demo_acme_2026';
-export const USER_ID = 'demo';
 
 /** Per-fetch timeout via AbortController (spec §6.1).
  *  Raised from 4s to 12s after enabling Gemini thinking on /score: a normal

@@ -43,9 +43,13 @@ Every prompt is scored 0–10 on:
 4. `constraint_articulation` — what *must not* change, perf/style limits
 5. `output_specification` — desired shape of the response
 
-`overall = mean of the five dims`. Below 7 triggers coaching; ≥ 7 lands
-silently. The rubric is concrete enough that a human reviewer could apply it —
-the LLM is the implementation, not the product.
+`overall = round(mean of the five dims)`. Below 7 triggers coaching; ≥ 7 lands
+silently. Joining the team's prompt library is stricter: the unrounded mean
+must be ≥ 7.0, no dimension below 5, and an independent re-score must agree
+(optionally plus a teammate's review — see SELFHOSTING.md → Security model).
+The rubric is concrete enough that a human reviewer could apply it — the LLM
+is the implementation, not the product. Scores come from an LLM and vary run
+to run; `apps/api/eval/` measures how much.
 
 ---
 
@@ -56,20 +60,28 @@ backend, all sharing the same TypeScript contract.
 
 ### `apps/api` — Hono backend (TypeScript, Node 22, Postgres)
 
-Single source of truth. Multi-tenant by `X-Team-Token` header, with optional
-auto-creation of new teams on unknown tokens (`TRAILHEAD_AUTO_CREATE_TEAMS`).
-Endpoints implemented in `apps/api/src/index.ts`:
+Single source of truth. Multi-tenant: each team has a public team id and a
+server-minted secret (only its SHA-256 is stored), sent as `X-Team-Token`.
+Pre-2026-09-30 tokens derived from the git remote still work behind
+`TRAILHEAD_ACCEPT_LEGACY_TOKENS` (deprecated). Routes are in
+`apps/api/src/app.ts` (`index.ts` just serves them):
 
 | Method + Path | What it does |
 |---|---|
 | `GET  /` | Health + endpoint catalog (unauth) |
-| `GET  /teams` | Resolves the caller's own team (authenticated). Never returns tokens — `{ name, id }` where `id` is an opaque digest |
+| `POST /teams` | Register a team (unauth; gated by `TRAILHEAD_ADMIN_TOKEN` when set). Returns `{ team_id, name, secret }` once; `409` if the id is taken — the join flow |
+| `POST /teams/rotate-secret` | New secret for the caller's team; the old credential stops working. Upgrades a legacy team |
+| `GET  /teams` | Resolves the caller's own team. Never returns the secret — `{ name, id, legacy, team_id? }` (`id` is an opaque digest; `team_id` only for non-legacy teams) |
 | `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
-| `POST /coach` | Stateless 3-round teach→reveal coaching loop |
+| `POST /coach` | Stateless teach→reveal coaching loop, capped at 5 rounds |
 | `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
 | `POST /wiki/propose` | Normalize + dedup an insight on `(node_id, body_normalized)`, increment `reinforcement_count`, promote `draft → durable` at ≥ 3 |
 | `GET  /context?path=` | Ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
 | `GET  /examples?path=` | Top graduated prompts for an ancestor of a file path |
+| `GET  /prompts/proven` | The team's graduated prompts, filterable by score, path, topic |
+| `GET  /prompts/pending` | Library candidates awaiting review (`TRAILHEAD_PROMOTION_MODE=review`) |
+| `POST /prompts/:id/review` | `{ approve: true }` graduates a pending prompt, `false` discards it |
+| `GET  /search?q=&scope=` | Substring search over rules, durable learnings and graduated prompts |
 | `GET  /wiki/recent?since=ISO` | Polling endpoint for the VS Code wiki-toast surface |
 | `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, asks Gemini to narrate the difference |
 | `POST /improve` | Multi-turn Gemini-driven prompt rewrite, capped at 5 user replies |
@@ -145,28 +157,34 @@ Plus a `ping` for health checks.
 
 CLI subcommands (`bin/cli.mjs`):
 
-- `trailhead-mcp init` — per-repo install. Writes `.mcp.json` + `CLAUDE.md`
-  for Claude Code and `.vscode/mcp.json` + `.github/copilot-instructions.md`
-  for Copilot. Idempotent. Token derivation order: `--team-token` →
-  `TRAILHEAD_TEAM_TOKEN` → `.trailhead-team` sentinel → SHA-256 of
-  `git remote get-url origin` → random `repo_local_*` token written to
-  `.trailhead-team` and added to `.gitignore`.
+- `trailhead-mcp init` — per-repo install. Sets up the repo's team, then writes
+  `.mcp.json` + `CLAUDE.md` for Claude Code and `.vscode/mcp.json` +
+  `.github/copilot-instructions.md` for Copilot. Idempotent. Credential order:
+  `--team-token` → `TRAILHEAD_TEAM_TOKEN` → `.trailhead-team` → otherwise
+  register `team_<hash of the normalised remote URL>` via `POST /teams` and save
+  the returned secret in `.trailhead-team` (gitignored). If the team is already
+  registered, `init` explains how to join (get the secret from a teammate,
+  `--team-token`). `--upgrade-legacy` moves a pre-2026-09-30 team to a secret.
+  The MCP configs reference `.trailhead-team` (`TRAILHEAD_TEAM_FILE`) instead
+  of embedding the secret.
 - `trailhead-mcp bootstrap` — walks the cwd, bundles source files, posts to
   `/onboard/repo/full`. Default rich mode shows a live progress bar. Flags:
   `--minimal`, `--paths`, `--force`, `--dry-run`, `--yes`.
 - `trailhead-mcp reset` — wipes the team's wiki/captures/observations.
 
-### `apps/dashboard` — Next.js 15 dashboard (Vercel)
+### `apps/dashboard` — Next.js 16 dashboard (Vercel)
 
-App router, server components for the team list, SWR for the live charts.
-Pages (`src/app/`):
+App router, server components for the team view, SWR for the live charts.
+Shows one team — the one whose secret is in the server-side
+`TRAILHEAD_TEAM_TOKEN`; the browser never sees the secret (client charts go
+through a read-only proxy route, `/api/trailhead/*`). Pages (`src/app/`):
 
-- `/` — team view (shows the caller's own team; `GET /teams` is authenticated
-  and returns only the team the configured token resolves to)
-- `/skill-arc?team=…` — per-dimension team chart driven by `/skill-arc`,
+- `/` — team view
+- `/skill-arc` — per-dimension team chart driven by `/skill-arc`,
   polls every 2 s during the demo
-- `/team?team=…` — L1→L2 metric cards from `/team/metrics`
-- `/wiki?team=…` — node tree + durable learnings from `/wiki/tree`
+- `/team` — L1→L2 metric cards from `/team/metrics`
+- `/wiki` — node tree + durable learnings from `/wiki/tree`
+- `/onboarding` — the wiki as an onboarding guide
 
 ### `apps/landing-page` — LearnLoop marketing site
 
@@ -201,7 +219,7 @@ Eight tables in `packages/db/schema.sql`:
   30 s dedup window
 - `wiki_jobs` + `wiki_job_paths` — async rich-bootstrap state
 
-The demo team (`Acme Fintech`, token `trailhead_demo_acme_2026`) is hardcoded
+The demo team (`Acme Fintech`, public secret `trailhead_demo_acme_2026`) is hardcoded
 into the schema with a fixed UUID so every surface can reference it without a
 lookup.
 
@@ -215,7 +233,7 @@ apps/
   browser-ext/   Chrome MV3 extension for Claude.ai
   vscode-ext/    VS Code IDE extension
   mcp-server/    MCP server (Claude Code + Copilot Chat) + CLI
-  dashboard/     Next.js 15 dashboard (Vercel)
+  dashboard/     Next.js 16 dashboard (Vercel)
   landing-page/  Static marketing site (LearnLoop)
 packages/
   shared/        TypeScript types — single source of truth for API shapes
@@ -278,6 +296,11 @@ npm run dev
 
 The API refuses to boot without `DATABASE_URL` and `GEMINI_API_KEY`.
 
+Before exposing the API beyond `localhost`, read
+[SELFHOSTING.md → Security model](SELFHOSTING.md#security-model): set
+`TRAILHEAD_ADMIN_TOKEN`, and turn legacy tokens off once your teams have
+upgraded.
+
 ### Run individual surfaces
 
 ```bash
@@ -305,6 +328,7 @@ node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs bootstrap
 
 ```bash
 npm run typecheck    # tsc --noEmit across all workspaces
+npm run lint         # ESLint (flat config: eslint.config.mjs) over the whole repo
 npm run test         # run all workspace tests
 npm run build        # build all workspaces that expose a build script
 ```
@@ -322,14 +346,23 @@ Single root `.env.example` — every surface reads from the same set.
 | `LANGFUSE_PUBLIC_KEY` | api | Optional. Hosted Langfuse public key (`pk-lf-…`) |
 | `LANGFUSE_SECRET_KEY` | api | Optional. Hosted Langfuse secret key (`sk-lf-…`) |
 | `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
-| `TEAM_TOKEN` | clients | Demo single-tenant secret, sent as `X-Team-Token` |
+| `TEAM_TOKEN` | — | Documentation only: the public demo team's token. The API does not read it; clients hardcode the same value as their fallback |
 | `PORT` | api | Defaults to 3000; Railway injects automatically |
-| `TRAILHEAD_AUTO_CREATE_TEAMS` | api | `false` to disable on-the-fly team creation |
+| `TRAILHEAD_ADMIN_TOKEN` | api | When set, `POST /teams` (registration) requires it as `X-Admin-Token` |
+| `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | api | Default `true`. Accept pre-2026-09-30 remote-derived tokens for teams without a secret (deprecated) |
+| `TRAILHEAD_AUTO_CREATE_TEAMS` | api | Default `false`. Legacy only: unknown tokens create legacy teams |
+| `TRAILHEAD_SCORE_TEMPERATURE` / `TRAILHEAD_SCORE_THINKING_BUDGET` | api | Scorer sampling (defaults `0.2` / `-1` = dynamic). Measure before changing: `apps/api/eval/` |
+| `TRAILHEAD_RL_REGISTER_PER_IP` / `TRAILHEAD_RL_LLM_PER_TEAM` / `TRAILHEAD_RL_LLM_PER_IP` / `TRAILHEAD_RL_BOOTSTRAP_PER_TEAM` | api | Rate limits as `N/W` (defaults `10/1h`, `120/1m`, `120/1m`, `6/1h`), or `off`. In-process, so per replica — see SELFHOSTING.md |
+| `TRAILHEAD_RATE_LIMIT` | api | `off` disables every rate limit |
+| `TRAILHEAD_TRUST_PROXY` | api | `true` behind your own (single-hop) reverse proxy: per-IP limits key on the last `X-Forwarded-For` entry, the one the proxy appended |
+| `TRAILHEAD_EXPOSE_ERRORS` | api | `true` to include the raw error message in 500 responses (local debugging). Default: only a `request_id` that matches the server log |
+| `TRAILHEAD_PROMOTION_MODE` | api | `auto` (default): gated auto-promotion into the library. `review`: promoted prompts wait for a teammate's approval |
 | `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
-| `NEXT_PUBLIC_API_URL` | dashboard | Where the dashboard fetches |
-| `NEXT_PUBLIC_TEAM_TOKEN` | dashboard | Team token surfaced to the browser |
-| `trailhead.apiUrl` / `.teamToken` / `.userId` | vscode-ext | VS Code settings |
-| `TRAILHEAD_API_URL` / `TRAILHEAD_TEAM_TOKEN` | mcp-server | Per-repo MCP config |
+| `TRAILHEAD_API_URL` | dashboard | Server-side, runtime. Where the dashboard fetches (fallback: legacy `NEXT_PUBLIC_API_URL`) |
+| `TRAILHEAD_TEAM_TOKEN` | dashboard | Server-side, runtime. The team secret; never sent to the browser (fallback: legacy `NEXT_PUBLIC_TEAM_TOKEN`) |
+| `trailhead.apiUrl` / `.teamToken` / `.userId` / `.shareUserId` | vscode-ext | VS Code settings. `userId` empty = random per-install id; `shareUserId: false` sends `anonymous` |
+| `TRAILHEAD_USER_ID` / `TRAILHEAD_SHARE_USER_ID` | mcp-server | Override the per-machine anonymous id, or `false` to send `anonymous` (see SELFHOSTING.md → Security model) |
+| `TRAILHEAD_API_URL` / `TRAILHEAD_TEAM_FILE` / `TRAILHEAD_TEAM_TOKEN` | mcp-server | Per-repo MCP config. `init` writes `TEAM_FILE` (path to `.trailhead-team`); `TEAM_TOKEN` overrides it |
 
 ---
 
@@ -337,8 +370,9 @@ Single root `.env.example` — every surface reads from the same set.
 
 - **API** → Railway. `railway.json` declares `npm --workspace=apps/api start`
   with healthcheck on `/`.
-- **Dashboard** → Vercel. Set `NEXT_PUBLIC_API_URL` and
-  `NEXT_PUBLIC_TEAM_TOKEN`, then `vercel --prod` from `apps/dashboard/`.
+- **Dashboard** → Vercel. Set `TRAILHEAD_API_URL` and `TRAILHEAD_TEAM_TOKEN`
+  (server-side env), then `vercel --prod` from `apps/dashboard/`. Anyone who
+  can open it can read that team's data (read-only), so restrict access.
 - **Landing page** → Vercel — already live at
   <https://learnloop-gules.vercel.app/>.
 - **Browser extension** → loaded unpacked from `apps/browser-ext/dist/`.
@@ -361,7 +395,7 @@ Single root `.env.example` — every surface reads from the same set.
    user prompts.
 3. In Claude Code or Copilot Chat, the MCP server's `coach` tool is called
    first. Server returns `proceed: false` plus a teach-block when the score
-   is low; the host LLM relays the block, gathers a reply, calls back. Three
+   is low; the host LLM relays the block, gathers a reply, calls back. Five
    rounds max, then a reveal block shows the score arc and prompt diff.
 4. When the user states a teamwide convention, `wiki_save` calls
    `POST /wiki/propose`. Server-side normalize + dedup means repeated calls
@@ -407,7 +441,7 @@ contracts, builds, and tests.
   (diff narration, rich bootstrap)
 - **Observability:** Langfuse (hosted) — one trace per request, one
   generation per LLM call
-- **Frontend:** Next.js 15 + Tailwind + Recharts + SWR (dashboard); vanilla
+- **Frontend:** Next.js 16 + Tailwind + Recharts + SWR (dashboard); vanilla
   TS + esbuild (extensions); React via CDN (landing page)
 - **MCP:** `@modelcontextprotocol/sdk`, STDIO transport
 - **Build:** npm workspaces; per-package `tsc` / `esbuild`

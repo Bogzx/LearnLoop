@@ -7,6 +7,7 @@
 //
 // All HTTP happens in the extension host (no CSP), then the result flows
 // to the webview via postMessage. Webview is render-only.
+import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import * as api from './api.ts';
 import { activeFilePath, activeFolderPath } from './paths.ts';
@@ -18,13 +19,34 @@ import { applyWikiSnapshot, diffWikiItems, maxSince } from './wiki-diff.ts';
 // (PORT ?? 3000) and the port the root docker-compose.yml publishes.
 const DEFAULT_API_URL = 'http://localhost:3000';
 
+// Per-install user id, generated once and kept in globalState. Replaces the
+// shared 'demo' id every install used to send. Precedence: an explicit
+// `trailhead.userId` setting, then 'anonymous' if `trailhead.shareUserId` is
+// off, then the per-install UUID. Same privacy model as the browser extension
+// (apps/browser-ext/src/user-state.ts): random, not tied to the VS Code
+// account or machine id, readable per-id by anyone with the team secret.
+const USER_ID_STATE_KEY = 'trailhead.installUserId';
+let installUserId = 'anonymous';
+
+function ensureInstallUserId(context: vscode.ExtensionContext): void {
+  const existing = context.globalState.get<string>(USER_ID_STATE_KEY);
+  if (existing) {
+    installUserId = existing;
+    return;
+  }
+  installUserId = randomUUID();
+  void context.globalState.update(USER_ID_STATE_KEY, installUserId);
+}
+
 function readConfig(): api.ApiConfig & { userId: string } {
   const cfg = vscode.workspace.getConfiguration('trailhead');
   const configured = (cfg.get<string>('apiUrl') ?? '').trim().replace(/\/+$/, '');
+  const explicitUserId = (cfg.get<string>('userId') ?? '').trim();
+  const share = cfg.get<boolean>('shareUserId') ?? true;
   return {
     apiUrl: configured || DEFAULT_API_URL,
     teamToken: cfg.get<string>('teamToken') ?? 'trailhead_demo_acme_2026',
-    userId: cfg.get<string>('userId') ?? 'demo',
+    userId: explicitUserId || (share ? installUserId : 'anonymous'),
   };
 }
 
@@ -199,6 +221,7 @@ class CoachViewProvider implements vscode.WebviewViewProvider {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  ensureInstallUserId(context);
   const provider = new CoachViewProvider(context);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(CoachViewProvider.viewType, provider, {

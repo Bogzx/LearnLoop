@@ -14,12 +14,16 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ApiClient, ContextResponse, ExamplesResponse, SearchResponse } from './api-client.ts';
+import { RateLimitedError } from './api-client.ts';
+import type { CoachResponse } from '@trailhead/shared';
 import { runBootstrap, runRichBootstrap } from './bootstrap.ts';
 import type { WikiJobStatusResponse } from '@trailhead/shared';
+import { fenceUntrusted, UNTRUSTED_NOTE, UNTRUSTED_TAG } from '@trailhead/scoring/fence';
+import { resolveUserId } from './user-id.mjs';
 
-// User-id is hardcoded to 'demo' — the MCP server has no real auth, matching
-// the rest of the demo posture.
-const COACH_USER_ID = 'demo';
+// Per-machine anonymous id (src/user-id.mjs) — was a shared 'demo' for
+// everyone. Resolved once per server process.
+const COACH_USER_ID = resolveUserId();
 
 // 5-dim score block. Returned as a factory rather than a shared constant
 // because zod-to-json-schema dedupes shared object identity into `$ref`
@@ -70,6 +74,12 @@ function trimNodesByDepth<T>(nodes: T[], depth: LookupDepth): T[] {
   if (depth === 'full' || nodes.length <= 1) return nodes;
   const take = depth === 'file' ? 1 : 2;
   return nodes.slice(-take);
+}
+
+// Prefix tool output that contains fenced team content with the rule that
+// the fenced text is data. Output with no fence is returned unchanged.
+export function withUntrustedNote(text: string): string {
+  return text.includes(`<${UNTRUSTED_TAG} `) ? `${UNTRUSTED_NOTE}\n\n${text}` : text;
 }
 
 // Friendly text rendering for the layered HCL bundle. Used by wiki_lookup
@@ -360,10 +370,36 @@ export function registerCoach(server: McpServer, client: ApiClient): void {
           content: [{ type: 'text' as const, text: logText }],
         };
       } catch (e) {
-        return asError(e);
+        // Fail open, like every other surface: an unreachable, erroring or
+        // rate-limited API must never block the user's real work. Same
+        // shape as the API's own degraded response (proceed + non-empty
+        // text), so the host relays why this turn wasn't coached.
+        return coachUnavailable(input.mode ?? 'score', e);
       }
     },
   );
+}
+
+export function coachUnavailable(mode: CoachResponse['mode'], e: unknown) {
+  const rateLimited = e instanceof RateLimitedError;
+  const why = rateLimited
+    ? `the Trailhead API is rate limiting this team or machine${e.retryAfterSec !== null ? ` (retry in ${e.retryAfterSec}s)` : ''}`
+    : `the Trailhead API call failed (${e instanceof Error ? e.message : String(e)})`;
+  const text =
+    `⚠️ Trailhead could not coach this prompt: ${why}. ` +
+    'Proceed with the original prompt as written.';
+  const zeros = { goal_clarity: 0, specificity: 0, context_loading: 0, constraint_articulation: 0, output_specification: 0 };
+  const res: CoachResponse = {
+    proceed: true,
+    mode,
+    overall: 0,
+    dimensions: zeros,
+    missing: {},
+    degraded: true,
+    error: rateLimited ? 'rate_limited' : 'api_unavailable',
+    text,
+  };
+  return { structuredContent: { ...res }, content: [{ type: 'text' as const, text }] };
 }
 
 // =============================================================================
@@ -427,20 +463,20 @@ export function registerWikiLookup(server: McpServer, client: ApiClient): void {
             nodes: trimNodesByDepth(ctxRaw.nodes, resolvedDepth),
           };
           sections.push(`# context for ${file_path}`);
-          sections.push(renderContext(ctx, { rulesOnly: rules_only ?? false }));
+          sections.push(fenceUntrusted(renderContext(ctx, { rulesOnly: rules_only ?? false }), 'wiki'));
 
           if (examplesRaw) {
             const rendered = renderExamples(examplesRaw);
             if (rendered) {
               sections.push('# team-graduated prompts');
-              sections.push(rendered);
+              sections.push(fenceUntrusted(rendered, 'team_prompts'));
             }
           }
 
           if (query) {
             const results = searchRaw ?? searchInContext(ctxRaw, query);
             sections.push(`# search results for "${query}" (scoped to ${file_path})`);
-            sections.push(renderSearch(results, query));
+            sections.push(fenceUntrusted(renderSearch(results, query), 'wiki_search'));
           }
         } else if (query) {
           // Free-text search, unscoped. /search is the only path that works
@@ -449,11 +485,13 @@ export function registerWikiLookup(server: McpServer, client: ApiClient): void {
           // non-empty `?path=`). Surface a clear error instead.
           const results = await client.search(query);
           sections.push(`# search results for "${query}"`);
-          sections.push(renderSearch(results, query));
+          sections.push(fenceUntrusted(renderSearch(results, query), 'wiki_search'));
         }
 
+        // Everything fenced above is team-authored; say once, up front, that
+        // it is reference data (packages/scoring/src/fence.mjs).
         return {
-          content: [{ type: 'text' as const, text: sections.join('\n\n') }],
+          content: [{ type: 'text' as const, text: withUntrustedNote(sections.join('\n\n')) }],
         };
       } catch (e) {
         return asError(e);
@@ -802,7 +840,7 @@ export function registerWikiProvenPrompts(server: McpServer, client: ApiClient):
           content: [
             {
               type: 'text' as const,
-              text: `${heading}\n\n${renderProvenPrompts(res.items)}`,
+              text: withUntrustedNote(`${heading}\n\n${fenceUntrusted(renderProvenPrompts(res.items), 'team_prompts')}`),
             },
           ],
         };

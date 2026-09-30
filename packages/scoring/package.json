@@ -17,11 +17,12 @@
     "./topic-prompt": "./src/topic-prompt.mjs",
     "./score-helpers": "./src/score-helpers.mjs",
     "./path-helpers": "./src/path-helpers.mjs",
-    "./models": "./src/models.mjs"
+    "./models": "./src/models.mjs",
+    "./fence": "./src/fence.mjs"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/normalize.test.mjs src/extract-prompt.test.mjs src/dedup-invariant.test.mjs src/declarations-match.test.mjs"
+    "test": "node --test src/normalize.test.mjs src/extract-prompt.test.mjs src/dedup-invariant.test.mjs src/declarations-match.test.mjs src/fence.test.mjs src/reveal-render.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

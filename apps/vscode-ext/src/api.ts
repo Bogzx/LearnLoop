@@ -28,6 +28,15 @@ function headers(cfg: ApiConfig): Record<string, string> {
   };
 }
 
+// The API rate-limits scoring per team and per IP (429 + Retry-After). Show
+// when to try again instead of a bare status code.
+export function rateLimitMessage(res: { headers: { get(name: string): string | null } }): string {
+  const retry = Number(res.headers.get('retry-after'));
+  return Number.isFinite(retry) && retry > 0
+    ? `rate limited by the Trailhead API — try again in ${retry}s`
+    : 'rate limited by the Trailhead API — try again shortly';
+}
+
 function url(cfg: ApiConfig, path: string): string {
   return `${cfg.apiUrl.replace(/\/$/, '')}${path}`;
 }
@@ -39,6 +48,7 @@ export async function score(cfg: ApiConfig, body: ScoreRequest, signal?: AbortSi
     body: JSON.stringify(body),
     signal,
   });
+  if (res.status === 429) throw new Error(rateLimitMessage(res));
   if (!res.ok) throw new Error(`/score ${res.status}`);
   return (await res.json()) as ScoreResponse;
 }

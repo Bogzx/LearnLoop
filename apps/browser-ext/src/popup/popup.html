@@ -289,6 +289,11 @@
     }
 
     /* ===== Dropdowns (team list + wiki tree) ===== */
+    .privacy-row {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; cursor: pointer;
+    }
+    .privacy-row input { margin: 0; accent-color: var(--good); }
     .team-dropdown {
       max-height: 240px;
       overflow-y: auto;
@@ -619,6 +624,16 @@
         <button id="api-url-save" class="api-save-btn" type="button">Save</button>
       </div>
       <div id="api-url-status" class="api-status"></div>
+    </section>
+
+    <!-- Privacy: per-install anonymous id (src/user-state.ts). -->
+    <section class="section">
+      <div class="section-label">Privacy</div>
+      <label class="privacy-row" for="share-user-id">
+        <input id="share-user-id" type="checkbox" checked>
+        <span>Send an anonymous per-install ID</span>
+      </label>
+      <div id="user-id-hint" class="api-status">A random ID made on this browser, so your team's server can chart your scores over time. Off: you're sent as "anonymous".</div>
     </section>
 
     <div class="hint" id="coaching-hint">When off, the extension stops intercepting sends.</div>

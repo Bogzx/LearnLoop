@@ -1,9 +1,9 @@
 // CLI entry point for `trailhead-mcp reset`. Wipes ALL wiki data for the
 // current team. Confirmation prompt unless --yes is passed.
 //
-// Token resolution mirrors bootstrap-cli — auto-derived from cwd so running
-// `trailhead-mcp reset` from inside a repo nukes that repo's team, not the
-// demo's. Pass --team-token <t> to override. Pass --api-url <url> to point
+// Credential resolution mirrors bootstrap-cli — the repo's ./.trailhead-team
+// (written by `init`) so running `trailhead-mcp reset` from inside a repo
+// nukes that repo's team, not the demo's. Pass --team-token <t> to override. Pass --api-url <url> to point
 // at a non-default API (e.g., localhost during dev).
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { ApiClient } from './api-client.ts';
-import { deriveRepoToken } from './token.mjs';
+import { maskSecret, resolveCliCredential } from './token.mjs';
 import { resolveApiUrl } from './api-url.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 for (const candidate of ['../../../.env', '../../.env', '.env']) {
   const p = resolve(__dirname, candidate);
   if (existsSync(p)) {
-    try { process.loadEnvFile(p); } catch {}
+    try { process.loadEnvFile(p); } catch { /* unreadable .env: carry on with process env */ }
     break;
   }
 }
@@ -47,7 +47,8 @@ if (flags.has('--help') || flags.has('-h')) {
 Usage:
   trailhead-mcp reset [--yes] [--team-token <t>] [--api-url <url>]
 
-Token is auto-derived from cwd (git remote → ./.trailhead-team) unless
+The team secret comes from TRAILHEAD_TEAM_TOKEN / TRAILHEAD_TEAM_FILE /
+./.trailhead-team (written by \`init\`) unless
 overridden. Without --yes, prompts before sending the request.
 
 Wipes: nodes, learnings, prompts, captures, skill_observations.
@@ -59,13 +60,27 @@ land in the same team).
 
 const cwd = process.cwd();
 const explicitToken = flagValues.get('--team-token');
-const tokenInfo = explicitToken
-  ? { token: explicitToken, source: 'flag' as const }
-  : deriveRepoToken(cwd);
+const found = explicitToken
+  ? { token: explicitToken, source: 'flag' as const, remoteUrl: undefined as string | undefined }
+  : resolveCliCredential(cwd);
+if (!found) {
+  console.error(
+    '✗ No team secret for this repo (checked --team-token, TRAILHEAD_TEAM_TOKEN, TRAILHEAD_TEAM_FILE, ./.trailhead-team).\n' +
+      '  Run `init` here first (node <LearnLoop>/apps/mcp-server/bin/cli.mjs init) to register or join a team.',
+  );
+  process.exit(1);
+}
+const tokenInfo = found;
+if (tokenInfo.source === 'legacy-remote') {
+  console.warn(
+    '! Using the LEGACY remote-derived token for this repo (deprecated: anyone who knows the git URL can compute it).\n' +
+      '  Run `init --upgrade-legacy` to switch this team to a secret.',
+  );
+}
 const apiUrl = resolveApiUrl(flagValues.get('--api-url'));
 
 console.log(`API: ${apiUrl}`);
-console.log(`Token: ${tokenInfo.token}`);
+console.log(`Secret: ${maskSecret(tokenInfo.token)}`);
 console.log(`Source: ${tokenInfo.source}`);
 console.log('');
 console.log(
