@@ -201,6 +201,33 @@ function salvagePartialScore(raw: string): { dimensions: Record<string, number> 
 }
 
 // ----- /score ----------------------------------------------------------------
+
+// Sampling parameters for the scorer, read per call. Defaults are the values
+// the scorer has always used (temperature 0.2, dynamic thinking). They are
+// overridable so determinism can be measured before it is changed:
+//   TRAILHEAD_SCORE_TEMPERATURE      e.g. 0
+//   TRAILHEAD_SCORE_THINKING_BUDGET  e.g. 512 (tokens; -1 = dynamic, 0 = off)
+// apps/api/eval/ runs the golden set under any combination and reports the
+// spread. Not flipped to temperature 0 blind: Google's guidance for Gemini 3
+// models is to keep the default temperature, and low temperatures are linked
+// to exactly the repetition loops this file already defends against (see the
+// 2026-04-25 notes below). Measure first — eval/README.md.
+export const DEFAULT_SCORE_TEMPERATURE = 0.2;
+export const DEFAULT_SCORE_THINKING_BUDGET = -1;
+
+export function scoreSamplingConfig(env: NodeJS.ProcessEnv = process.env): {
+  temperature: number;
+  thinkingBudget: number;
+} {
+  const num = (raw: string | undefined) => (raw !== undefined && raw.trim() !== '' ? Number(raw) : NaN);
+  const t = num(env.TRAILHEAD_SCORE_TEMPERATURE);
+  const b = num(env.TRAILHEAD_SCORE_THINKING_BUDGET);
+  return {
+    temperature: Number.isFinite(t) && t >= 0 && t <= 2 ? t : DEFAULT_SCORE_TEMPERATURE,
+    thinkingBudget: Number.isFinite(b) && b >= -1 ? Math.trunc(b) : DEFAULT_SCORE_THINKING_BUDGET,
+  };
+}
+
 export interface ScoreModelResult {
   dimensions: DimensionScores;
   missing: MissingHints;
@@ -240,14 +267,15 @@ export async function scorePrompt(args: {
     : SCORE_SYSTEM_PROMPT;
 
   if (SCORE_MODEL.startsWith('gemini-')) {
+    const sampling = scoreSamplingConfig();
     const resp = await withRetry(
       () => tracedGenerate({
         model: SCORE_MODEL,
         contents: buildScoreUserPrompt(args),
         config: {
           systemInstruction,
-          temperature: 0.2,
-          thinkingConfig: { thinkingBudget: -1 },
+          temperature: sampling.temperature,
+          thinkingConfig: { thinkingBudget: sampling.thinkingBudget },
           maxOutputTokens: 1500,
           responseMimeType: 'application/json',
           responseSchema: {
