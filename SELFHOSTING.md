@@ -264,8 +264,10 @@ using your `GEMINI_API_KEY`. When `LANGFUSE_*` keys are set, the same model
 inputs and outputs are also sent to Langfuse. The browser extension's 👍/🤷/👎
 chips store the prompt *and Claude's full reply* in the `captures` table.
 `bootstrap` picks files by extension (so `.env` and key files are never read)
-but does not read `.gitignore`, so a gitignored `.ts`/`.py`/… file inside the
-walk depth is uploaded too.
+and skips anything git ignores (`git check-ignore`: nested `.gitignore`s,
+`.git/info/exclude` and your global excludes all count). Outside a git repo
+there is nothing to consult, so every matching file inside the walk depth is
+uploaded.
 
 ---
 
