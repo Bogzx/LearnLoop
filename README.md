@@ -351,6 +351,7 @@ Single root `.env.example` — every surface reads from the same set.
 | `TRAILHEAD_ADMIN_TOKEN` | api | When set, `POST /teams` (registration) requires it as `X-Admin-Token` |
 | `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | api | Default `true`. Accept pre-2026-09-30 remote-derived tokens for teams without a secret (deprecated) |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | api | Default `false`. Legacy only: unknown tokens create legacy teams |
+| `TRAILHEAD_SCORE_TEMPERATURE` / `TRAILHEAD_SCORE_THINKING_BUDGET` | api | Scorer sampling (defaults `0.2` / `-1` = dynamic). Measure before changing: `apps/api/eval/` |
 | `TRAILHEAD_PROMOTION_MODE` | api | `auto` (default): gated auto-promotion into the library. `review`: promoted prompts wait for a teammate's approval |
 | `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
 | `TRAILHEAD_API_URL` | dashboard | Server-side, runtime. Where the dashboard fetches (fallback: legacy `NEXT_PUBLIC_API_URL`) |

@@ -23,7 +23,7 @@ import { DIMENSIONS } from '@trailhead/shared';
 // request in this file is intercepted by the fetch stub, so it is never
 // sent anywhere and is not a credential.
 process.env.GEMINI_API_KEY ??= 'test-key-not-a-real-credential';
-const { extractTopic, overallScore, scorePrompt } = await import('./gemini.ts');
+const { extractTopic, overallScore, scorePrompt, scoreSamplingConfig } = await import('./gemini.ts');
 
 interface FetchCall {
   url: string;
@@ -216,4 +216,37 @@ test('overallScore averages the five dimensions', () => {
     }),
     6, // 30 / 5
   );
+});
+
+// ---------------------------------------------------------------------------
+// Sampling overrides (TRAILHEAD_SCORE_TEMPERATURE / _THINKING_BUDGET) — what
+// the eval harness varies. Defaults must stay what production has used.
+// ---------------------------------------------------------------------------
+test('scoreSamplingConfig: production defaults, valid overrides, junk ignored', () => {
+  assert.deepEqual(scoreSamplingConfig({}), { temperature: 0.2, thinkingBudget: -1 });
+  assert.deepEqual(
+    scoreSamplingConfig({ TRAILHEAD_SCORE_TEMPERATURE: '0', TRAILHEAD_SCORE_THINKING_BUDGET: '512' }),
+    { temperature: 0, thinkingBudget: 512 },
+  );
+  assert.deepEqual(
+    scoreSamplingConfig({ TRAILHEAD_SCORE_TEMPERATURE: 'hot', TRAILHEAD_SCORE_THINKING_BUDGET: '-5' }),
+    { temperature: 0.2, thinkingBudget: -1 },
+  );
+  assert.equal(scoreSamplingConfig({ TRAILHEAD_SCORE_TEMPERATURE: '3' }).temperature, 0.2);
+});
+
+test('scorePrompt sends the configured temperature and thinking budget', async () => {
+  process.env.TRAILHEAD_SCORE_TEMPERATURE = '0';
+  process.env.TRAILHEAD_SCORE_THINKING_BUDGET = '256';
+  const stub = withFetchStub(() => geminiTextResponse(WELL_FORMED_SCORE));
+  try {
+    await scorePrompt({ prompt: 'sampling check' });
+    const cfg = (stub.calls[0]!.body as { generationConfig?: { temperature?: number; thinkingConfig?: { thinkingBudget?: number } } }).generationConfig;
+    assert.equal(cfg?.temperature, 0);
+    assert.equal(cfg?.thinkingConfig?.thinkingBudget, 256);
+  } finally {
+    stub.restore();
+    delete process.env.TRAILHEAD_SCORE_TEMPERATURE;
+    delete process.env.TRAILHEAD_SCORE_THINKING_BUDGET;
+  }
 });
