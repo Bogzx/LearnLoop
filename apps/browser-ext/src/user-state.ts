@@ -47,24 +47,28 @@ function newUuid(): string {
   return globalThis.crypto.randomUUID();
 }
 
-export function initUserState(): void {
-  try {
-    const local = (chrome as any)?.storage?.local;
-    if (typeof local?.get !== 'function') return;
-    local.get([USER_ID_KEY, SHARE_USER_ID_KEY], (out: Record<string, unknown>) => {
-      const r = resolveUserState({ id: out?.[USER_ID_KEY], share: out?.[SHARE_USER_ID_KEY] }, newUuid);
-      if (r.persistId) local.set({ [USER_ID_KEY]: r.persistId });
-      effectiveId = r.effective;
-    });
-    (chrome as any)?.storage?.onChanged?.addListener?.(
-      (changes: Record<string, unknown>, area: string) => {
-        if (area !== 'local' || !(USER_ID_KEY in changes || SHARE_USER_ID_KEY in changes)) return;
-        local.get([USER_ID_KEY, SHARE_USER_ID_KEY], (out: Record<string, unknown>) => {
-          effectiveId = resolveUserState({ id: out?.[USER_ID_KEY], share: out?.[SHARE_USER_ID_KEY] }, newUuid).effective;
-        });
-      },
-    );
-  } catch {
-    // chrome.* unavailable — stay anonymous.
-  }
+export function initUserState(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const local = (chrome as any)?.storage?.local;
+      if (typeof local?.get !== 'function') return resolve();
+      local.get([USER_ID_KEY, SHARE_USER_ID_KEY], (out: Record<string, unknown>) => {
+        const r = resolveUserState({ id: out?.[USER_ID_KEY], share: out?.[SHARE_USER_ID_KEY] }, newUuid);
+        if (r.persistId) local.set({ [USER_ID_KEY]: r.persistId });
+        effectiveId = r.effective;
+        resolve();
+      });
+      (chrome as any)?.storage?.onChanged?.addListener?.(
+        (changes: Record<string, unknown>, area: string) => {
+          if (area !== 'local' || !(USER_ID_KEY in changes || SHARE_USER_ID_KEY in changes)) return;
+          local.get([USER_ID_KEY, SHARE_USER_ID_KEY], (out: Record<string, unknown>) => {
+            effectiveId = resolveUserState({ id: out?.[USER_ID_KEY], share: out?.[SHARE_USER_ID_KEY] }, newUuid).effective;
+          });
+        },
+      );
+    } catch {
+      // chrome.* unavailable — stay anonymous.
+      resolve();
+    }
+  });
 }

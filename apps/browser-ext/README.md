@@ -64,9 +64,11 @@ team token. Run before each rehearsal.
 npm --workspace=@trailhead/browser-ext run test
 ```
 
-Pure-function tests (hash, augment, diff parser, wiki toast diff,
-fetch-stubbed API wrapper) plus a bundle-load test that sandbox-executes
-`dist/content.js` and asserts the `[trailhead]` log fires.
+Pure-function tests (hash, augment, diff parser, wiki toast diff), the API
+messaging layer (`api.test.mts`: content client → fake worker running the real
+worker core → stubbed fetch; `worker-core.test.mts`: allowlist, permissions,
+timeouts, aborts, failure codes), plus bundle-load tests that sandbox-execute
+`dist/content.js` and `dist/background.js`.
 
 DOM smoke testing on Claude.ai itself is the spec §7.5 manual deliverable —
 done with the pinned Chrome build, not in this repo.
@@ -74,8 +76,22 @@ done with the pinned Chrome build, not in this repo.
 ## Talks to
 
 `apps/api` only, at the URL set in the popup's **API server** row (default
-`http://localhost:3000`). Sends the popup-selected team token as
-`X-Team-Token`, falling back to the public demo token
+`http://localhost:3000`).
+
+**Every request is made by the extension's service worker**
+(`src/background.ts`, `src/worker-core.ts`), never by the content script:
+`src/api.ts` sends a `chrome.runtime` message and the worker does the fetch.
+A fetch from the content script would carry the page's origin
+(`https://claude.ai`), and Chrome's Local Network Access checks block a public
+site from calling `http://localhost` ("access the loopback address space").
+The worker has the manifest's host permissions and isn't subject to that. It
+reads the API URL and team secret from `chrome.storage` on every request, only
+serves the routes the content script uses, and refuses an origin you haven't
+granted (the popup requests that permission when you **Save** a
+non-localhost URL). Failures, including a 429, come back as a reply and the
+content script fails open.
+
+The worker sends the popup-selected team token as `X-Team-Token`, falling back to the public demo token
 `trailhead_demo_acme_2026`. `user_id` is a random per-install UUID
 (`src/user-state.ts`), or `anonymous` if you untick *Send an anonymous
 per-install ID* in the popup's Privacy section.

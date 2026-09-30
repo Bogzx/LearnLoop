@@ -33,31 +33,35 @@ function notify(): void {
   }
 }
 
-export function initContextState(): void {
-  try {
-    const get = (chrome as any)?.storage?.local?.get;
-    if (typeof get !== 'function') return;
-    get.call((chrome as any).storage.local, CONTEXT_PATH_KEY, (out: Record<string, unknown>) => {
-      const stored = out[CONTEXT_PATH_KEY];
-      if (typeof stored === 'string' && stored) {
-        currentPath = stored;
-        notify();
-        console.info('[trailhead] context path loaded from storage:', currentPath);
-      }
-    });
-    const onChanged = (chrome as any)?.storage?.onChanged?.addListener;
-    if (typeof onChanged !== 'function') return;
-    onChanged.call(
-      (chrome as any).storage.onChanged,
-      (changes: Record<string, { newValue?: unknown }>, area: string) => {
-        if (area !== 'local' || !(CONTEXT_PATH_KEY in changes)) return;
-        const v = changes[CONTEXT_PATH_KEY]?.newValue;
-        currentPath = typeof v === 'string' && v ? v : null;
-        notify();
-        console.info('[trailhead] context path changed →', currentPath ?? '(cleared)');
-      },
-    );
-  } catch {
-    // chrome.* unavailable — leave default null.
-  }
+export function initContextState(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const get = (chrome as any)?.storage?.local?.get;
+      if (typeof get !== 'function') return resolve();
+      get.call((chrome as any).storage.local, CONTEXT_PATH_KEY, (out: Record<string, unknown>) => {
+        const stored = out[CONTEXT_PATH_KEY];
+        if (typeof stored === 'string' && stored) {
+          currentPath = stored;
+          notify();
+          console.info('[trailhead] context path loaded from storage:', currentPath);
+        }
+        resolve();
+      });
+      const onChanged = (chrome as any)?.storage?.onChanged?.addListener;
+      if (typeof onChanged !== 'function') return;
+      onChanged.call(
+        (chrome as any).storage.onChanged,
+        (changes: Record<string, { newValue?: unknown }>, area: string) => {
+          if (area !== 'local' || !(CONTEXT_PATH_KEY in changes)) return;
+          const v = changes[CONTEXT_PATH_KEY]?.newValue;
+          currentPath = typeof v === 'string' && v ? v : null;
+          notify();
+          console.info('[trailhead] context path changed →', currentPath ?? '(cleared)');
+        },
+      );
+    } catch {
+      // chrome.* unavailable — leave default null.
+      resolve();
+    }
+  });
 }

@@ -8,10 +8,10 @@
 // team content (fenceUntrusted) so Claude treats it as reference data, not
 // as the user's prompt.
 
-import type { WikiTreeNode, WikiTreeResponse } from '@trailhead/shared';
+import type { WikiTreeNode } from '@trailhead/shared';
 import { fenceUntrusted, UNTRUSTED_NOTE } from '@trailhead/scoring/fence';
 import { TRAILHEAD_ERROR_TAG } from './config.ts';
-import { apiUnreachableHint, getApiUrl } from './api-url-state.ts';
+import { wikiTree } from './api.ts';
 import { getContextPath, subscribeContext } from './context-state.ts';
 import { getTeamToken } from './team-state.ts';
 
@@ -75,14 +75,10 @@ async function refreshBundle(): Promise<void> {
   }
   inflightFetch = (async () => {
     try {
-      const res = await fetch(`${getApiUrl()}/wiki/tree`, {
-        headers: { 'X-Team-Token': getTeamToken() },
-      });
-      if (!res.ok) {
-        console.warn(`${TRAILHEAD_ERROR_TAG} /wiki/tree failed: HTTP ${res.status}`);
-        return;
-      }
-      const data = (await res.json()) as WikiTreeResponse;
+      // Through the service worker like every API call (api.ts); null on any
+      // failure, already logged there.
+      const data = await wikiTree();
+      if (!data) return;
       // Root sentinel: the popup persists '/' for the repo-root node
       // (path = '' would silently no-op the truthy "is context active"
       // checks). For subtree filtering, '/' means "match every node".
@@ -100,13 +96,7 @@ async function refreshBundle(): Promise<void> {
         `${TRAILHEAD_ERROR_TAG} context bundle ready: ${subtree.length} node(s), ${cachedBundle.length} chars`,
       );
     } catch (err) {
-      // A TypeError here is a network-layer failure — the self-hosted API is
-      // not running or is pointed at the wrong host. Say exactly that.
-      if (err instanceof TypeError) {
-        console.warn(`${apiUnreachableHint()} (request: /wiki/tree)`, err);
-      } else {
-        console.warn(`${TRAILHEAD_ERROR_TAG} context bundle fetch failed`, err);
-      }
+      console.warn(`${TRAILHEAD_ERROR_TAG} context bundle build failed`, err);
     } finally {
       inflightFetch = null;
     }
