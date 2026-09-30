@@ -22,7 +22,10 @@ function envFor(home) {
     USERPROFILE: home,
     // Don't leak the dev machine's TRAILHEAD_TEAM_TOKEN into the test.
     TRAILHEAD_TEAM_TOKEN: undefined,
-    TRAILHEAD_API_URL: undefined,
+    TRAILHEAD_ADMIN_TOKEN: undefined,
+    // A port nothing listens on, so `init` takes its offline path instead of
+    // talking to whatever API the dev machine happens to run on :3000.
+    TRAILHEAD_API_URL: 'http://127.0.0.1:9',
   };
 }
 
@@ -41,14 +44,20 @@ test('`cli.mjs init --team-token` writes per-repo .mcp.json + ./CLAUDE.md', () =
       { env: envFor(home), cwd: home, encoding: 'utf8' },
     );
     assert.equal(out.status, 0, `cli exit ${out.status}\nstdout:\n${out.stdout}\nstderr:\n${out.stderr}`);
-    assert.match(out.stdout, /Token: tok-cli/);
+    // The secret is masked on screen and kept out of the generated config.
+    assert.match(out.stdout, /Secret: tok-…/);
+    assert.doesNotMatch(out.stdout, /tok-cli/);
     assert.match(out.stdout, /project MCP config/);
     assert.match(out.stdout, /Coach directive/);
 
     // Project-scoped .mcp.json — the new default.
     const mcp = JSON.parse(readFileSync(join(home, '.mcp.json'), 'utf8'));
     assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_API_URL, 'https://test.example');
-    assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-cli');
+    assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, undefined);
+    assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_TEAM_FILE, join(home, '.trailhead-team'));
+    assert.doesNotMatch(readFileSync(join(home, '.mcp.json'), 'utf8'), /tok-cli/);
+    assert.equal(readFileSync(join(home, '.trailhead-team'), 'utf8').trim(), 'tok-cli');
+    assert.match(readFileSync(join(home, '.gitignore'), 'utf8'), /^\.trailhead-team$/m);
     assert.ok(mcp.mcpServers.trailhead.args.some((a) => a.endsWith('index.ts')));
 
     // Default (no --user-scope, no legacy entry): ~/.claude.json untouched.
@@ -94,7 +103,7 @@ test('`cli.mjs init --user-scope` writes user-scope ~/.claude.json + ~/.claude/C
     );
     assert.equal(out.status, 0);
     const claudeJson = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-    assert.equal(claudeJson.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-cli');
+    assert.equal(claudeJson.mcpServers.trailhead.env.TRAILHEAD_TEAM_FILE, join(home, '.trailhead-team'));
     const projectMd = readFileSync(join(home, 'CLAUDE.md'), 'utf8');
     const userMd = readFileSync(join(home, '.claude', 'CLAUDE.md'), 'utf8');
     assert.match(projectMd, /## Trailhead coaching/);
@@ -117,7 +126,8 @@ test('`cli.mjs init` wires Copilot when .vscode/ exists', () => {
     assert.match(out.stdout, /Copilot: MCP server registered/);
     const mcp = JSON.parse(readFileSync(join(home, '.vscode', 'mcp.json'), 'utf8'));
     assert.equal(mcp.servers.trailhead.command, 'npx');
-    assert.equal(mcp.servers.trailhead.env.TRAILHEAD_TEAM_TOKEN, 'tok-cli');
+    assert.equal(mcp.servers.trailhead.env.TRAILHEAD_TEAM_FILE, join(home, '.trailhead-team'));
+    assert.equal(mcp.servers.trailhead.env.TRAILHEAD_TEAM_TOKEN, undefined);
     const instructions = readFileSync(
       join(home, '.github', 'copilot-instructions.md'),
       'utf8',
@@ -132,27 +142,22 @@ test('`cli.mjs init` wires Copilot when .vscode/ exists', () => {
   }
 });
 
-test('`cli.mjs init` auto-derives a token when no flag/env given (sentinel fallback)', () => {
+test('`cli.mjs init` with no credential and no reachable API fails loudly and writes nothing', () => {
   const home = mkdtempSync(join(tmpdir(), 'trailhead-cli-smoke-'));
   try {
-    // No --team-token; no env; no .git in cwd → derivation should fall back
-    // to the random `repo_local_*` sentinel and write `.trailhead-team`.
+    // No --team-token, no env, no sentinel: init must register a team, which
+    // needs the API. It used to invent a random token offline; now it stops
+    // and says how to fix it rather than wiring a credential nobody issued.
     const out = spawnSync(
       process.execPath,
       [cli, 'init', '--no-copilot'],
       { env: envFor(home), cwd: home, encoding: 'utf8' },
     );
-    assert.equal(out.status, 0, `cli exit ${out.status}\nstdout:\n${out.stdout}\nstderr:\n${out.stderr}`);
-    // Sentinel created.
-    assert.ok(existsSync(join(home, '.trailhead-team')));
-    const sentinel = readFileSync(join(home, '.trailhead-team'), 'utf8').trim();
-    assert.match(sentinel, /^repo_local_[0-9a-f]+$/);
-    // .gitignore appended.
-    const gi = readFileSync(join(home, '.gitignore'), 'utf8');
-    assert.match(gi, /\.trailhead-team/);
-    // Token in .mcp.json matches sentinel.
-    const mcp = JSON.parse(readFileSync(join(home, '.mcp.json'), 'utf8'));
-    assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, sentinel);
+    assert.equal(out.status, 1, `cli exit ${out.status}\nstdout:\n${out.stdout}\nstderr:\n${out.stderr}`);
+    assert.match(out.stderr, /Can't reach the Trailhead API at http:\/\/127\.0\.0\.1:9/);
+    assert.match(out.stderr, /--team-token <secret>/);
+    assert.equal(existsSync(join(home, '.mcp.json')), false);
+    assert.equal(existsSync(join(home, '.trailhead-team')), false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
