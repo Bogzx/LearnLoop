@@ -30,6 +30,7 @@ export {
   type RenderSkipRevealArgs,
 } from './reveal-render.mjs';
 export { ancestorPaths, normalizePath } from './path-helpers.mjs';
+export { codeFence, fenceUntrusted, UNTRUSTED_NOTE, UNTRUSTED_TAG } from './fence.mjs';
 export {
   SCORE_MODEL,
   TOPIC_MODEL,

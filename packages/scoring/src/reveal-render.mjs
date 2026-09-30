@@ -10,6 +10,7 @@
 // natively. Claude Code TUI also renders the markdown subset.
 
 import { DIMENSION_TEACH } from './teach-templates.mjs';
+import { codeFence } from './fence.mjs';
 
 const DIMS = [
   'goal_clarity',
@@ -164,9 +165,10 @@ export function renderTeachBlock({
   if (strongExample && strongExample.trim()) {
     lines.push('');
     lines.push('**Strong example:**');
-    lines.push('```');
-    lines.push(strongExample.trim());
-    lines.push('```');
+    // codeFence, not a literal ```: the example may be a teammate's prompt
+    // from the library, and one containing ``` would otherwise close the
+    // block and have the rest of it rendered (and read) as instructions.
+    lines.push(codeFence(strongExample.trim()));
     if (tip && tip.trim()) {
       lines.push(`_Why it works: ${tip.trim()}_`);
     }
@@ -206,13 +208,9 @@ export function renderSuccessReveal({
     renderDimDeltaTable(originalDimensions, finalDimensions),
     '',
     '**Before:**',
-    '```',
-    truncate(inlinePrompt(originalPrompt), 200),
-    '```',
+    codeFence(truncate(inlinePrompt(originalPrompt), 200)),
     '**After:**',
-    '```',
-    truncate(inlinePrompt(finalPrompt), 400),
-    '```',
+    codeFence(truncate(inlinePrompt(finalPrompt), 400)),
     calloutLine,
   ];
   // Gemini-written closing recap. Fail-open: when the helper returned "",
@@ -270,9 +268,7 @@ export function renderSkipReveal({
     lines.push('');
   }
   lines.push(prefix);
-  lines.push('```');
-  lines.push(inlinePrompt(strongRewrite ?? ''));
-  lines.push('```');
+  lines.push(codeFence(inlinePrompt(strongRewrite ?? '')));
   if (calloutLine) lines.push(calloutLine);
   // Same fail-open pattern as renderSuccessReveal — Gemini-written takeaway
   // appended after the templated arc, omitted on helper failure.
