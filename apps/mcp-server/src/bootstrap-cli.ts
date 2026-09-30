@@ -44,7 +44,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 for (const candidate of ['../../../.env', '../../.env', '.env']) {
   const p = resolve(__dirname, candidate);
   if (existsSync(p)) {
-    try { process.loadEnvFile(p); } catch {}
+    try { process.loadEnvFile(p); } catch { /* unreadable .env: carry on with process env */ }
     break;
   }
 }
@@ -366,10 +366,8 @@ if (richMode) {
 // ----- Progress bar / poll helper ---------------------------------------
 
 async function pollWithProgress(client: ApiClient, jobId: string): Promise<WikiJobStatusResponse> {
-  let last: WikiJobStatusResponse | null = null;
   while (true) {
     const status = await client.jobStatus(jobId);
-    last = status;
     renderProgress(status);
     if (status.status === 'done' || status.status === 'failed') {
       // Newline so subsequent log lines don't overwrite the bar.

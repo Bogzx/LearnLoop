@@ -45,8 +45,6 @@ import type {
   WikiProposeResponse,
   WikiRecentItem,
   WikiRecentResponse,
-  WikiTreeLearning,
-  WikiTreeNode,
   WikiTreeResponse,
 } from '@trailhead/shared';
 import { DIMENSIONS } from '@trailhead/shared';

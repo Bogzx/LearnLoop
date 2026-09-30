@@ -3,16 +3,23 @@
   "displayName": "Trailhead",
   "description": "Prompt-skill coach in your sidebar — score-card, team-anchored examples, autonomous wiki updates.",
   "version": "0.0.1",
-
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/Bogzx/LearnLoop.git", "directory": "apps/vscode-ext" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Bogzx/LearnLoop.git",
+    "directory": "apps/vscode-ext"
+  },
   "private": true,
   "publisher": "trailhead",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onView:trailhead.coach"],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:trailhead.coach"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -78,7 +85,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.85.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
   }
 }

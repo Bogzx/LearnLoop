@@ -3,7 +3,7 @@
 Visual proof of behavior change. Skill arc, L1→L2 metrics, wiki tree view.
 Closes the demo with a real `/score`-driven tick layered on top of seeded data.
 
-**Tech:** Next.js 15 + Tailwind + shadcn/ui-style theme + Recharts + SWR. Hosted
+**Tech:** Next.js 16 + Tailwind + shadcn/ui-style theme + Recharts + SWR. Hosted
 on Vercel; reads from `apps/api` only (no direct DB access from dashboard).
 
 **Pages:**

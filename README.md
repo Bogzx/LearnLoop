@@ -172,17 +172,19 @@ CLI subcommands (`bin/cli.mjs`):
   `--minimal`, `--paths`, `--force`, `--dry-run`, `--yes`.
 - `trailhead-mcp reset` — wipes the team's wiki/captures/observations.
 
-### `apps/dashboard` — Next.js 15 dashboard (Vercel)
+### `apps/dashboard` — Next.js 16 dashboard (Vercel)
 
-App router, server components for the team list, SWR for the live charts.
-Pages (`src/app/`):
+App router, server components for the team view, SWR for the live charts.
+Shows one team — the one whose secret is in the server-side
+`TRAILHEAD_TEAM_TOKEN`; the browser never sees the secret (client charts go
+through a read-only proxy route, `/api/trailhead/*`). Pages (`src/app/`):
 
-- `/` — team view (shows the caller's own team; `GET /teams` is authenticated
-  and returns only the team the configured token resolves to)
-- `/skill-arc?team=…` — per-dimension team chart driven by `/skill-arc`,
+- `/` — team view
+- `/skill-arc` — per-dimension team chart driven by `/skill-arc`,
   polls every 2 s during the demo
-- `/team?team=…` — L1→L2 metric cards from `/team/metrics`
-- `/wiki?team=…` — node tree + durable learnings from `/wiki/tree`
+- `/team` — L1→L2 metric cards from `/team/metrics`
+- `/wiki` — node tree + durable learnings from `/wiki/tree`
+- `/onboarding` — the wiki as an onboarding guide
 
 ### `apps/landing-page` — LearnLoop marketing site
 
@@ -231,7 +233,7 @@ apps/
   browser-ext/   Chrome MV3 extension for Claude.ai
   vscode-ext/    VS Code IDE extension
   mcp-server/    MCP server (Claude Code + Copilot Chat) + CLI
-  dashboard/     Next.js 15 dashboard (Vercel)
+  dashboard/     Next.js 16 dashboard (Vercel)
   landing-page/  Static marketing site (LearnLoop)
 packages/
   shared/        TypeScript types — single source of truth for API shapes
@@ -326,6 +328,7 @@ node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs bootstrap
 
 ```bash
 npm run typecheck    # tsc --noEmit across all workspaces
+npm run lint         # ESLint (flat config: eslint.config.mjs) over the whole repo
 npm run test         # run all workspace tests
 npm run build        # build all workspaces that expose a build script
 ```
@@ -433,7 +436,7 @@ contracts, builds, and tests.
   (diff narration, rich bootstrap)
 - **Observability:** Langfuse (hosted) — one trace per request, one
   generation per LLM call
-- **Frontend:** Next.js 15 + Tailwind + Recharts + SWR (dashboard); vanilla
+- **Frontend:** Next.js 16 + Tailwind + Recharts + SWR (dashboard); vanilla
   TS + esbuild (extensions); React via CDN (landing page)
 - **MCP:** `@modelcontextprotocol/sdk`, STDIO transport
 - **Build:** npm workspaces; per-package `tsc` / `esbuild`

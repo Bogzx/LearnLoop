@@ -15,9 +15,9 @@ export default function WikiPage() {
         ← Teams
       </Link>
       <header>
-        <h1 className="text-3xl font-semibold tracking-tight">Team's knowledge</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">Team&apos;s knowledge</h1>
         <p className="mt-2 max-w-prose text-muted-foreground">
-          The team's growing curriculum. Path-organized rules and durable
+          The team&apos;s growing curriculum. Path-organized rules and durable
           learnings — promoted from drafts after 3+ reinforcements via the
           MCP tool.
         </p>

@@ -13,14 +13,14 @@
     "smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {
-    "@trailhead/scoring": "*",
     "@trailhead/score-card": "*",
+    "@trailhead/scoring": "*",
     "@trailhead/shared": "*"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",
     "@types/node": "^22.10.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
   }
 }
