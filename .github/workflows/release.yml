@@ -1,0 +1,55 @@
+name: release
+
+# Push a tag vX.Y.Z (from main) and this attaches both extension packages to
+# the GitHub release for that tag, creating it as a draft if it doesn't exist
+# yet. Publishing the release, and any store listing, stays a human step.
+#
+# The tag must match the version in apps/browser-ext/manifest.json and
+# apps/vscode-ext/package.json, or the job fails before building anything.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  extensions:
+    name: package and attach extensions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: versions match the tag
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          for f in apps/browser-ext/manifest.json apps/browser-ext/package.json apps/vscode-ext/package.json; do
+            have=$(jq -r .version "$f")
+            if [ "$have" != "$want" ]; then
+              echo "::error file=$f::version is $have but the tag is $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: install
+        run: npm ci
+      - name: test
+        run: npm test
+      - name: package
+        run: |
+          npm --workspace=@trailhead/browser-ext run package
+          npm --workspace=apps/vscode-ext run package
+      - name: attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes --title "LearnLoop $GITHUB_REF_NAME"
+          fi
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            apps/browser-ext/learnloop-browser-ext-*.zip \
+            apps/vscode-ext/*.vsix

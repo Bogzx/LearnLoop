@@ -9,29 +9,40 @@ augmentation on send. Vanilla TypeScript + esbuild — same toolchain as
 
 | Where | What |
 |---|---|
-| Below the textarea | Score-card with 5 dimension rows, missing hints, *Send as-is* / *Have Claude clarify* buttons |
+| Below the textarea | Score-card with 5 dimension rows, missing hints, *Improve* / *Send as-is* / *Edit* buttons |
 | Each user bubble | Score badge + "Compare to team" link → inline `/diff` panel |
 | Each assistant bubble | Outcome chips (👍 / 🤷 / 👎) → /capture |
 | Inside the conversation | Wiki toasts driven by 2s `/wiki/recent` polling |
 
 ## Behavior (spec §6)
 
-- 250 ms debounce on input → `POST /score`
+- Scores on send (`POST /score`), not on every keystroke
 - ≥7 → no friction (native send fires)
-- &lt;7 → 5 s nudge with *Have Claude clarify* / *Send as-is*; auto-sends as-is on timeout
+- &lt;7 → the card stays up with *Improve* / *Send as-is* / *Edit* and waits;
+  there is no timer and nothing is ever sent automatically
+- If the API runs without a model (`TRAILHEAD_LLM=offline`), the card says
+  "Rule-based score"
 - **Fail-open:** any API error or selector miss → no card, native send still works
 - **Kill-switch:** `chrome.storage.local.set({'trailhead.disabled': true})` halts the extension on next load (spec §6.6)
+
+## Install from a release
+
+Each GitHub release carries `learnloop-browser-ext-<version>.zip` (built by
+`.github/workflows/release.yml`; every CI run also uploads it as the
+`extensions` artifact). Unzip it, then load the folder unpacked as below. It is
+not on the Chrome Web Store.
 
 ## Build & side-load
 
 ```bash
 # from the repo root
 npm install
-npm --workspace=@trailhead/browser-ext run build
+npm --workspace=@trailhead/browser-ext run build     # dev build in dist/
+npm --workspace=@trailhead/browser-ext run package   # production build + learnloop-browser-ext-<version>.zip
 ```
 
-`dist/` then contains `manifest.json` + `content.js`. Load it as an unpacked
-extension:
+`dist/` then contains `manifest.json`, the bundles, `popup.html` and the
+icons. Load it as an unpacked extension:
 
 1. Open `chrome://extensions/`
 2. Enable Developer mode
