@@ -28,6 +28,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureGitignore } from '../src/token.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -118,11 +119,11 @@ function applyDirectiveCompat(filePath, directiveText) {
   return result;
 }
 
-// Env block for the spawned MCP server. `teamFile` (what the CLI passes)
-// points the server at the gitignored ./.trailhead-team sentinel, so the team
-// secret never lands in .mcp.json / .vscode/mcp.json — files that are
-// routinely committed. `teamToken` embeds the credential directly and is kept
-// only for programmatic callers of applyInit.
+// Env block for the spawned MCP server. `teamFile` (what the CLI passes: the
+// relative `.trailhead-team`) points the server at the gitignored sentinel, so
+// the team secret never lands in .mcp.json / .vscode/mcp.json. `teamToken`
+// embeds the credential directly and is kept only for programmatic callers of
+// applyInit.
 function buildServerEnv({ apiUrl, teamToken, teamFile }) {
   return teamFile
     ? { TRAILHEAD_API_URL: apiUrl, TRAILHEAD_TEAM_FILE: teamFile }
@@ -355,6 +356,12 @@ function wireCopilot({
 export async function applyInit(opts) {
   const home = opts.home ?? homedir();
   const cwd = opts.cwd ?? process.cwd();
+  // The server entry is a path into this machine's LearnLoop clone (the
+  // package is not on npm), so the configs init writes are machine-specific.
+  // A config init creates is gitignored; one that already existed may hold
+  // the team's other servers, so it is left alone and the caller warns.
+  const mcpConfigs = ['.mcp.json', join('.vscode', 'mcp.json')];
+  const existedBefore = new Set(mcpConfigs.filter((f) => existsSync(join(cwd, f))));
   const autoCoach = opts.autoCoach !== false;
   const userScope = opts.userScope === true;
   const wantClaudeCode = opts.wireClaudeCode !== false;
@@ -400,9 +407,24 @@ export async function applyInit(opts) {
     });
   }
 
+  const gitignored = [];
+  const machineSpecific = [];
+  if (opts.gitignoreConfigs !== false) {
+    for (const f of mcpConfigs) {
+      if (!existsSync(join(cwd, f))) continue;
+      const line = f.split('\\').join('/');
+      if (existedBefore.has(f)) machineSpecific.push(line);
+      else if (ensureGitignore(cwd, line)) gitignored.push(line);
+    }
+  }
+
   return {
     claudeCode: claudeCode ? { wired: true, ...claudeCode } : { wired: false },
     copilot: copilot ? { wired: true, ...copilot } : { wired: false },
+    // MCP configs init created and added to .gitignore, and pre-existing ones
+    // that now carry this machine's server path.
+    gitignored,
+    machineSpecific,
     // Backwards-compat: older tests/log code reach for these top-level keys.
     // They reflect Claude Code's user-scope state.
     claudeJsonPath: claudeCode?.claudeJsonPath ?? null,
@@ -481,9 +503,21 @@ export async function runInit(opts) {
   } else {
     console.log('');
     if (opts.teamFile) {
-      console.log(`Team secret: read at runtime from ${opts.teamFile} (not written into the MCP configs)`);
+      console.log(
+        `Team secret: read at runtime from ${opts.teamFile} (looked for from the server's working directory ` +
+          'up to the repo root; not written into the MCP configs)',
+      );
     } else {
       console.log(`Token: ${opts.teamToken}`);
+    }
+    for (const f of result.gitignored) {
+      console.log(`${f}: added to .gitignore. It points at this machine's LearnLoop clone; each teammate runs init.`);
+    }
+    for (const f of result.machineSpecific) {
+      console.log(
+        `! ${f} already existed, so it was not gitignored. Its trailhead entry points at this machine's ` +
+          'LearnLoop clone: commit it only if every teammate keeps the clone at the same path.',
+      );
     }
     console.log(
       'Coaching directive resource: trailhead://coaching-directive (auto-loaded by clients that support it).',

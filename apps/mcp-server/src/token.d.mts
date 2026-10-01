@@ -31,3 +31,4 @@ export interface Credential {
 }
 export function readCredential(opts?: { env?: Record<string, string | undefined>; cwd?: string }): Credential | null;
 export function resolveCliCredential(cwd: string, env?: Record<string, string | undefined>): Credential | null;
+export declare function findTeamFile(cwd: string, file: string): string | null;

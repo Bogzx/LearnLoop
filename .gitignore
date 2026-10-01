@@ -47,4 +47,5 @@ apps/browser-ext/build/
 
 # VS Code extension build artifacts
 apps/vscode-ext/*.vsix
+apps/browser-ext/*.zip
 apps/api/eval/results/

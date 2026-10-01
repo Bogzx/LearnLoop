@@ -1,8 +1,9 @@
 {
   "name": "trailhead-vscode",
-  "displayName": "Trailhead",
+  "displayName": "LearnLoop",
   "description": "Prompt-skill coach in your sidebar — score-card, team-anchored examples, autonomous wiki updates.",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "icon": "media/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -77,7 +78,8 @@
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test --experimental-strip-types src/paths.test.mts src/wiki-diff.test.mts src/api.test.mts test/bundle-load.test.mjs",
-    "vscode:prepublish": "node esbuild.config.mjs --production"
+    "vscode:prepublish": "node esbuild.config.mjs --production",
+    "package": "npx --yes @vscode/vsce@3.9.2 package --no-dependencies"
   },
   "dependencies": {
     "@trailhead/shared": "*"
