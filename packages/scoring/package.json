@@ -13,6 +13,7 @@
     },
     "./normalize": "./src/normalize.mjs",
     "./score-prompt": "./src/score-prompt.mjs",
+    "./heuristic-score": "./src/heuristic-score.mjs",
     "./topic-prompt": "./src/topic-prompt.mjs",
     "./score-helpers": "./src/score-helpers.mjs",
     "./path-helpers": "./src/path-helpers.mjs",
@@ -21,7 +22,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/normalize.test.mjs src/dedup-invariant.test.mjs src/declarations-match.test.mjs src/fence.test.mjs src/reveal-render.test.mjs"
+    "test": "node --test src/normalize.test.mjs src/dedup-invariant.test.mjs src/declarations-match.test.mjs src/fence.test.mjs src/reveal-render.test.mjs src/heuristic-score.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
