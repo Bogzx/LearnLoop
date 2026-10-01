@@ -78,6 +78,11 @@ const promotable = (d: DimensionScores) => exactMean(d) >= 7 && DIMENSIONS.every
 
 export interface PromptReport {
   id: string;
+  /** The golden overall band, carried for the ordering metric. */
+  band: Band;
+  /** Mean of the unrounded per-run means (finer than overall.mean, which
+   *  averages rounded scores); used to rank prompts. */
+  exactMean: number;
   runs: number;
   failures: number;
   overall: Summary;
@@ -110,6 +115,8 @@ export function reportPrompt(golden: GoldenPrompt, runs: RunResult[]): PromptRep
   const promo = new Set(ok.map((r) => promotable(r.dimensions)));
   return {
     id: golden.id,
+    band: golden.overall,
+    exactMean: summarize(ok.map((r) => exactMean(r.dimensions))).mean,
     runs: runs.length,
     failures: runs.length - ok.length,
     overall: summarize(overallValues),
@@ -145,7 +152,36 @@ export interface EvalReport {
     dimBandHit: number;
     coachingGateFlipRate: number;
     promotionGateFlipRate: number;
+    ordering: Ordering;
   };
+}
+
+export interface Ordering {
+  /** Prompt pairs whose golden overall bands don't overlap (a.max < b.min). */
+  pairs: number;
+  /** Of those, how many the scorer ranks the same way (strictly; a tie counts against). */
+  agree: number;
+  rate: number;
+}
+
+/** Ranking agreement: for every pair of prompts whose expected bands don't
+ *  overlap, does the scorer put the better one higher? More robust than band
+ *  hits (it doesn't care where on the scale a scorer sits, only that a strong
+ *  prompt beats a vague one), and it is what users feel. Prompts with no
+ *  successful run are left out. */
+export function orderingAgreement(prompts: Pick<PromptReport, 'band' | 'exactMean'>[]): Ordering {
+  const scored = prompts.filter((p) => Number.isFinite(p.exactMean));
+  let pairs = 0;
+  let agree = 0;
+  for (const a of scored) {
+    for (const b of scored) {
+      if (a.band[1] < b.band[0]) {
+        pairs++;
+        if (a.exactMean < b.exactMean) agree++;
+      }
+    }
+  }
+  return { pairs, agree, rate: pairs ? agree / pairs : NaN };
 }
 
 const avg = (xs: number[]) => {
@@ -167,6 +203,7 @@ export function buildReport(config: EvalConfig, prompts: PromptReport[]): EvalRe
       dimBandHit: avg(prompts.map((p) => p.dimBandHit)),
       coachingGateFlipRate: prompts.length ? prompts.filter((p) => p.coachingGateFlips).length / prompts.length : NaN,
       promotionGateFlipRate: prompts.length ? prompts.filter((p) => p.promotionGateFlips).length / prompts.length : NaN,
+      ordering: orderingAgreement(prompts),
     },
   };
 }
@@ -204,6 +241,7 @@ export function renderMarkdown(r: EvalReport): string {
     `| promotion gate flips (runs disagree on library eligibility) | ${pct(t.promotionGateFlipRate)} of prompts |`,
     `| overall inside expected band | ${pct(t.overallBandHit)} of runs |`,
     `| dimensions inside expected band | ${pct(t.dimBandHit)} of checks |`,
+    `| pairs with non-overlapping bands ranked the right way round | ${t.ordering.agree}/${t.ordering.pairs} (${pct(t.ordering.rate)}) |`,
     '',
     '## Per prompt',
     '',
