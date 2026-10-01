@@ -3,12 +3,15 @@
 import './env.ts';
 import { serve } from '@hono/node-server';
 import { llmConfigError, llmMode } from './llm-mode.ts';
+import { demoTeamConfigError } from './demo-team.ts';
 
 // Checked before app.ts is imported: its modules open the pg pool at load time
 // and would otherwise die with a less useful error.
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
 const llmError = llmConfigError();
 if (llmError) { console.error(llmError); process.exit(1); }
+const demoTeamError = demoTeamConfigError();
+if (demoTeamError) { console.error(demoTeamError); process.exit(1); }
 if (llmMode() === 'offline') {
   console.warn(
     '[llm] TRAILHEAD_LLM=offline: no model. Prompts are scored by the rule-based scorer ' +

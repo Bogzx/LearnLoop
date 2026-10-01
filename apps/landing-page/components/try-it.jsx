@@ -62,8 +62,9 @@ function TryIt() {
           <p className="mt-6 text-ink-500 text-lg leading-relaxed text-pretty">
             The same five dimensions LearnLoop scores in your editor and on Claude.ai. This box runs the{' '}
             <span className="text-ink-900">rule-based scorer</span> in your browser: the one the API uses when it
-            runs without a model, and the floor the Gemini scorer has to beat (
-            <a href={EVAL_URL} className="underline decoration-ink-300 hover:text-ink-900">how both are measured</a>).
+            runs without a model. The product itself scores with Gemini; the two have not been compared
+            yet (
+            <a href={EVAL_URL} className="underline decoration-ink-300 hover:text-ink-900">how the scoring is measured</a>).
           </p>
         </div>
 

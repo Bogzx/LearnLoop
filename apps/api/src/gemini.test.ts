@@ -266,3 +266,44 @@ test('generateText sends one request through the shared client and does not cap 
     stub.restore();
   }
 });
+
+// Rich-bootstrap prompts carry the team's source files. With Langfuse on they
+// must not be copied into traces: only sizes and usage.
+test('generateText keeps the prompt and answer out of the Langfuse trace', async () => {
+  const { withTrace } = await import('./langfuse.ts');
+  const generations: { start: Record<string, unknown>; end?: Record<string, unknown> }[] = [];
+  const fakeTrace = {
+    generation(start: Record<string, unknown>) {
+      const g: { start: Record<string, unknown>; end?: Record<string, unknown> } = { start };
+      generations.push(g);
+      return { end: (e: Record<string, unknown>) => { g.end = e; } };
+    },
+  };
+  const SECRET_SOURCE = 'const apiKey = "sk-source-line-that-must-not-be-traced";';
+  const stub = withFetchStub(() => geminiTextResponse(JSON.stringify({ narrative_md: `quotes ${SECRET_SOURCE}` })));
+  try {
+    // withTrace takes a LangfuseTraceClient; only generation() is used here.
+    await withTrace(fakeTrace as never, () =>
+      generateText({ model: 'gemini-3-flash-preview', contents: `=== src/a.ts ===\n${SECRET_SOURCE}` }, 'file(src/a.ts)'),
+    );
+    assert.equal(generations.length, 1);
+    const traced = JSON.stringify(generations[0]);
+    assert.ok(!traced.includes('sk-source-line'), traced);
+    assert.match(traced, /"chars":\d+/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('request-path calls still trace their prompt (only bootstrap is redacted)', async () => {
+  const { withTrace } = await import('./langfuse.ts');
+  const starts: Record<string, unknown>[] = [];
+  const fakeTrace = { generation(start: Record<string, unknown>) { starts.push(start); return { end() {} }; } };
+  const stub = withFetchStub(() => geminiTextResponse(WELL_FORMED_SCORE));
+  try {
+    await withTrace(fakeTrace as never, () => scorePrompt({ prompt: 'fix the retry logic' }));
+    assert.match(JSON.stringify(starts[0]), /fix the retry logic/);
+  } finally {
+    stub.restore();
+  }
+});

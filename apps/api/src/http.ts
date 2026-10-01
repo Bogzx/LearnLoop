@@ -8,6 +8,7 @@ import { DIMENSIONS } from '@trailhead/shared';
 import { q } from './db.ts';
 import { ipRateKey, limiterFor, type LimitName, type TokenBucketLimiter } from './rate-limit.ts';
 import { createHash } from 'node:crypto';
+import { demoTeamEnabled } from './demo-team.ts';
 
 // Tenant policy, read per request so tests (and operators flipping env in a
 // long-lived process manager) see the current value.
@@ -24,19 +25,14 @@ import { createHash } from 'node:crypto';
 //     in X-Admin-Token, so only the operator can register teams. Unset means
 //     open registration, which is fine while the API is bound to 127.0.0.1.
 //   TRAILHEAD_DEMO_TEAM (on | off; default on, but off when
-//     TRAILHEAD_ADMIN_TOKEN is set) — the seeded demo team's secret is public
-//     (it is in this repo), so anyone who can reach the API can write to its
-//     wiki and spend the operator's Gemini quota through it. Setting an admin
-//     token is the sign of a networked deploy, which is why it turns the demo
-//     team off unless TRAILHEAD_DEMO_TEAM=on says otherwise.
+//     TRAILHEAD_ADMIN_TOKEN is set) — the seeded demo team's secret is public,
+//     so on a networked deploy anyone could use it. See demo-team.ts.
 export function authPolicy() {
-  const adminToken = process.env.TRAILHEAD_ADMIN_TOKEN || null;
-  const demo = process.env.TRAILHEAD_DEMO_TEAM;
   return {
     acceptLegacy: process.env.TRAILHEAD_ACCEPT_LEGACY_TOKENS !== 'false',
     autoCreate: process.env.TRAILHEAD_AUTO_CREATE_TEAMS === 'true',
-    adminToken,
-    demoTeam: demo === 'on' || demo === 'true' ? true : demo === 'off' || demo === 'false' ? false : adminToken === null,
+    adminToken: process.env.TRAILHEAD_ADMIN_TOKEN || null,
+    demoTeam: demoTeamEnabled(),
   };
 }
 
