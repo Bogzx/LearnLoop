@@ -41,9 +41,10 @@ curl http://localhost:3000
 # {"name":"trailhead-api","status":"ok",...}
 ```
 
-If `GEMINI_API_KEY` is missing (and `TRAILHEAD_LLM` is not `offline`), the API
-refuses to start and logs what to set; Compose keeps restarting it until you
-fix `.env`. It never quietly falls back to offline mode.
+If `GEMINI_API_KEY` is missing (and `TRAILHEAD_LLM` is not `offline`),
+`docker compose up` stops before the API starts: the one-shot `config-check`
+service prints what to set and exits 1. The API checks the same thing at
+startup. It never quietly falls back to offline mode.
 
 ### Try it without a key (offline mode)
 
@@ -61,8 +62,8 @@ Drop `--profile demo` for an empty stack.
 
 - `/score` and `/coach` use the rule-based scorer in
   `packages/scoring/src/heuristic-score.mjs`. It reads surface features (file
-  paths, identifiers, constraint and output phrasing), so it is a reasonable
-  floor, not a substitute for the model; `apps/api/eval/README.md` has its
+  paths, identifiers, constraint and output phrasing), so it is a transparent
+  baseline, not a substitute for the model; `apps/api/eval/README.md` has its
   numbers and known misses. Every response carries `"scorer": "heuristic"`,
   and coaching text ends with a note saying no model was involved.
 - Coaching uses the static per-dimension templates (plus your team's library
@@ -300,7 +301,8 @@ The defaults are safe for a local setup because both ports are bound to
   rotation, but not from writes or from spending your quota. It is **off by
   default once `TRAILHEAD_ADMIN_TOKEN` is set**: its secret then gets
   `401 demo_team_disabled`. `TRAILHEAD_DEMO_TEAM=on|off` overrides that either
-  way, and `GET /` reports the current setting as `demo_team`.
+  way (any other value stops the API at startup), and `GET /` reports the
+  current setting as `demo_team`.
 
 **Rate limits.** The API limits the calls that cost you something, with
 in-process token buckets (a limit of `N/W` allows a burst of N and refills at N
@@ -376,8 +378,11 @@ Where prompts go: every scored prompt, any wiki context attached to it, and —
 for the default rich `bootstrap` — the first 8,000 characters of up to 500
 source files (5 levels deep) are sent to Google's Gemini API
 using your `GEMINI_API_KEY` (in offline mode nothing is sent to Google). When
-`LANGFUSE_*` keys are set, the same model
-inputs and outputs are also sent to Langfuse. The browser extension's 👍/🤷/👎
+`LANGFUSE_*` keys are set, every model call is also traced in Langfuse: for
+scoring, coaching, `/improve` and `/diff` that includes the prompt, any team
+context and the model's answer. Rich-bootstrap calls are the exception: their
+traces record only sizes, model settings and token usage, never the source
+files or the summaries generated from them. The browser extension's 👍/🤷/👎
 chips store the prompt *and Claude's full reply* in the `captures` table.
 `bootstrap` picks files by extension (so `.env` and key files are never read)
 and skips anything git ignores (`git check-ignore`: nested `.gitignore`s,
@@ -389,9 +394,10 @@ uploaded.
 
 ## Troubleshooting
 
-**The API restarts in a loop and logs "GEMINI_API_KEY not set"**
-You skipped `cp .env.example .env`, or left the key blank. `.env` must be at the
-repo root, next to `docker-compose.yml`. To try the stack without a key, set
+**`docker compose up` stops with `service "config-check" didn't complete successfully`**
+Its log says `GEMINI_API_KEY is not set`: you skipped `cp .env.example .env`,
+or left the key blank. `.env` must be at the repo root, next to
+`docker-compose.yml`. To try the stack without a key, set
 `TRAILHEAD_LLM=offline` instead.
 
 **API restarts in a loop / `DATABASE_URL not set`**
