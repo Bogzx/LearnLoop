@@ -44,15 +44,24 @@ function ai(): GoogleGenAI {
 type GenContentParams = Parameters<GoogleGenAI['models']['generateContent']>[0];
 type GenContentResp = Awaited<ReturnType<GoogleGenAI['models']['generateContent']>>;
 
-async function tracedGenerate(params: GenContentParams): Promise<GenContentResp> {
+// `redact` keeps a call's prompt and answer out of the trace: only their sizes,
+// the model parameters and token usage are recorded. Used for the rich wiki
+// bootstrap, whose prompts carry up to 16 MB of the team's source files (and
+// whose answers can quote it); SELFHOSTING.md says what reaches Langfuse.
+async function tracedGenerate(
+  params: GenContentParams,
+  { redact = false }: { redact?: boolean } = {},
+): Promise<GenContentResp> {
   const trace = currentTrace();
   const gen = trace?.generation({
     name: params.model,
     model: params.model,
-    input: {
-      contents: params.contents,
-      systemInstruction: params.config?.systemInstruction,
-    },
+    input: redact
+      ? { redacted: 'source bundle not sent to Langfuse', chars: JSON.stringify(params.contents ?? '').length }
+      : {
+          contents: params.contents,
+          systemInstruction: params.config?.systemInstruction,
+        },
     modelParameters: {
       temperature: params.config?.temperature ?? null,
       maxOutputTokens: params.config?.maxOutputTokens ?? null,
@@ -69,8 +78,9 @@ async function tracedGenerate(params: GenContentParams): Promise<GenContentResp>
           totalTokenCount?: number;
         };
       }).usageMetadata;
+      const answer = extractAnswer(resp as GenResp, redact ? Number.POSITIVE_INFINITY : undefined);
       gen.end({
-        output: extractAnswer(resp as GenResp),
+        output: redact ? { redacted: 'generated from source; not sent to Langfuse', chars: answer.length } : answer,
         usage: u
           ? {
               input: u.promptTokenCount,
@@ -169,12 +179,14 @@ function extractAnswer(resp: GenResp, maxChars: number = MAX_EXTRACT_CHARS): str
 // bootstrap (wiki-bootstrap-job.ts) — so every Gemini call in the API goes
 // through one client. Long-form output (folder narratives run to several
 // thousand words) is not capped like the short structured answers above.
+// The call is traced with its prompt and answer redacted (see tracedGenerate):
+// they carry the team's source code.
 export async function generateText(
   params: GenContentParams,
   label: string,
   perCallTimeoutMs?: number,
 ): Promise<string> {
-  const resp = await withRetry(() => tracedGenerate(params), label, perCallTimeoutMs);
+  const resp = await withRetry(() => tracedGenerate(params, { redact: true }), label, perCallTimeoutMs);
   return extractAnswer(resp as GenResp, Number.POSITIVE_INFINITY);
 }
 
