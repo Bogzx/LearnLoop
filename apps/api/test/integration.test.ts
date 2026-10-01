@@ -382,6 +382,31 @@ test('the demo team works through its public secret', { skip }, async () => {
 const obsFor = (teamId: string) =>
   count('SELECT count(*) n FROM skill_observations WHERE team_token = $1', [teamId]);
 
+test('TRAILHEAD_DEMO_TEAM: on by default, off once an admin token is set, an explicit value wins', { skip }, async () => {
+  const demo = () => call('GET', '/team/metrics', { token: 'trailhead_demo_acme_2026' });
+  try {
+    assert.equal((await demo()).status, 200);
+    assert.equal((await call('GET', '/')).json.demo_team, true);
+
+    process.env.TRAILHEAD_ADMIN_TOKEN = 'it-admin-token';
+    const off = await demo();
+    assert.equal(off.status, 401);
+    assert.equal(off.json.reason, 'demo_team_disabled');
+    assert.equal((await call('GET', '/')).json.demo_team, false);
+    assert.equal((await call('GET', '/team/metrics', { token: A.secret })).status, 200, 'other teams unaffected');
+
+    process.env.TRAILHEAD_DEMO_TEAM = 'on';
+    assert.equal((await demo()).status, 200);
+
+    delete process.env.TRAILHEAD_ADMIN_TOKEN;
+    process.env.TRAILHEAD_DEMO_TEAM = 'off';
+    assert.equal((await demo()).status, 401);
+  } finally {
+    delete process.env.TRAILHEAD_ADMIN_TOKEN;
+    delete process.env.TRAILHEAD_DEMO_TEAM;
+  }
+});
+
 test('/score writes 5 observations under the caller only, deduped within 30 s', { skip }, async () => {
   const before = await obsFor(A.id);
   const r = await call('POST', '/score', { token: A.secret, body: { prompt: '[mid] tidy the handler', user_id: 'alice' } });

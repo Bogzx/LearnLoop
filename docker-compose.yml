@@ -81,6 +81,8 @@ services:
       # registration, which is fine while the port below is bound to
       # 127.0.0.1. Set it before exposing the API on a network.
       TRAILHEAD_ADMIN_TOKEN: ${TRAILHEAD_ADMIN_TOKEN:-}
+      # The public demo team: on unless TRAILHEAD_ADMIN_TOKEN is set (on | off).
+      TRAILHEAD_DEMO_TEAM: ${TRAILHEAD_DEMO_TEAM:-}
       TRAILHEAD_EXPOSE_ERRORS: ${TRAILHEAD_EXPOSE_ERRORS:-false}
       # Rate limits — defaults live in apps/api/src/rate-limit.ts; empty = default.
       TRAILHEAD_RATE_LIMIT: ${TRAILHEAD_RATE_LIMIT:-on}

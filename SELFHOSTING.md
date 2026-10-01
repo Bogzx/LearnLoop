@@ -85,6 +85,7 @@ ones you are most likely to touch:
 | `POSTGRES_PORT` | `5432` | You already run Postgres locally. |
 | `DATABASE_URL` | *(the bundled Postgres)* | Use an external database (Neon, RDS) instead of the container. |
 | `TRAILHEAD_ADMIN_TOKEN` | *(empty)* | Set it to restrict team registration to people you give it to. Do this before exposing the API. |
+| `TRAILHEAD_DEMO_TEAM` | `on` (`off` when an admin token is set) | Turn the public demo team on or off explicitly. |
 | `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | `true` | Set `false` once every team has upgraded from a pre-2026-09-30 token. |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | `false` | Legacy only: let unknown tokens create teams on the fly. Throwaway demos only. |
 
@@ -237,6 +238,7 @@ The defaults are safe for a local setup because both ports are bound to
   can reach the port can create teams and spend your Gemini quota, and can
   *squat* a repo's derived team id before the real team registers it. With it
   set, pass it to `init --admin-token` (or hand people pre-made secrets).
+  Setting it also turns the public demo team off (below).
 - **Turn legacy tokens off** (`TRAILHEAD_ACCEPT_LEGACY_TOKENS=false`) once every
   team has run `init --upgrade-legacy`. A legacy token is
   `repo_` + SHA-256 of the raw remote URL: anyone who knows or guesses the URL
@@ -257,7 +259,10 @@ The defaults are safe for a local setup because both ports are bound to
   metrics through it. Put it behind your SSO/VPN if that matters.
 - **The demo team's secret `trailhead_demo_acme_2026` is public** (it is in this
   repo). The demo team is protected from `DELETE /team/data` and from secret
-  rotation, but not from writes.
+  rotation, but not from writes or from spending your quota. It is **off by
+  default once `TRAILHEAD_ADMIN_TOKEN` is set**: its secret then gets
+  `401 demo_team_disabled`. `TRAILHEAD_DEMO_TEAM=on|off` overrides that either
+  way, and `GET /` reports the current setting as `demo_team`.
 
 **Rate limits.** The API limits the calls that cost you something, with
 in-process token buckets (a limit of `N/W` allows a burst of N and refills at N
