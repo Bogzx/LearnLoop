@@ -5,22 +5,28 @@ name: release
 # yet. Publishing the release, and any store listing, stays a human step.
 #
 # The tag must match the version in apps/browser-ext/manifest.json and
-# apps/vscode-ext/package.json, or the job fails before building anything.
+# apps/vscode-ext/package.json, or the build fails before packaging anything.
+# Assets are only ever (re)placed on a draft: once a release is published, a
+# re-run fails instead of swapping the files people may already have.
 
 on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
+# Nothing by default; each job asks for what it needs.
+permissions: {}
 
 jobs:
-  extensions:
-    name: package and attach extensions
+  build:
+    name: test and package the extensions
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: versions match the tag
         run: |
           want="${GITHUB_REF_NAME#v}"
@@ -43,13 +49,41 @@ jobs:
         run: |
           npm --workspace=@trailhead/browser-ext run package
           npm --workspace=apps/vscode-ext run package
-      - name: attach to the release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: |
+            apps/browser-ext/learnloop-browser-ext-*.zip
+            apps/vscode-ext/*.vsix
+          if-no-files-found: error
+
+  release:
+    name: attach to the draft release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The only job that can write to the repository, and it runs no repo code.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: packages
+      - name: attach
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes --title "LearnLoop $GITHUB_REF_NAME"
+          tag="$GITHUB_REF_NAME"
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != "true" ]; then
+              echo "::error::release $tag is already published; not replacing its assets. Delete the assets or tag a new version."
+              exit 1
+            fi
+          else
+            gh release create "$tag" --draft --verify-tag --generate-notes --title "LearnLoop $tag"
           fi
-          gh release upload "$GITHUB_REF_NAME" --clobber \
-            apps/browser-ext/learnloop-browser-ext-*.zip \
-            apps/vscode-ext/*.vsix
+          # Still a draft here, so replacing a file from an earlier run is safe.
+          find packages -type f \( -name '*.zip' -o -name '*.vsix' \) -print0 \
+            | xargs -0 gh release upload "$tag" --clobber
