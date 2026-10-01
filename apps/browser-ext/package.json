@@ -1,6 +1,6 @@
 {
   "name": "@trailhead/browser-ext",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -8,6 +8,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
+    "package": "node esbuild.config.mjs --production && node scripts/zip.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test --experimental-strip-types src/hash.test.mts src/augment.test.mts src/api.test.mts src/worker-core.test.mts src/diff-parse.test.mts src/selectors-classify.test.mts src/widgets/wiki-toast.test.mts src/user-state.test.mts test/bundle-load.test.mjs",
     "smoke": "bash scripts/smoke.sh"

@@ -1,0 +1,12 @@
+# What `vsce package` leaves out of the .vsix: the extension runs from the
+# esbuild bundle in dist/ (built by vscode:prepublish), so sources, tests,
+# editor config and source maps are not shipped.
+src/**
+test/**
+.vscode/**
+node_modules/**
+tsconfig.json
+esbuild.config.mjs
+**/*.map
+**/*.test.*
+*.vsix

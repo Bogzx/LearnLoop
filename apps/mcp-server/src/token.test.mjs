@@ -5,10 +5,11 @@
 // repo derived different tokens and silently split a team in two.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  findTeamFile,
   maskSecret,
   normalizeRemoteUrl,
   readCredential,
@@ -96,5 +97,24 @@ test('readCredential: env token > TRAILHEAD_TEAM_FILE > ./.trailhead-team > null
     assert.equal(readCredential({ env: { TRAILHEAD_TEAM_FILE: join(dir, 'nope') }, cwd: dir })?.token, 'from-sentinel');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a relative TRAILHEAD_TEAM_FILE is found from cwd up to the git root, and not beyond', () => {
+  const root = mkdtempSync(join(tmpdir(), 'th-findup-'));
+  try {
+    const repo = join(root, 'repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    mkdirSync(join(repo, 'src', 'deep'), { recursive: true });
+    writeFileSync(join(repo, '.trailhead-team'), 'from-repo-root\n');
+    const fromSubdir = readCredential({ env: { TRAILHEAD_TEAM_FILE: '.trailhead-team' }, cwd: join(repo, 'src', 'deep') });
+    assert.equal(fromSubdir?.token, 'from-repo-root');
+    assert.equal(fromSubdir?.source, 'team-file');
+    // A sentinel above the git root belongs to some other repo: not used.
+    writeFileSync(join(root, '.trailhead-team'), 'outside\n');
+    rmSync(join(repo, '.trailhead-team'));
+    assert.equal(findTeamFile(join(repo, 'src'), '.trailhead-team'), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

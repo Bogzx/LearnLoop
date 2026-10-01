@@ -20,13 +20,18 @@
 //                                           generated MCP configs contain)
 //   2. TRAILHEAD_TEAM_FILE env var          (path to a sentinel; what `init`
 //                                           now writes into MCP configs, so the
-//                                           secret stays out of .mcp.json)
+//                                           secret stays out of .mcp.json). A
+//                                           relative path (what `init` writes:
+//                                           `.trailhead-team`) is looked for in
+//                                           cwd, then in each parent up to the
+//                                           git root, so the config is the same
+//                                           on every machine
 //   3. ./.trailhead-team in cwd
 
 import { execSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 export const SENTINEL_FILENAME = '.trailhead-team';
 
@@ -141,8 +146,8 @@ export function maskSecret(secret) {
 export function readCredential({ env = process.env, cwd = process.cwd() } = {}) {
   if (env.TRAILHEAD_TEAM_TOKEN) return { token: env.TRAILHEAD_TEAM_TOKEN, source: 'env' };
   if (env.TRAILHEAD_TEAM_FILE) {
-    const p = resolve(cwd, env.TRAILHEAD_TEAM_FILE);
-    if (existsSync(p)) {
+    const p = findTeamFile(cwd, env.TRAILHEAD_TEAM_FILE);
+    if (p) {
       const t = readFileSync(p, 'utf8').trim();
       if (t) return { token: t, source: 'team-file', path: p };
     }
@@ -150,6 +155,18 @@ export function readCredential({ env = process.env, cwd = process.cwd() } = {}) 
   const sentinel = readSentinel(cwd);
   if (sentinel) return { token: sentinel, source: 'sentinel', path: join(cwd, SENTINEL_FILENAME) };
   return null;
+}
+
+// An absolute TRAILHEAD_TEAM_FILE is used as is. A relative one is looked for
+// in cwd, then in each parent directory, stopping at the first that holds
+// .git (the repo root) — an MCP host may start the server in a subdirectory.
+export function findTeamFile(cwd, file) {
+  if (isAbsolute(file)) return existsSync(file) ? file : null;
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    const p = join(dir, file);
+    if (existsSync(p)) return p;
+    if (existsSync(join(dir, '.git')) || dirname(dir) === dir) return null;
+  }
 }
 
 // Credential for the bootstrap/reset CLIs: readCredential, then — for

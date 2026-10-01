@@ -156,3 +156,29 @@ jobs:
         env:
           TRAILHEAD_IT_DATABASE_URL: postgresql://trailhead:trailhead@localhost:5432/trailhead_it
         run: npm --workspace=apps/api run test:integration
+
+  package:
+    name: package extensions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: install
+        run: npm ci
+      # Production builds of both extensions, packed the way a release ships
+      # them (release.yml attaches the same files to a GitHub release).
+      - name: browser extension (.zip)
+        run: npm --workspace=@trailhead/browser-ext run package
+      - name: VS Code extension (.vsix)
+        run: npm --workspace=apps/vscode-ext run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extensions
+          path: |
+            apps/browser-ext/learnloop-browser-ext-*.zip
+            apps/vscode-ext/*.vsix
+          if-no-files-found: error
