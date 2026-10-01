@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  RULE_BASED_NOTE,
   buildScoreCardModel,
   colorForScore,
   prettyDimension,
@@ -81,4 +82,10 @@ test('buildScoreCardModel handles missing dimension gracefully (treats as 0)', (
     assert.equal(row.ok, false);
     assert.equal(row.color, 'low');
   }
+});
+
+test('a rule-based score (offline API) carries a note; a model score does not', () => {
+  assert.equal(buildScoreCardModel(sample).scorerNote, null);
+  assert.equal(buildScoreCardModel({ ...sample, scorer: 'gemini' }).scorerNote, null);
+  assert.equal(buildScoreCardModel({ ...sample, scorer: 'heuristic' }).scorerNote, RULE_BASED_NOTE);
 });

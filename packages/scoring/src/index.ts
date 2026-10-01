@@ -3,6 +3,7 @@
 // declarations.
 export { normalize } from './normalize.mjs';
 export { SCORE_SYSTEM_PROMPT } from './score-prompt.mjs';
+export { HEURISTIC_SCORER, heuristicScore } from './heuristic-score.mjs';
 export { TEACH_SYSTEM_PROMPT } from './teach-prompt.mjs';
 export { TOPIC_SYSTEM_PROMPT } from './topic-prompt.mjs';
 export {

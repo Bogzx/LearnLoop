@@ -16,6 +16,7 @@ import { isUuid } from '../request-params.ts';
 import { invalidateTeamContext } from '../team-context.ts';
 import { bundleFromRequest, runJob } from '../wiki-bootstrap-job.ts';
 import type { AppEnv } from '../http.ts';
+import { llmMode } from '../llm-mode.ts';
 
 export const onboardRoutes = new Hono<AppEnv>();
 
@@ -131,6 +132,17 @@ const ONBOARD_FULL_MAX_FILE_CHARS = 32_000;   // per file
 const ONBOARD_FULL_MAX_BUNDLE_BYTES = 16 * 1024 * 1024;  // 16 MB
 
 onboardRoutes.post('/onboard/repo/full', async (c) => {
+  if (llmMode() === 'offline') {
+    return c.json(
+      {
+        error: 'llm_unavailable',
+        detail:
+          'The rich wiki bootstrap needs an LLM and this server runs with TRAILHEAD_LLM=offline. ' +
+          'Use `bootstrap --minimal` for the skeleton wiki, or set GEMINI_API_KEY.',
+      },
+      503,
+    );
+  }
   const body = await c.req.json<OnboardRepoFullRequest>().catch(() => null);
   if (!body || !Array.isArray(body.folders) || !Array.isArray(body.files)) {
     return c.json(

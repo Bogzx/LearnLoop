@@ -2,17 +2,20 @@
 // scorer and report the spread. See eval/README.md.
 //
 //   npm --workspace=apps/api run eval -- --dry-run            # offline, free
+//   npm --workspace=apps/api run eval -- --scorer heuristic --runs 1  # rule-based baseline, free
 //   GEMINI_API_KEY=… npm --workspace=apps/api run eval -- --yes --runs 5
 //   … --temperature 0 --thinking-budget 512 --label t0-b512  # compare settings
 //
-// A real run makes (prompts × runs) paid Gemini calls, so it refuses to start
-// without --yes and prints the call count first. Nothing in CI runs it.
+// A Gemini run makes (prompts × runs) paid calls, so it refuses to start
+// without --yes and prints the call count first. CI never runs it; CI does run
+// the rule-based scorer over the golden and held-out sets (baseline.test.ts).
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DimensionScores } from '@trailhead/shared';
 import { DIMENSIONS } from '@trailhead/shared';
+import { HEURISTIC_SCORER, heuristicScore } from '@trailhead/scoring';
 import {
   buildReport,
   renderMarkdown,
@@ -25,6 +28,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 interface Args {
+  scorer: 'gemini' | 'heuristic';
   runs: number;
   yes: boolean;
   dryRun: boolean;
@@ -51,9 +55,12 @@ export function parseArgs(argv: string[]): Args {
     if (!Number.isFinite(n)) throw new Error(`${name} must be a number (got ${v})`);
     return n;
   };
+  const scorer = get('--scorer') ?? 'gemini';
+  if (scorer !== 'gemini' && scorer !== 'heuristic') throw new Error('--scorer must be gemini or heuristic');
   const runs = num('--runs') ?? 5;
   if (!Number.isInteger(runs) || runs < 1 || runs > 50) throw new Error('--runs must be an integer in 1..50');
   return {
+    scorer,
     runs,
     yes: argv.includes('--yes'),
     dryRun: argv.includes('--dry-run'),
@@ -104,6 +111,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   if (args.dryRun) {
     scorer = fakeScorer(prompts);
+  } else if (args.scorer === 'heuristic') {
+    // Deterministic and free: no key, no --yes. One run per prompt is enough.
+    scorer = async ({ prompt }) => heuristicScore(prompt);
+    model = `${HEURISTIC_SCORER} (rule-based, no model)`;
   } else {
     if (!process.env.GEMINI_API_KEY) {
       console.error('GEMINI_API_KEY is not set. Use --dry-run to exercise the harness without a key.');

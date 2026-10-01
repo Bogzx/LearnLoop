@@ -11,7 +11,7 @@ import type {
 } from '@trailhead/shared';
 import { ancestorPaths } from '@trailhead/scoring';
 import { q } from '../db.ts';
-import { extractTopic, improveCoach, overallScore, scorePrompt, synthesizeDiff } from '../gemini.ts';
+import { extractTopic, improveCoach, overallScore, scorePrompt, synthesizeDiff } from '../llm.ts';
 import { renderTeamContext } from '../team-context.ts';
 import { PROMPT_TOO_LONG, promptTooLong, type AppEnv } from '../http.ts';
 

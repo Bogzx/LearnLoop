@@ -2,7 +2,7 @@
 
 Trailhead is self-hosted. There is no hosted API and no account to sign up for —
 you run the backend, and it is yours. The only external dependency is a Gemini
-API key.
+API key, and even that is optional while you try it out (offline mode, below).
 
 Everything below assumes you are at the repo root.
 
@@ -13,7 +13,7 @@ Everything below assumes you are at the repo root.
 | | |
 |---|---|
 | **Docker** | Docker Desktop, OrbStack, or Docker Engine with the Compose v2 plugin (`docker compose version`). |
-| **A Gemini API key** | Free at <https://aistudio.google.com/apikey>. |
+| **A Gemini API key** | Free at <https://aistudio.google.com/apikey>. Optional for a first look: see [Try it without a key](#try-it-without-a-key-offline-mode). |
 | **Node 22.6+** | Only needed to run the *clients* (browser extension, VS Code extension, MCP server, dashboard). The API itself runs entirely inside Docker. |
 
 ---
@@ -41,8 +41,38 @@ curl http://localhost:3000
 # {"name":"trailhead-api","status":"ok",...}
 ```
 
-If `GEMINI_API_KEY` is missing, `docker compose up` stops immediately and tells
-you so — it will not start a stack that cannot score a prompt.
+If `GEMINI_API_KEY` is missing (and `TRAILHEAD_LLM` is not `offline`), the API
+refuses to start and logs what to set; Compose keeps restarting it until you
+fix `.env`. It never quietly falls back to offline mode.
+
+### Try it without a key (offline mode)
+
+```bash
+TRAILHEAD_LLM=offline docker compose --profile demo up --build
+```
+
+Same stack, no model, nothing sent to Google. `--profile demo` also runs the
+`seed` service once, which fills the public demo team (`trailhead_demo_acme_2026`)
+with synthetic data, so the dashboard has something to show: a small wiki,
+four library prompts, and six days of prompt activity from three made-up users
+(`packages/db/seed.mjs`; re-run it to move the activity window up to now).
+Drop `--profile demo` for an empty stack.
+
+
+- `/score` and `/coach` use the rule-based scorer in
+  `packages/scoring/src/heuristic-score.mjs`. It reads surface features (file
+  paths, identifiers, constraint and output phrasing), so it is a reasonable
+  floor, not a substitute for the model; `apps/api/eval/README.md` has its
+  numbers and known misses. Every response carries `"scorer": "heuristic"`,
+  and coaching text ends with a note saying no model was involved.
+- Coaching uses the static per-dimension templates (plus your team's library
+  prompts when there are any). `/improve` asks the template question for each
+  weak dimension and appends your answers; `/diff` names the biggest gap.
+- The rich wiki bootstrap is unavailable (`503`); `bootstrap --minimal` works.
+- `GET /` reports `"llm": "offline"`, and the API logs a warning at startup.
+- Library promotion still applies its gate, but the confirming re-score is the
+  same deterministic rules, so it confirms nothing. Set
+  `TRAILHEAD_PROMOTION_MODE=review` if a team will rely on the library.
 
 Run it in the background with `docker compose up -d`, and stop it with
 `docker compose down`.
@@ -55,11 +85,13 @@ ones you are most likely to touch:
 
 | Variable | Default | Why you'd change it |
 |---|---|---|
-| `GEMINI_API_KEY` | *(required)* | — |
+| `GEMINI_API_KEY` | *(required unless offline)* | — |
+| `TRAILHEAD_LLM` | `gemini` | `offline` to run with no model (see above). |
 | `PORT` | `3000` | Something else already owns port 3000. Changing this means updating each client's API URL too. |
 | `POSTGRES_PORT` | `5432` | You already run Postgres locally. |
 | `DATABASE_URL` | *(the bundled Postgres)* | Use an external database (Neon, RDS) instead of the container. |
 | `TRAILHEAD_ADMIN_TOKEN` | *(empty)* | Set it to restrict team registration to people you give it to. Do this before exposing the API. |
+| `TRAILHEAD_DEMO_TEAM` | `on` (`off` when an admin token is set) | Turn the public demo team on or off explicitly. |
 | `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | `true` | Set `false` once every team has upgraded from a pre-2026-09-30 token. |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | `false` | Legacy only: let unknown tokens create teams on the fly. Throwaway demos only. |
 
@@ -212,6 +244,7 @@ The defaults are safe for a local setup because both ports are bound to
   can reach the port can create teams and spend your Gemini quota, and can
   *squat* a repo's derived team id before the real team registers it. With it
   set, pass it to `init --admin-token` (or hand people pre-made secrets).
+  Setting it also turns the public demo team off (below).
 - **Turn legacy tokens off** (`TRAILHEAD_ACCEPT_LEGACY_TOKENS=false`) once every
   team has run `init --upgrade-legacy`. A legacy token is
   `repo_` + SHA-256 of the raw remote URL: anyone who knows or guesses the URL
@@ -232,7 +265,10 @@ The defaults are safe for a local setup because both ports are bound to
   metrics through it. Put it behind your SSO/VPN if that matters.
 - **The demo team's secret `trailhead_demo_acme_2026` is public** (it is in this
   repo). The demo team is protected from `DELETE /team/data` and from secret
-  rotation, but not from writes.
+  rotation, but not from writes or from spending your quota. It is **off by
+  default once `TRAILHEAD_ADMIN_TOKEN` is set**: its secret then gets
+  `401 demo_team_disabled`. `TRAILHEAD_DEMO_TEAM=on|off` overrides that either
+  way, and `GET /` reports the current setting as `demo_team`.
 
 **Rate limits.** The API limits the calls that cost you something, with
 in-process token buckets (a limit of `N/W` allows a burst of N and refills at N
@@ -307,7 +343,8 @@ sent the same `demo` id.)
 Where prompts go: every scored prompt, any wiki context attached to it, and —
 for the default rich `bootstrap` — the first 8,000 characters of up to 500
 source files (5 levels deep) are sent to Google's Gemini API
-using your `GEMINI_API_KEY`. When `LANGFUSE_*` keys are set, the same model
+using your `GEMINI_API_KEY` (in offline mode nothing is sent to Google). When
+`LANGFUSE_*` keys are set, the same model
 inputs and outputs are also sent to Langfuse. The browser extension's 👍/🤷/👎
 chips store the prompt *and Claude's full reply* in the `captures` table.
 `bootstrap` picks files by extension (so `.env` and key files are never read)
@@ -320,9 +357,10 @@ uploaded.
 
 ## Troubleshooting
 
-**`docker compose up` exits with "required variable GEMINI_API_KEY is missing"**
+**The API restarts in a loop and logs "GEMINI_API_KEY not set"**
 You skipped `cp .env.example .env`, or left the key blank. `.env` must be at the
-repo root, next to `docker-compose.yml`.
+repo root, next to `docker-compose.yml`. To try the stack without a key, set
+`TRAILHEAD_LLM=offline` instead.
 
 **API restarts in a loop / `DATABASE_URL not set`**
 `DATABASE_URL` is set in your `.env` but points somewhere unreachable. Comment

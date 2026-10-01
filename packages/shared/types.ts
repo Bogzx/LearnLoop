@@ -37,7 +37,15 @@ export interface ScoreRequest  {
   user_id: string;
   context_path?: string;
 }
-export interface ScoreResponse { overall: number; dimensions: DimensionScores; missing: MissingHints; }
+export interface ScoreResponse {
+  overall: number;
+  dimensions: DimensionScores;
+  missing: MissingHints;
+  // What produced the score: the model, or the rule-based scorer when the API
+  // runs with TRAILHEAD_LLM=offline. Absent from servers older than 2026-10-01.
+  scorer?: Scorer;
+}
+export type Scorer = 'gemini' | 'heuristic';
 
 // POST /capture — store conversation + outcome (§3)
 export interface CaptureRequest {
@@ -318,6 +326,9 @@ export interface CoachResponse {
   // coaching and never erroring. Never let a scoring failure be silent.
   degraded?: boolean;
   error?: string;            // short machine-readable reason, e.g. 'score_failed'
+
+  // As ScoreResponse.scorer. In offline mode `text` also says so.
+  scorer?: Scorer;
 
   // Populated when proceed=false. Echo the four fields back unchanged on the
   // next coach() call, with `prompt` set to original + user's reply.

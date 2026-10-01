@@ -24,8 +24,9 @@ import {
   overallScore,
   rewriteForDims,
   scorePrompt,
+  scorerName,
   summarizeCoaching,
-} from '../gemini.ts';
+} from '../llm.ts';
 import { tryPromotePrompt } from '../prompt-promotion.ts';
 import {
   passesPromotionGate,
@@ -37,6 +38,16 @@ import { renderTeamContext } from '../team-context.ts';
 import { PROMPT_TOO_LONG, promptTooLong, writeSkillObservations, type AppEnv } from '../http.ts';
 
 export const coachRoutes = new Hono<AppEnv>();
+
+// Offline mode (TRAILHEAD_LLM=offline): say so in every coaching response, so
+// a rule-based score is never mistaken for a model's.
+const OFFLINE_NOTE =
+  '_Scored by LearnLoop\'s rule-based scorer: this server runs without a model (TRAILHEAD_LLM=offline)._';
+function markScorer(res: CoachResponse): CoachResponse {
+  const scorer = scorerName();
+  if (scorer !== 'heuristic' || !res.text) return { ...res, scorer };
+  return { ...res, scorer, text: `${res.text}\n\n${OFFLINE_NOTE}` };
+}
 
 // ----- POST /coach -----------------------------------------------------------
 // Educational coaching loop. Drives the teach→reveal cycle described in
@@ -314,7 +325,7 @@ coachRoutes.post('/coach', async (c) => {
       augmented_prompt: augmented,
       missing_dims: Object.keys(scoreResult.missing),
     };
-    return c.json(res);
+    return c.json(markScorer(res));
   }
 
   // ---- Skip reveal mode ----------------------------------------------------
@@ -367,7 +378,7 @@ coachRoutes.post('/coach', async (c) => {
       missing: scoreResult.missing,
       text,
     };
-    return c.json(res);
+    return c.json(markScorer(res));
   }
 
   // ---- Score mode (the main loop) ------------------------------------------
@@ -392,7 +403,7 @@ coachRoutes.post('/coach', async (c) => {
         overall,
       }),
     };
-    return c.json(res);
+    return c.json(markScorer(res));
   }
 
   // Round 1, score <7 → first teach block.
@@ -433,7 +444,7 @@ coachRoutes.post('/coach', async (c) => {
       text,
       next_round_inputs: next,
     };
-    return c.json(res);
+    return c.json(markScorer(res));
   }
 
   // Round >=2 paths. Need original_prompt (we treated round 1 already).
@@ -481,7 +492,7 @@ coachRoutes.post('/coach', async (c) => {
       missing: scoreResult.missing,
       text,
     };
-    return c.json(res);
+    return c.json(markScorer(res));
   }
 
   // No-progress detection: the dim we were teaching about (= last round's
@@ -539,7 +550,7 @@ coachRoutes.post('/coach', async (c) => {
       missing: scoreResult.missing,
       text,
     };
-    return c.json(res);
+    return c.json(markScorer(res));
   }
 
   // Forced exit at COACH_MAX_ROUNDS (still <7, made progress, but rounds exhausted).
@@ -569,7 +580,7 @@ coachRoutes.post('/coach', async (c) => {
       missing: scoreResult.missing,
       text,
     };
-    return c.json(res);
+    return c.json(markScorer(res));
   }
 
   // Else: score still <7, made progress, more rounds remain. Keep teaching.
@@ -624,7 +635,7 @@ coachRoutes.post('/coach', async (c) => {
       text,
       next_round_inputs: next,
     };
-    return c.json(res);
+    return c.json(markScorer(res));
   }
 
   // Defensive fallback — shouldn't be reachable (overall < 7 implies a
@@ -638,5 +649,5 @@ coachRoutes.post('/coach', async (c) => {
     missing: scoreResult.missing,
     text: '',
   };
-  return c.json(res);
+  return c.json(markScorer(res));
 });

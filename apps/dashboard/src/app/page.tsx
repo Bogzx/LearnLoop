@@ -23,7 +23,7 @@ import {
 export const dynamic = 'force-dynamic';
 
 const DEMO_DESCRIPTION =
-  "Backend services in Postgres + Hono, webhooks via signed callbacks, PCI-scoped audit logging. Coaching seeded from the team's actual repo conventions.";
+  'A fictional team for trying LearnLoop: Postgres + Hono backend, signed webhooks. Its wiki, prompts and activity are synthetic demo data from packages/db/seed.mjs.';
 
 function describe(team: TeamSummary, isDemo: boolean): string {
   if (isDemo) return DEMO_DESCRIPTION;
