@@ -4,6 +4,7 @@ function App() {
       <Nav />
       <main>
         <Hero />
+        <TryIt />
         <Problem />
         <Features />
         <Demo />
