@@ -16,12 +16,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DIMENSIONS } from '@trailhead/shared';
 
-// GEMINI_API_KEY must be set BEFORE ./gemini.ts is evaluated — it throws at
-// module scope when the key is absent. Static `import` declarations are
-// hoisted above any statement in the module body, so this has to be a
-// dynamic import after the assignment. The value is a placeholder: every
-// request in this file is intercepted by the fetch stub, so it is never
-// sent anywhere and is not a credential.
+// GEMINI_API_KEY must be set before the first call (the client is created
+// lazily and throws without it). The value is a placeholder: every request in
+// this file is intercepted by the fetch stub, so it is never sent anywhere and
+// is not a credential. Dynamic import kept so the assignment provably runs
+// first.
 process.env.GEMINI_API_KEY ??= 'test-key-not-a-real-credential';
 const { extractTopic, generateText, overallScore, scorePrompt, scoreSamplingConfig } = await import('./gemini.ts');
 

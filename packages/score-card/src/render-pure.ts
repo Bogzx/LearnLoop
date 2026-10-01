@@ -19,7 +19,11 @@ export interface ScoreCardModel {
   overall: number;
   overallColor: ColorBucket;
   rows: ScoreRow[];
+  /** Set when no model produced the score (API in TRAILHEAD_LLM=offline mode). */
+  scorerNote: string | null;
 }
+
+export const RULE_BASED_NOTE = 'Rule-based score: this server runs without a model';
 
 export function colorForScore(n: number): ColorBucket {
   if (n >= 7) return 'high';
@@ -44,5 +48,10 @@ export function buildScoreCardModel(res: ScoreResponse): ScoreCardModel {
     };
   });
   const overall = Number(res.overall ?? 0);
-  return { overall, overallColor: colorForScore(overall), rows };
+  return {
+    overall,
+    overallColor: colorForScore(overall),
+    rows,
+    scorerNote: res.scorer === 'heuristic' ? RULE_BASED_NOTE : null,
+  };
 }

@@ -65,5 +65,13 @@ export function renderScoreCard(
   }
 
   root.appendChild(list);
+
+  if (model.scorerNote) {
+    const note = doc.createElement('div');
+    note.className = `${prefix}-scorer-note`;
+    note.setAttribute('data-testid', 'score-card-scorer-note');
+    note.textContent = model.scorerNote;
+    root.appendChild(note);
+  }
   return root;
 }

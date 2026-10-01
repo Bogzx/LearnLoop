@@ -211,6 +211,13 @@ export const TRAILHEAD_CSS = `
   line-height: 1.45;
 }
 
+.trailhead-sc-scorer-note {
+  font-size: 11px;
+  opacity: 0.65;
+  margin-top: 8px;
+  font-style: italic;
+}
+
 /* Action buttons — Improve / Keep as-is / Edit */
 .trailhead-actions {
   display: flex;

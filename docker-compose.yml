@@ -3,9 +3,11 @@
 #   cp .env.example .env     # then put your Gemini key in it
 #   docker compose up
 #
-# That is the whole setup. The schema is applied to a fresh database
-# automatically, and the API comes up on http://localhost:3000.
-# See SELFHOSTING.md for pointing the clients at it.
+# No key? `TRAILHEAD_LLM=offline docker compose up` runs the same stack with
+# no model: rule-based scoring and template coaching (SELFHOSTING.md).
+#
+# The schema is applied to a fresh database automatically, and the API comes
+# up on http://localhost:3000. See SELFHOSTING.md for pointing the clients at it.
 
 services:
   postgres:
@@ -52,9 +54,13 @@ services:
       # Defaults to the postgres service above. Set DATABASE_URL in .env to
       # point at an external database instead (Neon, RDS, ...).
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-trailhead}:${POSTGRES_PASSWORD:-trailhead}@postgres:5432/${POSTGRES_DB:-trailhead}}
-      # The one thing a stranger must supply. `:?` fails the command up front
-      # with this message rather than building an image that dies on boot.
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env (cp .env.example .env) — get one at https://aistudio.google.com/apikey}
+      # Every LLM call uses it. Without it the API refuses to start (and logs
+      # how to fix it) unless TRAILHEAD_LLM=offline.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # gemini (default) | offline: no model at all — prompts are scored by the
+      # rule-based scorer, coaching uses the static templates, and the rich
+      # wiki bootstrap is disabled. For trying the stack without a key.
+      TRAILHEAD_LLM: ${TRAILHEAD_LLM:-}
       # Container-internal port. The host mapping below is what you change.
       PORT: '3000'
       # Team credentials (see SELFHOSTING.md → Security model). `init`

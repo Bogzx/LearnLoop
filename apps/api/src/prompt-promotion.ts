@@ -15,7 +15,7 @@ import { ancestorPaths, normalizePath } from '@trailhead/scoring';
 import type { DimensionScores } from '@trailhead/shared';
 
 import { q, upsertNode } from './db.ts';
-import { extractPathAndTopic, scorePrompt } from './gemini.ts';
+import { extractPathAndTopic, scorePrompt } from './llm.ts';
 import { passesPromotionGate, type PromotionMode } from './promotion-gate.ts';
 
 interface PromoteArgs {
