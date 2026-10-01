@@ -1,4 +1,4 @@
-// Problem · Solution · Features · Demo
+// Problem · Features · Demo
 
 function Problem() {
   return (
@@ -11,68 +11,10 @@ function Problem() {
             It's that teams don't know how to use it <span className="grad-brand accent-italic">together.</span>
           </SectionTitle>
           <p className="mt-6 md:mt-8 text-ink-500 text-lg md:text-xl leading-relaxed text-pretty">
-            Today, almost every developer uses AI individually — but fewer than 25% know how to integrate
-            it into how their team actually works. The result: inconsistent prompts, lost context,
+            Most developers use AI on their own. What one person learns about prompting the
+            team's codebase rarely reaches anyone else. The result: inconsistent prompts, lost context,
             and slow onboarding.
           </p>
-        </div>
-      </Container>
-    </section>
-  );
-}
-
-function Solution() {
-  const pillars = [
-    {
-      n:'01',
-      title:'Standardizes every prompt to your team',
-      body:"A 5-dimension scorecard runs live under every textarea — goal, specificity, context, constraints, output. Below 7/10? It rewrites the prompt in your team's voice, with your team's conventions, before you hit send.",
-      tone:'#2BC68A',
-    },
-    {
-      n:'02',
-      title:"Loads the knowledge base into the LLM's context",
-      body:"Your repo's wiki — patterns, conventions, past decisions — is injected into the model's context automatically, scoped to the file you're working on. No more pasting links or re-explaining the codebase.",
-      tone:'#3D8BFF',
-    },
-    {
-      n:'03',
-      title:"Auto-updates with every member's contribution",
-      body:"Every prompt that scores 9+/10 is auto-deduped into the team wiki, then becomes context for the next person who asks something similar. The team's tribal knowledge compounds — without anyone writing docs.",
-      tone:'#9C7AD9',
-    },
-    {
-      n:'04',
-      title:'Functional wherever you use AI',
-      body:'Same coach, same context, same wiki — across Browser (Claude.ai · ChatGPT · Gemini), VS Code, and CLI / MCP (Claude Code · Copilot). The connective tissue across the surfaces your team already uses.',
-      tone:'#E5A24F',
-    },
-  ];
-
-  return (
-    <section id="solution" className="relative py-20 md:py-28 border-t hairline overflow-hidden">
-      <Orbs variant="quiet" />
-      <Container className="relative">
-        <div className="max-w-3xl mx-auto text-center">
-          <SectionKicker>The solution</SectionKicker>
-          <SectionTitle>
-            <span className="grad-brand accent-italic">LearnLoop</span> — your team's prompts, standardized and shared.
-          </SectionTitle>
-        </div>
-
-        <div className="mt-12 md:mt-16 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
-          {pillars.map(p => (
-            <article key={p.n} className="paper-card p-6 md:p-7 lift flex flex-col">
-              <div className="flex items-start justify-between">
-                <div className="meta tabular-nums" style={{color: p.tone}}>{p.n}</div>
-                <span className="w-2 h-2 rounded-full" style={{background: p.tone}} />
-              </div>
-              <h3 className="h-card mt-4 font-serif text-xl md:text-[22px] leading-tight tracking-tight text-ink-900 text-balance">
-                {p.title}
-              </h3>
-              <p className="mt-3 text-ink-500 text-[14px] leading-relaxed text-pretty">{p.body}</p>
-            </article>
-          ))}
         </div>
       </Container>
     </section>
@@ -84,29 +26,29 @@ function Features() {
     {
       tag: 'capability 01',
       title: "Standardizes every prompt to your team's voice",
-      body: <>A live 5-dimension scorecard runs under every textarea — <span className="text-ink-900">goal · specificity · context · constraints · output</span>. Below 7/10, LearnLoop rewrites the prompt using your team's conventions, the file you're in, and patterns from past wins. The vague "fix the retry" becomes a precise spec the model can actually answer.</>,
+      body: <>Every prompt is scored when you send it, on <span className="text-ink-900">goal · specificity · context · constraints · output</span>. Below 7/10 the send is held and you choose: <em>Improve</em> (a short Q&A that rewrites the prompt with your team's conventions), send as-is, or edit. Nothing is sent without you. The vague "fix the retry" becomes a spec the model can actually answer.</>,
       backed: 'apps/browser-ext + apps/vscode-ext · POST /score',
       mock: <ScorecardMock/>,
     },
     {
       tag: 'capability 02',
       title: "Loads your knowledge base into the LLM's context",
-      body: <>Your repo's wiki — patterns, conventions, past decisions, hard-won bug fixes — is injected into the model's context automatically, scoped to the file you're editing. Stop pasting links into chat. Stop re-explaining your codebase. The model already knows.</>,
+      body: <>Your repo's wiki — patterns, conventions, past decisions, hard-won bug fixes — goes into the model's context for the part of the codebase you're working in: the MCP server looks it up per file, and the browser extension prepends it for the wiki node you pick. Stop pasting links into chat and re-explaining your codebase.</>,
       backed: 'GET /examples · GET /wiki · apps/api',
       mock: <ExamplesMock/>,
     },
     {
       tag: 'capability 03',
       title: "Auto-updates with every member's contribution",
-      body: <>Every prompt that scores 9+/10 is auto-deduped into the team wiki, then becomes context for the next person who asks something similar. Team tribal knowledge compounds — without anyone writing docs, holding meetings, or onboarding the new hire by hand.</>,
+      body: <>Strong prompts join the team's prompt library (mean score ≥ 7, no dimension below 5, confirmed by a second independent score), and conventions people state are deduplicated into the wiki, becoming durable after three mentions. Both become context for the next person who works in the same place.</>,
       backed: 'wiki_save · POST /wiki/propose',
       mock: <WikiMock/>,
     },
     {
       tag: 'everywhere',
       title: 'Functional wherever you use AI',
-      body: <>Same coach. Same context. Same wiki. Whether the dev is in <span className="text-ink-900">Claude.ai</span> brainstorming, <span className="text-ink-900">VS Code</span> shipping, or <span className="text-ink-900">Claude Code / Copilot CLI</span> automating — LearnLoop is the connective tissue across the surfaces your team already uses.</>,
-      backed: 'browser-ext · vscode-ext · mcp-server (4 tools)',
+      body: <>Same coach. Same context. Same wiki. Whether the dev is in <span className="text-ink-900">Claude.ai</span> brainstorming, <span className="text-ink-900">VS Code</span> shipping, or <span className="text-ink-900">Claude Code / Copilot Chat</span> automating — LearnLoop is the connective tissue across the surfaces your team already uses.</>,
+      backed: 'browser-ext · vscode-ext · mcp-server (5 tools)',
       mock: <SurfacesMock/>,
     },
   ];
@@ -174,9 +116,9 @@ function FeatureCard({ f, wide, stacked }) {
 
 function SurfacesMock() {
   const surfaces = [
-    { name:'Browser', sub:'Claude.ai · ChatGPT · Gemini', tone:'#2BC68A' },
-    { name:'VS Code', sub:'extension · ⌘⇧K scaffold',     tone:'#3D8BFF' },
-    { name:'CLI / MCP', sub:'Claude Code · Copilot',      tone:'#9C7AD9' },
+    { name:'Browser', sub:'Claude.ai (Chrome)',          tone:'#2BC68A' },
+    { name:'VS Code', sub:'sidebar score card',            tone:'#3D8BFF' },
+    { name:'CLI / MCP', sub:'Claude Code · Copilot Chat',  tone:'#9C7AD9' },
   ];
   return (
     <div className="w-full max-w-[520px] grid grid-cols-3 gap-2.5">
@@ -202,22 +144,6 @@ function ScorecardMock() {
               <div className="absolute bottom-0 left-0 right-0" style={{height: `${v*10}%`, background: c}}/>
             </div>
             <div className="text-[8px] text-center font-mono text-ink-400 uppercase">{k}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ScaffoldMock() {
-  return (
-    <div className="w-full max-w-[280px] terminal">
-      <div className="terminal-bar"><span className="dot" style={{background:'#FF5F57'}}/><span className="dot" style={{background:'#FEBC2E'}}/><span className="dot" style={{background:'#28C840'}}/><span className="ml-2 meta text-[9px]">⌘⇧K</span></div>
-      <div className="p-3 space-y-2 font-mono text-[10px]">
-        {[['goal','reduce p99 latency'],['ctx','src/api/handlers/'],['out','only modified function']].map(([l,v]) => (
-          <div key={l}>
-            <div className="meta text-[8px]" style={{color:'#0E7B7A'}}>{l}</div>
-            <div className="rounded-sm bg-paper-100 px-2 py-1 text-ink-900">{v}</div>
           </div>
         ))}
       </div>
@@ -268,19 +194,6 @@ function WikiMock() {
   );
 }
 
-function MCPMock() {
-  return (
-    <div className="w-full max-w-[300px] grid grid-cols-2 gap-1.5 font-mono text-[10px]">
-      {['wiki_search','wiki_save','prompt_score','team_examples'].map(t => (
-        <div key={t} className="rounded-md border hairline bg-white px-2 py-2 flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full" style={{background:'#2BC68A'}}/>
-          <span className="text-ink-700">{t}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function Demo() {
   return (
     <section id="demo" className="relative py-20 md:py-28 border-t hairline overflow-hidden">
@@ -313,72 +226,6 @@ function Demo() {
   );
 }
 
-function SkillArcMini() {
-  const lines = [
-    { c:'#2BC68A', d:'M10 90 L 60 78 L 110 60 L 160 42 L 220 28' },
-    { c:'#3D8BFF', d:'M10 96 L 60 88 L 110 76 L 160 60 L 220 42' },
-    { c:'#9C7AD9', d:'M10 100 L 60 92 L 110 80 L 160 68 L 220 50' },
-    { c:'#E5A24F', d:'M10 104 L 60 100 L 110 92 L 160 80 L 220 64' },
-    { c:'#E26F95', d:'M10 108 L 60 104 L 110 96 L 160 86 L 220 72' },
-  ];
-  return (
-    <svg viewBox="0 0 240 130" className="w-full h-full p-3">
-      {[30,60,90,120].map(y => <line key={y} x1="10" y1={y} x2="230" y2={y} stroke="#E7EDEE"/>)}
-      {lines.map((l,i) => <path key={i} d={l.d} stroke={l.c} strokeWidth="1.6" fill="none"/>)}
-      {lines.map((l,i) => {
-        const x = 220, y = parseFloat(l.d.split('L').pop().trim().split(' ')[1]);
-        return <circle key={i} cx={x} cy={y} r="2.5" fill={l.c}/>;
-      })}
-    </svg>
-  );
-}
-
-function TeamMetricsMini() {
-  return (
-    <div className="w-full h-full p-4 grid grid-cols-2 gap-3 text-center">
-      {[
-        ['Avg score','6.8','+0.7'],
-        ['Reuse','71%','+24%'],
-        ['Durable','23','+9'],
-        ['Active','12/14','+3'],
-      ].map(([l,v,d]) => (
-        <div key={l} className="paper-card p-2 flex flex-col justify-center">
-          <div className="meta text-[9px]">{l}</div>
-          <div className="font-serif text-2xl text-ink-900">{v}</div>
-          <div className="text-[10px] font-mono" style={{color:'#0E7B7A'}}>{d}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function WikiTreeMini() {
-  const nodes = [
-    {x:30,y:65,label:'.prompts'},
-    {x:120,y:30,label:'patterns'},
-    {x:120,y:65,label:'webhook'},
-    {x:120,y:100,label:'api'},
-    {x:200,y:30,label:'retry'},
-    {x:200,y:65,label:'idemp'},
-    {x:200,y:100,label:'errors'},
-  ];
-  return (
-    <svg viewBox="0 0 240 130" className="w-full h-full p-3">
-      <g stroke="#D5DEE0">
-        <line x1="50" y1="65" x2="120" y2="30"/><line x1="50" y1="65" x2="120" y2="65"/><line x1="50" y1="65" x2="120" y2="100"/>
-        <line x1="140" y1="30" x2="200" y2="30"/><line x1="140" y1="65" x2="200" y2="65"/><line x1="140" y1="100" x2="200" y2="100"/>
-      </g>
-      {nodes.map((n,i) => (
-        <g key={i}>
-          <circle cx={n.x} cy={n.y} r="14" fill="#FFFFFF" stroke={i===0 ? '#1FA29A' : '#D5DEE0'}/>
-          <text x={n.x} y={n.y+3} textAnchor="middle" fontSize="7" fontFamily="JetBrains Mono" fill="#0E1A1F">{n.label}</text>
-        </g>
-      ))}
-    </svg>
-  );
-}
-
 window.Problem = Problem;
-window.Solution = Solution;
 window.Features = Features;
 window.Demo = Demo;

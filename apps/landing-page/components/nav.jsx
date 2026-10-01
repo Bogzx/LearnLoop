@@ -10,6 +10,7 @@ function Nav() {
     ['Problem',  '#problem'],
     ['Solution', '#features'],
     ['Demo',     '#demo'],
+    ['GitHub',   REPO_URL],
   ];
 
   return (
