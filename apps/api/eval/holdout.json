@@ -1,5 +1,5 @@
 {
-  "_about": "Held-out prompts for the rule-based scorer (packages/scoring/src/heuristic-score.mjs). Written, with their bands, before that scorer's rules were frozen, and never used to tune them; golden.json was visible while the rules were written. Same format and band semantics as golden.json, so the eval harness can run either (`--golden eval/holdout.json`).",
+  "_about": "Held-out prompts for the rule-based scorer (packages/scoring/src/heuristic-score.mjs). Per its author, written with their bands before that scorer's rules were frozen and not used to tune them (author-attested: this file and the scorer were added in the same commit, e3c7e2c). golden.json was visible while the rules were written. Same format and band semantics as golden.json, so the eval harness can run either (`--golden eval/holdout.json`).",
   "prompts": [
     { "id": "ho-vague-slow", "prompt": "the app is slow, can you do something about it", "overall": [0, 2] },
     { "id": "ho-vague-refactor", "prompt": "refactor this", "overall": [0, 2] },

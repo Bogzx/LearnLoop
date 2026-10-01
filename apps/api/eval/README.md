@@ -91,7 +91,8 @@ repetition loops `src/gemini.ts` already guards against. Suggested procedure:
 `packages/scoring/src/heuristic-score.mjs` implements the rubric as transparent
 rules over surface features: file paths, identifiers, numbers with units,
 constraint and output phrasing. It is what `TRAILHEAD_LLM=offline` and the
-landing-page demo use, and it is the floor a model scorer should beat.
+landing-page demo use, and a baseline a model scorer should beat (the Gemini
+scorer has not been run against it yet).
 `baseline.test.ts` runs it over both prompt sets in CI and fails if it gets
 worse.
 
@@ -100,9 +101,12 @@ Measured when its rules were frozen (2026-10-01, `heuristic-v1`):
 | Set | Overall in band | Dimensions in band | Ranked the right way round |
 |---|---|---|---|
 | `golden.json` (30 prompts, **visible while the rules were written**) | 29/30 | 47/49 | 152/152 pairs |
-| `holdout.json` (16 prompts, written before the rules were frozen, **never tuned on**) | 14/16 | 18/22 | 38/38 pairs |
+| `holdout.json` (16 prompts, **author-attested** as written before the rules were frozen and not tuned on) | 14/16 | 18/22 | 38/38 pairs |
 
-The holdout is the honest number. Both sets, bands included, were written in
+The holdout is the more honest number, with a caveat: `holdout.json` and
+`heuristic-score.mjs` were added in the same commit (e3c7e2c), so the
+separation rests on the author's word; git history can't show it. A later
+change to the rules is checkable: the set must not be edited alongside it. Both sets, bands included, were written in
 this repo rather than labelled by independent reviewers, so treat them as a
 regression check, not a measure of agreement with people. Known misses, all
 consistent with a scorer that only reads surface features:

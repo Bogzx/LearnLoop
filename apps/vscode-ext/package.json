@@ -79,7 +79,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test --experimental-strip-types src/paths.test.mts src/wiki-diff.test.mts src/api.test.mts test/bundle-load.test.mjs",
     "vscode:prepublish": "node esbuild.config.mjs --production",
-    "package": "npx --yes @vscode/vsce@3.9.2 package --no-dependencies"
+    "package": "vsce package --no-dependencies"
   },
   "dependencies": {
     "@trailhead/shared": "*"
@@ -87,6 +87,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "3.9.2",
     "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
   }

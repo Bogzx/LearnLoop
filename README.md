@@ -8,7 +8,7 @@ back into the next person's context. A team's way of prompting compounds
 without anyone writing docs.
 
 - **Try the scorer in your browser:** <https://learnloop-gules.vercel.app/#try>
-- **3-minute walkthrough:** <https://www.youtube.com/watch?v=kD6nnJAmRK8>
+- **Video walkthrough:** <https://www.youtube.com/watch?v=kD6nnJAmRK8>
 - **Run the whole stack, no API key needed:** [Try it](#try-it) below
 
 Built at PoliHack v19 (April 2026, BMW track "Applications that encourage AI
@@ -107,13 +107,14 @@ spread, how often the coaching and library gates flip, band hits, and whether
 better prompts are ranked above worse ones.
 
 What has been measured so far is the **rule-based scorer**
-(`packages/scoring/src/heuristic-score.mjs`), the floor the model has to
-beat. CI checks it on every change:
+(`packages/scoring/src/heuristic-score.mjs`), a transparent baseline that a
+model scorer should beat; the two have not been compared yet. CI checks it on
+every change:
 
 | Prompt set | Overall in expected band | Pairs ranked the right way round |
 |---|---|---|
 | golden (30, visible while its rules were written) | 29/30 | 152/152 |
-| held-out (16, never tuned on) | 14/16 | 38/38 |
+| held-out (16; per its author, written before the rules were frozen and not tuned on, but added in the same commit, so this can't be checked from history) | 14/16 | 38/38 |
 
 The bands were written in this repo, not by independent reviewers, and the
 Gemini scorer has not been run on either set yet (it needs a key; one command

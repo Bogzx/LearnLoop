@@ -2,11 +2,12 @@
 // golden set and the held-out set, in CI, with no key and no network.
 //
 // It is the scorer behind TRAILHEAD_LLM=offline and the landing-page demo, and
-// the floor a model scorer has to beat. The thresholds sit just under what it
+// a baseline a model scorer should beat. The thresholds sit just under what it
 // measured when its rules were frozen (see eval/README.md → Baseline), so a
 // rule change that makes it worse fails here. The golden set was visible while
-// the rules were written; the held-out set was not, which is why its
-// thresholds are lower and why it is the more honest of the two numbers.
+// the rules were written; the held-out set, by its author's account, was not
+// (author-attested: both landed in one commit), which is why its thresholds
+// are lower.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -34,7 +35,7 @@ test('rule-based scorer on the golden set (seen while writing the rules)', () =>
   assert.ok(t.ordering.rate >= 0.97, `ordering ${t.ordering.agree}/${t.ordering.pairs}`);
 });
 
-test('rule-based scorer on the held-out set (written before the rules were frozen, never tuned on)', () => {
+test('rule-based scorer on the held-out set (author-attested: not used to tune the rules)', () => {
   const t = evaluate('holdout.json');
   assert.ok(t.overallBandHit >= 0.8, `overall band hit ${t.overallBandHit}`);
   assert.ok(t.dimBandHit >= 0.75, `dimension band hit ${t.dimBandHit}`);
