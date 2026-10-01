@@ -1,20 +1,25 @@
 # LearnLoop
 
-A team-wide prompting coach. Every prompt sent through Claude.ai, VS Code,
-Claude Code, or Copilot Chat is scored on five dimensions in real time. Weak
-prompts trigger a short teaching loop. Strong prompts feed a team wiki, which
-gets injected back into the next person's context — so a team's "way of
-prompting" compounds without anyone writing docs.
+A prompting coach for teams. Every prompt sent through Claude.ai, Claude Code,
+VS Code or Copilot Chat is scored on five dimensions before it goes out. Weak
+prompts get a short teaching loop; strong ones join the team's prompt library,
+and the conventions people state are collected into a team wiki that is fed
+back into the next person's context. A team's way of prompting compounds
+without anyone writing docs.
 
-> Trailhead is the engineering codename inside the repo; **LearnLoop** is the
-> product name on the marketing site.
+- **Try the scorer in your browser:** <https://learnloop-gules.vercel.app/#try>
+- **3-minute walkthrough:** <https://www.youtube.com/watch?v=kD6nnJAmRK8>
+- **Run the whole stack, no API key needed:** [Try it](#try-it) below
 
-- **Landing page / waitlist:** <https://learnloop-gules.vercel.app/>
-- **Demo video (3 min walkthrough):** <https://www.youtube.com/watch?v=kD6nnJAmRK8>
+Built at PoliHack v19 (April 2026, BMW track "Applications that encourage AI
+adoption") by [@Bogzx](https://github.com/Bogzx),
+[@KunMihai1](https://github.com/KunMihai1),
+[@bbeatricecretu](https://github.com/bbeatricecretu) and
+[@CosovanuGabi912](https://github.com/CosovanuGabi912). Open source (MIT) and
+self-hosted: there is no hosted service to sign up for.
 
-
-
-### Screenshots
+> *Trailhead* is the codename used inside the code (package names, settings,
+> env vars); *LearnLoop* is the product name.
 
 <table>
 <tr>
@@ -33,395 +38,200 @@ prompting" compounds without anyone writing docs.
 
 ---
 
-## The 5-dimension rubric
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph clients["Where people prompt"]
+    BX["Chrome extension<br/>on claude.ai"]
+    VS["VS Code extension<br/>sidebar"]
+    MCP["MCP server<br/>Claude Code · Copilot Chat"]
+  end
+  DASH["Dashboard<br/>Next.js"]
+  subgraph api["apps/api · Hono"]
+    ROUTES["/score · /coach · /improve · /diff<br/>/wiki/* · /prompts/* · /onboard/*"]
+    LLM["llm.ts"]
+  end
+  PG[("Postgres<br/>wiki · library · score history")]
+  GEM["Gemini<br/>gemini-3-flash-preview"]
+  RULES["rule-based scorer<br/>TRAILHEAD_LLM=offline"]
+  LF["Langfuse<br/>optional"]
+
+  BX -- "X-Team-Token" --> ROUTES
+  VS -- "X-Team-Token" --> ROUTES
+  MCP -- "X-Team-Token" --> ROUTES
+  DASH -- "read-only proxy" --> ROUTES
+  ROUTES --> PG
+  ROUTES --> LLM
+  LLM --> GEM
+  LLM -.-> RULES
+  GEM -. traces .-> LF
+```
+
+The loop, end to end:
+
+1. **Score.** A prompt is sent (Chrome extension) or a code task starts
+   (Claude Code / Copilot Chat via the MCP `coach` tool). The API scores it on
+   the five dimensions below and records the scores for the team's skill arc.
+2. **Coach.** At 7/10 or more it goes through untouched. Below 7, the
+   extension holds the send and offers *Improve* / *Send as-is* / *Edit*;
+   nothing is sent automatically. In Claude Code the `coach` tool runs a short
+   teach → revise loop (at most 5 rounds) on the weakest dimension, using a
+   teammate's proven prompt as the example when there is one.
+3. **Promote.** A prompt that clears a strict bar (unrounded mean ≥ 7, no
+   dimension below 5, and an independent re-score that agrees) joins the
+   team's prompt library, optionally after a teammate's review.
+4. **Remember.** When someone states a team convention, `wiki_save` records
+   it; repeated mentions are deduplicated and become *durable* after three.
+5. **Reuse.** The next prompt about the same part of the codebase is scored
+   and coached with that wiki node's conventions and library prompts in
+   context, so the rubric reads against how this team works.
+
+---
+
+## The rubric, and how the score is measured
 
 Every prompt is scored 0–10 on:
 
-1. `goal_clarity` — what outcome is being asked for
-2. `specificity` — concrete files, functions, errors named
-3. `context_loading` — relevant code/docs/examples attached
-4. `constraint_articulation` — what *must not* change, perf/style limits
-5. `output_specification` — desired shape of the response
+1. `goal_clarity` — the desired outcome is stated unambiguously
+2. `specificity` — the change itself is named (files, functions, errors)
+3. `context_loading` — the relevant code, docs or examples are referenced
+4. `constraint_articulation` — what must not change; limits and invariants
+5. `output_specification` — the shape the answer should take
 
-`overall = round(mean of the five dims)`. Below 7 triggers coaching; ≥ 7 lands
-silently. Joining the team's prompt library is stricter: the unrounded mean
-must be ≥ 7.0, no dimension below 5, and an independent re-score must agree
-(optionally plus a teammate's review — see SELFHOSTING.md → Security model).
-The rubric is concrete enough that a human reviewer could apply it — the LLM
-is the implementation, not the product. Scores come from an LLM and vary run
-to run; `apps/api/eval/` measures how much.
+`overall` is the rounded mean. The rubric text lives in
+`packages/scoring/src/score-prompt.mjs`, and the score comes from one Gemini
+call, so it varies from run to run. `apps/api/eval/` measures how much on a
+golden set of 30 prompts plus a held-out set of 16, reporting run-to-run
+spread, how often the coaching and library gates flip, band hits, and whether
+better prompts are ranked above worse ones.
 
----
+What has been measured so far is the **rule-based scorer**
+(`packages/scoring/src/heuristic-score.mjs`), the floor the model has to
+beat. CI checks it on every change:
 
-## What's actually implemented
+| Prompt set | Overall in expected band | Pairs ranked the right way round |
+|---|---|---|
+| golden (30, visible while its rules were written) | 29/30 | 152/152 |
+| held-out (16, never tuned on) | 14/16 | 38/38 |
 
-The repo is a working npm-workspaces monorepo. Six surfaces, all wired to one
-backend, all sharing the same TypeScript contract.
-
-### `apps/api` — Hono backend (TypeScript, Node 22, Postgres)
-
-Single source of truth. Multi-tenant: each team has a public team id and a
-server-minted secret (only its SHA-256 is stored), sent as `X-Team-Token`.
-Pre-2026-09-30 tokens derived from the git remote still work behind
-`TRAILHEAD_ACCEPT_LEGACY_TOKENS` (deprecated). Middleware is in
-`apps/api/src/app.ts`, routes in `apps/api/src/routes/` (`index.ts` just serves
-them):
-
-| Method + Path | What it does |
-|---|---|
-| `GET  /` | Health + endpoint catalog (unauth) |
-| `POST /teams` | Register a team (unauth; gated by `TRAILHEAD_ADMIN_TOKEN` when set). Returns `{ team_id, name, secret }` once; `409` if the id is taken — the join flow |
-| `POST /teams/rotate-secret` | New secret for the caller's team; the old credential stops working. Upgrades a legacy team |
-| `GET  /teams` | Resolves the caller's own team. Never returns the secret — `{ name, id, legacy, team_id? }` (`id` is an opaque digest; `team_id` only for non-legacy teams) |
-| `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
-| `POST /coach` | Stateless teach→reveal coaching loop, capped at 5 rounds |
-| `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
-| `POST /wiki/propose` | Normalize + dedup an insight on `(node_id, body_normalized)`, increment `reinforcement_count`, promote `draft → durable` at ≥ 3 |
-| `GET  /context?path=` | Ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
-| `GET  /examples?path=` | Top graduated prompts for an ancestor of a file path |
-| `GET  /prompts/proven` | The team's graduated prompts, filterable by score, path, topic |
-| `GET  /prompts/pending` | Library candidates awaiting review (`TRAILHEAD_PROMOTION_MODE=review`) |
-| `POST /prompts/:id/review` | `{ approve: true }` graduates a pending prompt, `false` discards it |
-| `GET  /search?q=&scope=` | Substring search over rules, durable learnings and graduated prompts |
-| `GET  /wiki/recent?since=ISO` | Polling endpoint for the VS Code wiki-toast surface |
-| `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, asks Gemini to narrate the difference |
-| `POST /improve` | Multi-turn Gemini-driven prompt rewrite, capped at 5 user replies |
-| `GET  /skill-arc` | Time-series of per-dimension scores (powers the dashboard hero chart) |
-| `GET  /team/metrics` | Snapshot: avg overall, reuse rate, durable count, draft count, active users |
-| `GET  /wiki/tree` | Full node + learnings tree |
-| `GET  /wiki/export` | The whole team wiki as one markdown document (`?drafts=true`, `?format=json`) |
-| `POST /onboard/repo` | Bulk-upsert one node per path, idempotent, optional `initial_rules[path]` for seeding `body_md` |
-| `POST /onboard/repo/full` | Async rich bootstrap: accepts a folder + file bundle (capped at 16 MB / 2 000 files / 32 KB per file), enqueues a `wiki_jobs` row, three-pass Gemini fan-out via `setImmediate` |
-| `GET  /onboard/jobs/:id` | Per-path progress for a rich-bootstrap job |
-| `DELETE /team/data` | Wipes the requesting team's data; demo team is protected unless `TRAILHEAD_ALLOW_DEMO_RESET=true` |
-
-Every LLM call runs through `apps/api/src/gemini.ts` (one client, one retry
-policy, Langfuse tracing). Model assignments live in
-`packages/scoring/src/models.mjs`; today every call uses
-`gemini-3-flash-preview` (JSON-schema mode for scoring, topic extraction,
-coaching rewrites and the rich wiki bootstrap).
-
-Every Gemini call is instrumented with **Langfuse** when
-`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set — one trace per HTTP
-request, one nested generation per LLM call, with token usage and latency.
-Tracing silently no-ops when keys are missing.
-
-### `apps/browser-ext` — Chrome MV3 extension for Claude.ai
-
-Vanilla TypeScript + esbuild. Manifest declares `https://claude.ai/*` as the
-content-script host and allowlists `http://localhost/*` for a self-hosted API.
-The popup's **API server** row shows and edits that URL.
-
-Implemented widgets (`src/widgets/`):
-
-- **Score card** under the textarea — scores on send (not on keystroke),
-  per-dimension bars, missing-dimension hints
-- **Score badge** on each user bubble
-- **Prompt diff panel** — "Compare to team" expands a `/diff` view inline
-- **Outcome rating** chips on each assistant bubble (👍 / 🤷 / 👎 → `/capture`)
-- **Wiki toast** — drops in when `/wiki/recent` polling sees a new learning
-- **Improve chat** — multi-turn rewrite using `/improve`
-- **Context pill + popup** — pick a wiki node to bias scoring
-- **Send-intercept** — on send: `≥ 7` lets the native send fire; `< 7` keeps the
-  score card up with *Improve* / *Send as-is* / *Edit* and waits for the user.
-  There is no timer and nothing is ever sent automatically. Fail-open on every
-  API error.
-
-Kill-switch: `chrome.storage.local.set({ 'trailhead.disabled': true })` halts
-the extension on next page load.
-
-### `apps/vscode-ext` — VS Code extension
-
-Sidebar webview registered under the `trailhead` activity bar. Settings expose
-`trailhead.apiUrl`, `trailhead.teamToken`, `trailhead.userId`. Same 5-dimension
-score-card render as the browser extension, plus a wiki-diff polling loop that
-toasts when `/wiki/recent` reports a new insight.
-
-### `apps/mcp-server` — MCP server for Claude Code + Copilot Chat
-
-STDIO MCP server. Five hero tools, deliberately collapsed from a previous
-seven-tool surface so Copilot's tool selector picks reliably:
-
-| Tool | Routes to |
-|---|---|
-| `coach` | `POST /coach` — server-side teach→reveal cycle returns `proceed: true/false` and a rendered `text` block; the directive is a thin "relay text, follow `proceed`" loop |
-| `wiki_lookup` | `GET /context` + `GET /examples` (file-path based) and/or `GET /search` (query) |
-| `wiki_save` | `POST /wiki/propose` with server-side dedup |
-| `wiki_bootstrap` | `POST /onboard/repo` (skeleton) or `POST /onboard/repo/full` (rich, LLM-populated) |
-| `wiki_proven_prompts` | `GET /prompts/proven` — the team's graduated prompts, filterable by score, path and topic |
-
-Plus a `ping` for health checks.
-
-> **Not published to npm.** The package is `private: true` and neither
-> `trailhead-mcp` nor `@trailhead/mcp-server` exists on the registry, so
-> `npx trailhead-mcp` does not work. Run it from a clone — see
-> [SELFHOSTING.md](SELFHOSTING.md).
-
-CLI subcommands (`bin/cli.mjs`):
-
-- `trailhead-mcp init` — per-repo install. Sets up the repo's team, then writes
-  `.mcp.json` + `CLAUDE.md` for Claude Code and `.vscode/mcp.json` +
-  `.github/copilot-instructions.md` for Copilot. Idempotent. Credential order:
-  `--team-token` → `TRAILHEAD_TEAM_TOKEN` → `.trailhead-team` → otherwise
-  register `team_<hash of the normalised remote URL>` via `POST /teams` and save
-  the returned secret in `.trailhead-team` (gitignored). If the team is already
-  registered, `init` explains how to join (get the secret from a teammate,
-  `--team-token`). `--upgrade-legacy` moves a pre-2026-09-30 team to a secret.
-  The MCP configs reference `.trailhead-team` (`TRAILHEAD_TEAM_FILE`) instead
-  of embedding the secret.
-- `trailhead-mcp bootstrap` — walks the cwd, bundles source files, posts to
-  `/onboard/repo/full`. Default rich mode shows a live progress bar. Flags:
-  `--minimal`, `--paths`, `--force`, `--dry-run`, `--yes`.
-- `trailhead-mcp reset` — wipes the team's wiki/captures/observations.
-
-### `apps/dashboard` — Next.js 16 dashboard (Vercel)
-
-App router, server components for the team view, SWR for the live charts.
-Shows one team — the one whose secret is in the server-side
-`TRAILHEAD_TEAM_TOKEN`; the browser never sees the secret (client charts go
-through a read-only proxy route, `/api/trailhead/*`). Pages (`src/app/`):
-
-- `/` — team view
-- `/skill-arc` — per-dimension team chart driven by `/skill-arc`,
-  polls every 2 s during the demo
-- `/team` — L1→L2 metric cards from `/team/metrics`
-- `/wiki` — node tree + durable learnings from `/wiki/tree`
-- `/onboarding` — the wiki as an onboarding guide
-
-### `apps/landing-page` — LearnLoop marketing site
-
-Single static `index.html` + JSX components loaded at runtime via Babel
-standalone. Tailwind via CDN. Sections: hero, problem, solution, features,
-demo, footer. Deployed at <https://learnloop-gules.vercel.app/>.
-
-### Packages
-
-- `packages/shared` — TypeScript types for every API request/response. Every
-  surface imports from here so wire shapes can't drift.
-- `packages/scoring` — Locked Gemini prompt templates (score, augment, teach,
-  topic, extract) and pure helpers (`buildAugmentation`, `normalize`,
-  `normalizePath`, `ancestorPaths`, the teach/skip/success reveal renderers).
-- `packages/score-card` — Pure-DOM render function for the 5-dimension card.
-  Used by the browser extension and the VS Code webview.
-- `packages/db` — `schema.sql` (idempotent, every `CREATE` uses `IF NOT
-  EXISTS`), `migrate.mjs`, `check.mjs`, and `seed.mjs` for the Acme Fintech
-  demo data.
-
-### Database (Postgres on Neon)
-
-Eight tables in `packages/db/schema.sql`:
-
-- `teams` — tenancy
-- `nodes` — one row per folder or file path; carries `body_md`
-- `learnings` — accumulated insights with normalize-based dedup, counter,
-  and `draft | durable` status
-- `prompts` — graduated prompt templates with `topic` and `reuse_count`
-- `captures` — stored conversations with outcome
-- `skill_observations` — per-dimension score writes; `prompt_hash` backs the
-  30 s dedup window
-- `wiki_jobs` + `wiki_job_paths` — async rich-bootstrap state
-
-The demo team (`Acme Fintech`, public secret `trailhead_demo_acme_2026`) is hardcoded
-into the schema with a fixed UUID so every surface can reference it without a
-lookup.
+The bands were written in this repo, not by independent reviewers, and the
+Gemini scorer has not been run on either set yet (it needs a key; one command
+in [`apps/api/eval/README.md`](apps/api/eval/README.md)). Known misses and
+the full method are documented there.
 
 ---
 
-## Repository layout
+## Try it
 
-```
-apps/
-  api/           Hono + TypeScript backend (Railway)
-  browser-ext/   Chrome MV3 extension for Claude.ai
-  vscode-ext/    VS Code IDE extension
-  mcp-server/    MCP server (Claude Code + Copilot Chat) + CLI
-  dashboard/     Next.js 16 dashboard (Vercel)
-  landing-page/  Static marketing site (LearnLoop)
-packages/
-  shared/        TypeScript types — single source of truth for API shapes
-  scoring/       Locked Gemini prompt templates + pure helpers
-  score-card/    Pure-DOM render of the 5-dimension card
-  db/            Postgres schema, migrations, seed data
-docs/
-  superpowers/specs/   Design specs
-  roadmaps/            Per-surface 24h build roadmaps
-```
+**In your browser, 10 seconds:** the [Try it section of the landing
+page](https://learnloop-gules.vercel.app/#try) runs the rule-based scorer on
+whatever you type. Nothing leaves the page.
 
----
-
-## Quick start
-
-Trailhead is self-hosted. There is no hosted backend to sign up for — you run
-the API, and every client points at it.
-
-### The short way: Docker
-
-Everything you need is Docker and a Gemini API key from
-<https://aistudio.google.com/apikey>.
+**The whole stack, no key, about 2 minutes** (Docker with Compose v2):
 
 ```bash
-cp .env.example .env     # then put your Gemini key in it
-docker compose up
-# → API on http://localhost:3000, Postgres schema applied automatically
+git clone https://github.com/Bogzx/LearnLoop && cd LearnLoop
+TRAILHEAD_LLM=offline docker compose --profile demo up --build
+# API on http://localhost:3000, Postgres schema applied, demo team seeded
+curl -s -X POST localhost:3000/score -H 'content-type: application/json' \
+  -H 'X-Team-Token: trailhead_demo_acme_2026' \
+  -d '{"prompt":"fix the retry","user_id":"me"}'
 ```
 
-No key yet? `TRAILHEAD_LLM=offline docker compose up` runs the same stack with
-no model: prompts are scored by a rule-based scorer and coached with static
-templates, and every response says so
-([SELFHOSTING.md → offline mode](SELFHOSTING.md#try-it-without-a-key-offline-mode)).
+Offline mode has no model: scoring uses the rule-based scorer, coaching uses
+the static templates, and every response says so. `--profile demo` loads a
+fictional team ("Acme Fintech") with a small wiki, four library prompts and
+six days of synthetic activity, so the dashboard has something to show.
 
-That is the whole setup. See [SELFHOSTING.md](SELFHOSTING.md) for pointing the
-browser extension, VS Code extension, MCP server and dashboard at it, and for
-running against an external database instead.
+**With Gemini:** `cp .env.example .env`, put a key from
+<https://aistudio.google.com/apikey> in it, and `docker compose up`.
 
-### The long way: local Node + your own Postgres
-
-Prerequisites:
-
-- Node `>= 22.6`
-- A Postgres database (Neon — `DATABASE_URL` must include `sslmode=require`)
-- A Gemini API key from <https://aistudio.google.com/apikey>
+Then point the clients at it, all described in
+[SELFHOSTING.md](SELFHOSTING.md):
 
 ```bash
-# 1. Install workspace dependencies
-npm install
-
-# 2. Configure environment
-cp .env.example .env
-# Edit .env — fill in DATABASE_URL and GEMINI_API_KEY
-
-# 3. Apply the schema (idempotent, safe to re-run)
-psql "$DATABASE_URL" -f packages/db/schema.sql
-
-# 4. (optional) Seed the Acme Fintech demo data
-node packages/db/seed.mjs
-
-# 5. Run the API
-npm run dev
-# → http://localhost:3000
-```
-
-The API refuses to boot without `DATABASE_URL`, and without `GEMINI_API_KEY`
-unless `TRAILHEAD_LLM=offline`.
-
-Before exposing the API beyond `localhost`, read
-[SELFHOSTING.md → Security model](SELFHOSTING.md#security-model): set
-`TRAILHEAD_ADMIN_TOKEN`, and turn legacy tokens off once your teams have
-upgraded.
-
-### Run individual surfaces
-
-```bash
-# Dashboard (Next.js, port 3001)
-NEXT_PUBLIC_API_URL=http://localhost:3000 \
-NEXT_PUBLIC_TEAM_TOKEN=trailhead_demo_acme_2026 \
+# Dashboard on http://localhost:3001 (server-side env; the secret never reaches the browser)
+TRAILHEAD_API_URL=http://localhost:3000 TRAILHEAD_TEAM_TOKEN=trailhead_demo_acme_2026 \
   npm --workspace=apps/dashboard run dev
 
-# Browser extension — build, then load apps/browser-ext/dist as unpacked
-npm --workspace=@trailhead/browser-ext run build
-# chrome://extensions → Developer mode → Load unpacked → apps/browser-ext/dist/
-
-# VS Code extension — build, then F5 with apps/vscode-ext as the workspace
-npm --workspace=apps/vscode-ext run build
-
-# MCP server — install into a target repo. The package is unpublished
-# (private: true), so `npx trailhead-mcp` does NOT work — invoke the CLI by
-# path from this clone. It operates on the cwd, so cd into the target first.
+# Claude Code / Copilot Chat in one of your repos (the MCP package is not on npm,
+# so the CLI runs from this clone; `init` registers the repo's team)
 cd /path/to/your/repo
 node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs init
-node /path/to/LearnLoop/apps/mcp-server/bin/cli.mjs bootstrap
 ```
 
-### Workspace scripts
+Packages of the Chrome extension (`.zip`, load unpacked) and the VS Code
+extension (`.vsix`) are built by every CI run (the `extensions` artifact) and
+attached to [GitHub releases](https://github.com/Bogzx/LearnLoop/releases)
+from v0.1.0; neither is on a store.
+
+Before exposing the API beyond `localhost`, read
+[SELFHOSTING.md → Security model](SELFHOSTING.md#security-model).
+
+---
+
+## What's in the box
+
+| Surface | What it does | Code |
+|---|---|---|
+| API | Hono + TypeScript on Node 22, raw `pg`. Multi-tenant: each team has a public id and a server-minted secret (stored hashed). Scoring, coaching, library, wiki, rich bootstrap, rate limits, Langfuse tracing. | [`apps/api`](apps/api) — routes in [its README](apps/api/README.md) |
+| Chrome extension | MV3, on claude.ai. Score card under the composer, score badges on each message, *Compare to team* diff, *Improve* chat, outcome chips, wiki toasts, context picker. Every API call goes through the service worker. | [`apps/browser-ext`](apps/browser-ext) |
+| VS Code extension | Sidebar with the same score card, team examples for the open file, wiki-update toasts. | [`apps/vscode-ext`](apps/vscode-ext) |
+| MCP server | STDIO server for Claude Code and Copilot Chat: `coach`, `wiki_lookup`, `wiki_save`, `wiki_bootstrap`, `wiki_proven_prompts` (+ `ping`), and a CLI: `init`, `bootstrap`, `reset`. | [`apps/mcp-server`](apps/mcp-server) |
+| Dashboard | Next.js 16: team skill arc, metrics, wiki tree, onboarding view; reads through a server-side proxy so the team secret stays on the server. | [`apps/dashboard`](apps/dashboard) |
+| Landing page | Static page with the in-browser scorer. | [`apps/landing-page`](apps/landing-page) |
+| Shared packages | `shared` (every request/response type), `scoring` (prompts, rubric, rule-based scorer, renderers), `score-card` (DOM score card), `db` (schema, migrations, demo seed). | [`packages/`](packages) |
+
+Postgres holds eight tables (`packages/db/schema.sql`): teams, wiki nodes,
+learnings, library prompts, captures, skill observations, and the two
+rich-bootstrap job tables.
+
+---
+
+## Development
+
+Node ≥ 22.6, npm workspaces.
 
 ```bash
-npm run typecheck    # tsc --noEmit across all workspaces
-npm run lint         # ESLint (flat config: eslint.config.mjs) over the whole repo
-npm run test         # run all workspace tests
-npm run build        # build all workspaces that expose a build script
+npm ci
+npm run typecheck    # tsc --noEmit in every workspace
+npm run lint         # ESLint flat config
+npm test             # every workspace's tests, including the scorer baseline
+npm run build        # every workspace with a build script
+
+# API integration tests against a throwaway Postgres (they wipe it):
+docker run -d --rm --name trailhead-it -p 55432:5432 -e POSTGRES_USER=trailhead \
+  -e POSTGRES_PASSWORD=trailhead -e POSTGRES_DB=trailhead_it postgres:16-alpine
+TRAILHEAD_IT_DATABASE_URL=postgresql://trailhead:trailhead@127.0.0.1:55432/trailhead_it \
+  npm --workspace=apps/api run test:integration
 ```
 
----
+CI runs all of that, plus `npm audit`, a Docker build with a
+`docker compose up` smoke test in offline mode, and packaging of both
+extensions. A `v*` tag attaches the extension packages to a draft release
+(`.github/workflows/release.yml`).
 
-## Environment variables
-
-Single root `.env.example` — every surface reads from the same set.
-
-| Var | Used by | Notes |
-|---|---|---|
-| `DATABASE_URL` | api | Postgres connection string, `sslmode=require` |
-| `GEMINI_API_KEY` | api | Used for every call (`gemini-3-flash-preview`) |
-| `TRAILHEAD_LLM` | api | `gemini` (default) or `offline`: no model; rule-based scoring and template coaching (SELFHOSTING.md) |
-| `LANGFUSE_PUBLIC_KEY` | api | Optional. Hosted Langfuse public key (`pk-lf-…`) |
-| `LANGFUSE_SECRET_KEY` | api | Optional. Hosted Langfuse secret key (`sk-lf-…`) |
-| `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
-| `TEAM_TOKEN` | — | Documentation only: the public demo team's token. The API does not read it; clients hardcode the same value as their fallback |
-| `PORT` | api | Defaults to 3000; Railway injects automatically |
-| `TRAILHEAD_ADMIN_TOKEN` | api | When set, `POST /teams` (registration) requires it as `X-Admin-Token`, and the public demo team is turned off |
-| `TRAILHEAD_DEMO_TEAM` | api | `on` / `off`: the public demo team (default on, off when `TRAILHEAD_ADMIN_TOKEN` is set) |
-| `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | api | Default `true`. Accept pre-2026-09-30 remote-derived tokens for teams without a secret (deprecated) |
-| `TRAILHEAD_AUTO_CREATE_TEAMS` | api | Default `false`. Legacy only: unknown tokens create legacy teams |
-| `TRAILHEAD_SCORE_TEMPERATURE` / `TRAILHEAD_SCORE_THINKING_BUDGET` | api | Scorer sampling (defaults `0.2` / `-1` = dynamic). Measure before changing: `apps/api/eval/` |
-| `TRAILHEAD_RL_REGISTER_PER_IP` / `TRAILHEAD_RL_LLM_PER_TEAM` / `TRAILHEAD_RL_LLM_PER_IP` / `TRAILHEAD_RL_BOOTSTRAP_PER_TEAM` | api | Rate limits as `N/W` (defaults `10/1h`, `120/1m`, `120/1m`, `6/1h`), or `off`. In-process, so per replica — see SELFHOSTING.md |
-| `TRAILHEAD_RATE_LIMIT` | api | `off` disables every rate limit |
-| `TRAILHEAD_TRUST_PROXY` | api | `true` behind your own (single-hop) reverse proxy: per-IP limits key on the last `X-Forwarded-For` entry, the one the proxy appended |
-| `TRAILHEAD_EXPOSE_ERRORS` | api | `true` to include the raw error message in 500 responses (local debugging). Default: only a `request_id` that matches the server log |
-| `TRAILHEAD_PROMOTION_MODE` | api | `auto` (default): gated auto-promotion into the library. `review`: promoted prompts wait for a teammate's approval |
-| `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
-| `TRAILHEAD_API_URL` | dashboard | Server-side, runtime. Where the dashboard fetches (fallback: legacy `NEXT_PUBLIC_API_URL`) |
-| `TRAILHEAD_TEAM_TOKEN` | dashboard | Server-side, runtime. The team secret; never sent to the browser (fallback: legacy `NEXT_PUBLIC_TEAM_TOKEN`) |
-| `trailhead.apiUrl` / `.teamToken` / `.userId` / `.shareUserId` | vscode-ext | VS Code settings. `userId` empty = random per-install id; `shareUserId: false` sends `anonymous` |
-| `TRAILHEAD_USER_ID` / `TRAILHEAD_SHARE_USER_ID` | mcp-server | Override the per-machine anonymous id, or `false` to send `anonymous` (see SELFHOSTING.md → Security model) |
-| `TRAILHEAD_API_URL` / `TRAILHEAD_TEAM_FILE` / `TRAILHEAD_TEAM_TOKEN` | mcp-server | Per-repo MCP config. `init` writes `TEAM_FILE` (path to `.trailhead-team`); `TEAM_TOKEN` overrides it |
-
----
+Without Docker, the API runs against any Postgres:
+`psql "$DATABASE_URL" -f packages/db/schema.sql`, optionally
+`node packages/db/seed.mjs`, then `npm run dev` (reads `.env`).
 
 ## Deployment
 
-- **API** → Railway. `railway.json` declares `npm --workspace=apps/api start`
-  with healthcheck on `/`.
-- **Dashboard** → Vercel. Set `TRAILHEAD_API_URL` and `TRAILHEAD_TEAM_TOKEN`
-  (server-side env), then `vercel --prod` from `apps/dashboard/`. Anyone who
-  can open it can read that team's data (read-only), so restrict access.
-- **Landing page** → Vercel — already live at
-  <https://learnloop-gules.vercel.app/>.
-- **Browser extension** → loaded unpacked from `apps/browser-ext/dist/`.
-- **VS Code extension** → `vsce package` from `apps/vscode-ext/`.
-- **MCP server** → not published to npm (`private: true`). Wired into a repo by
-  running `apps/mcp-server/bin/cli.mjs init` from a clone (per-repo wiring,
-  multi-tenant token derivation from the git remote).
-
----
-
-## How the pieces fit
-
-1. Engineer types a prompt and hits send. The extension intercepts the send and
-   calls `/score`. The card mounts under the textarea with five per-dimension
-   bars and missing-dimension hints.
-2. `≥ 7` sends straight through. Below 7 the card stays up with *Improve* /
-   *Send as-is* / *Edit* and waits for an explicit choice — no timer, no
-   auto-send. Each `/score` writes 5 `skill_observation` rows; the dashboard's
-   `/skill-arc` chart polls every 2 s, so the rightmost bucket climbs as the
-   user prompts.
-3. In Claude Code or Copilot Chat, the MCP server's `coach` tool is called
-   first. Server returns `proceed: false` plus a teach-block when the score
-   is low; the host LLM relays the block, gathers a reply, calls back. Five
-   rounds max, then a reveal block shows the score arc and prompt diff.
-4. When the user states a teamwide convention, `wiki_save` calls
-   `POST /wiki/propose`. Server-side normalize + dedup means repeated calls
-   reinforce the same draft instead of duplicating; `reinforcement_count >= 3`
-   promotes `draft → durable`. The VS Code extension polls `/wiki/recent` and
-   toasts the update — visible proof of the autonomous loop.
-5. Next prompt the same engineer (or a teammate) types in the same path
-   triggers `/score` again, but now `context_path` pulls the team's HCL
-   bundle into Gemini's system prompt, so the rubric is calibrated against
-   the team's own conventions.
-
----
+- **API:** self-hosted. `docker compose` as above, or any Node 22 host
+  (`railway.json` is kept for Railway). Every environment variable is in
+  [SELFHOSTING.md → All variables](SELFHOSTING.md#all-variables).
+- **Dashboard:** Vercel or any Next.js host. Set `TRAILHEAD_API_URL` and
+  `TRAILHEAD_TEAM_TOKEN` server-side; anyone who can open it can read that
+  team's data, so restrict access.
+- **Landing page:** static files on Vercel.
+- **Extensions:** from the release packages, loaded unpacked / installed from
+  the `.vsix`.
 
 ## Specs
 
-The project was specced before it was built. Source of truth for *why*:
+The project was specced before it was built; the specs are the record of
+*why*:
 
 - `docs/superpowers/specs/2026-04-25-trailhead-design.md` — master spec
 - `docs/superpowers/specs/2026-04-25-mcp-plugin-ux-design.md` — MCP install
@@ -438,23 +248,8 @@ The project was specced before it was built. Source of truth for *why*:
   improve widget
 - `docs/roadmaps/` — per-surface 24-hour build plans
 
-Each app and package also has its own `README.md` covering surface-specific
-contracts, builds, and tests.
+Each app and package has its own README with surface-specific details.
 
----
+## License
 
-## Tech stack
-
-- **Backend:** Hono, TypeScript, Node 22, `@hono/node-server`, raw `pg`
-- **DB:** Postgres on Neon, no ORM
-- **LLMs:** `gemini-3-flash-preview` for every call (scoring in JSON-schema
-  mode, coaching, diff narration, rich bootstrap)
-- **Observability:** Langfuse (hosted) — one trace per request, one
-  generation per LLM call
-- **Frontend:** Next.js 16 + Tailwind + Recharts + SWR (dashboard); vanilla
-  TS + esbuild (extensions); React via CDN (landing page)
-- **MCP:** `@modelcontextprotocol/sdk`, STDIO transport
-- **Build:** npm workspaces; per-package `tsc` / `esbuild`
-- **Hosts:** self-hosted API (see SELFHOSTING.md; `railway.json` remains for
-  anyone who wants a Railway deploy), Vercel (dashboard + landing page), per-repo
-  MCP wired from a clone via `apps/mcp-server/bin/cli.mjs init` (unpublished)
+MIT — see [LICENSE](LICENSE).
