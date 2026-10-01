@@ -12,7 +12,6 @@
       "default": "./src/index.ts"
     },
     "./normalize": "./src/normalize.mjs",
-    "./extract-prompt": "./src/extract-prompt.mjs",
     "./score-prompt": "./src/score-prompt.mjs",
     "./topic-prompt": "./src/topic-prompt.mjs",
     "./score-helpers": "./src/score-helpers.mjs",
@@ -22,7 +21,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/normalize.test.mjs src/extract-prompt.test.mjs src/dedup-invariant.test.mjs src/declarations-match.test.mjs src/fence.test.mjs src/reveal-render.test.mjs"
+    "test": "node --test src/normalize.test.mjs src/dedup-invariant.test.mjs src/declarations-match.test.mjs src/fence.test.mjs src/reveal-render.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -1,13 +1,13 @@
 import './env.ts';
-// Thin Gemini wrapper. One client, one place to encode model quirks.
+// Thin Gemini wrapper. One client, one place to encode model quirks. Every
+// Gemini call in the API goes through it (wiki-bootstrap-job.ts via
+// generateText).
 //
-// gemini-3-flash-preview supports responseSchema enforcement and thinkingBudget=0
-// for fast structured output. We use it for /score and topic extraction.
-//
-// gemma-4-31b-it is a thinking model with no schema enforcement and no
-// thinking-budget control. It returns chain-of-thought as `thought:true`
-// parts followed by the answer in plain `text`. We use it for /diff and
-// the learning-extractor helper below, where latency is tolerable.
+// Model ids live in packages/scoring/src/models.mjs; today every call uses
+// gemini-3-flash-preview (responseSchema enforcement, thinkingConfig). The
+// non-Flash branches below handle a Gemma-family model, which has no schema
+// enforcement and returns chain-of-thought as `thought:true` parts, in case
+// one is swapped in there.
 
 import { GoogleGenAI, Type } from '@google/genai';
 import { currentTrace } from './langfuse.ts';
@@ -15,8 +15,6 @@ import type { Dimension, DimensionScores, MissingHints } from '@trailhead/shared
 import { DIMENSIONS } from '@trailhead/shared';
 import {
   DIFF_MODEL,
-  EXTRACT_MODEL,
-  EXTRACT_SYSTEM_PROMPT,
   SCORE_MODEL,
   SCORE_SYSTEM_PROMPT,
   TEACH_SYSTEM_PROMPT,
@@ -149,21 +147,34 @@ type GenResp = { candidates?: { content?: { parts?: { text?: string; thought?: b
 // fed to JSON.parse (which scales O(n) on input length).
 const MAX_EXTRACT_CHARS = 4000;
 
-function extractAnswer(resp: GenResp): string {
+function extractAnswer(resp: GenResp, maxChars: number = MAX_EXTRACT_CHARS): string {
   const parts = resp.candidates?.[0]?.content?.parts ?? [];
   const joined = parts
     .filter((p) => p.thought !== true && typeof p.text === 'string')
     .map((p) => p.text)
     .join('')
     .trim();
-  return joined.length > MAX_EXTRACT_CHARS
-    ? joined.slice(0, MAX_EXTRACT_CHARS)
-    : joined;
+  return joined.length > maxChars ? joined.slice(0, maxChars) : joined;
+}
+
+// One Gemini call with this module's retry/timeout policy and Langfuse
+// tracing, returning the answer text (thought parts dropped). For callers
+// outside this file that build their own prompts and schemas — the rich wiki
+// bootstrap (wiki-bootstrap-job.ts) — so every Gemini call in the API goes
+// through one client. Long-form output (folder narratives run to several
+// thousand words) is not capped like the short structured answers above.
+export async function generateText(
+  params: GenContentParams,
+  label: string,
+  perCallTimeoutMs?: number,
+): Promise<string> {
+  const resp = await withRetry(() => tracedGenerate(params), label, perCallTimeoutMs);
+  return extractAnswer(resp as GenResp, Number.POSITIVE_INFINITY);
 }
 
 // Strip ``` fences if a model wrapped its JSON in markdown despite being
 // told not to. Returns `null` if nothing parses.
-function tryParseJson<T = unknown>(raw: string): T | null {
+export function tryParseJson<T = unknown>(raw: string): T | null {
   let s = raw.trim();
   if (s.startsWith('```')) {
     s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
@@ -754,7 +765,7 @@ export async function extractPathAndTopic(
   }
 }
 
-// ----- /diff narrative synthesis (Gemma 4 31B; quality > latency) -----------
+// ----- /diff narrative synthesis (DIFF_MODEL) --------------------------------
 export async function synthesizeDiff(args: {
   user_prompt: string;
   user_scores: DimensionScores;
@@ -893,35 +904,6 @@ export async function improveCoach(input: ImproveCoachInput): Promise<ImproveCoa
     };
   }
   throw new Error(`improveCoach: unexpected kind=${String(parsed.kind)}`);
-}
-
-// ----- learning extractor (Gemma 4 31B) -------------------------------------
-// Helper kept available for a future server-side learning-extraction path.
-// Not currently wired to any endpoint.
-export interface ExtractResult { node_path: string | null; insight: string | null; }
-
-export async function extractLearning(args: {
-  user_prompt: string;
-  assistant_response: string;
-}): Promise<ExtractResult> {
-  const resp = await withRetry(
-    () => tracedGenerate({
-      model: EXTRACT_MODEL,
-      contents:
-        `${EXTRACT_SYSTEM_PROMPT}\n\n` +
-        `USER PROMPT:\n${args.user_prompt}\n\n` +
-        `ASSISTANT RESPONSE:\n${args.assistant_response}\n\n` +
-        `Return ONLY the JSON object.`,
-      config: { temperature: 0 },
-    }),
-    'extract',
-  );
-  const parsed = tryParseJson<ExtractResult>(extractAnswer(resp));
-  if (!parsed) return { node_path: null, insight: null };
-  return {
-    node_path: typeof parsed.node_path === 'string' ? parsed.node_path : null,
-    insight:   typeof parsed.insight   === 'string' ? parsed.insight   : null,
-  };
 }
 
 export type { Dimension, DimensionScores, MissingHints };

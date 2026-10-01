@@ -23,7 +23,7 @@ import { DIMENSIONS } from '@trailhead/shared';
 // request in this file is intercepted by the fetch stub, so it is never
 // sent anywhere and is not a credential.
 process.env.GEMINI_API_KEY ??= 'test-key-not-a-real-credential';
-const { extractTopic, overallScore, scorePrompt, scoreSamplingConfig } = await import('./gemini.ts');
+const { extractTopic, generateText, overallScore, scorePrompt, scoreSamplingConfig } = await import('./gemini.ts');
 
 interface FetchCall {
   url: string;
@@ -248,5 +248,22 @@ test('scorePrompt sends the configured temperature and thinking budget', async (
     stub.restore();
     delete process.env.TRAILHEAD_SCORE_TEMPERATURE;
     delete process.env.TRAILHEAD_SCORE_THINKING_BUDGET;
+  }
+});
+
+// The rich wiki bootstrap (wiki-bootstrap-job.ts) used to build its own
+// GoogleGenAI client, so its calls skipped the retry policy and never showed
+// up in Langfuse. It now goes through generateText.
+test('generateText sends one request through the shared client and does not cap long-form answers', async () => {
+  const narrative = 'x'.repeat(12_000); // a folder narrative is several thousand words
+  const stub = withFetchStub(() => geminiTextResponse(JSON.stringify({ narrative_md: narrative })));
+  try {
+    const text = await generateText({ model: 'gemini-3-flash-preview', contents: 'document src/' }, 'folder(src/)');
+    assert.equal(stub.calls.length, 1);
+    assert.match(stub.calls[0]!.url, /generativelanguage\.googleapis\.com/);
+    // The short structured answers are capped at 4 000 chars; this must not be.
+    assert.equal(JSON.parse(text).narrative_md.length, 12_000);
+  } finally {
+    stub.restore();
   }
 });
