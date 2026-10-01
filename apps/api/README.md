@@ -6,18 +6,29 @@ artifact talks to. Single source of truth.
 **Tech:** Hono + TypeScript, run via `docker compose up` from the repo root
 (see `SELFHOSTING.md`). Any Postgres (bundled container, Neon, RDS).
 
-**Endpoints (spec §3 — partial; the full, current table is in the root README):**
-- `POST /score`        — 5-dim Gemini score; writes skill_observation inline
-- `POST /capture`      — store conversation + outcome
-- `GET  /context`      — HCL bundle (path-walked, spec §8)
-- `GET  /examples`     — team-anchored prompts for a path
-- `POST /diff`         — Prompt Diff synthesis (Gemini)
-- `POST /wiki/propose` — autonomous wiki update with normalize + dedup + counter
+**Layout** (`src/`):
 
-**Imports:** `packages/shared` (types), `packages/scoring` (Gemini
-prompts), `packages/db` (schema).
+| File | Role |
+|---|---|
+| `index.ts` | Entry point: env checks, startup migrations, listener, graceful shutdown |
+| `app.ts` | The Hono app: CORS, body caps, tracing, auth and rate-limit middleware, `GET /`, route mounting, error handler |
+| `http.ts` | Shared request plumbing: env type, tenant policy, rate limiting, prompt cap, skill-observation writes |
+| `routes/score.ts` | `POST /score`, `POST /capture` |
+| `routes/coach.ts` | `POST /coach` (teach → reveal loop) |
+| `routes/assist.ts` | `POST /diff`, `POST /improve` |
+| `routes/wiki.ts` | `/wiki/propose`, `/context`, `/examples`, `/search`, `/wiki/recent`, `/wiki/tree`, `/wiki/export` |
+| `routes/prompts.ts` | `/prompts/proven`, `/prompts/pending`, `/prompts/:id/review` |
+| `routes/metrics.ts` | `/skill-arc`, `/team/metrics` |
+| `routes/teams.ts` | `/teams` (register, probe, rotate), `DELETE /team/data` |
+| `routes/onboard.ts` | `/onboard/repo`, `/onboard/repo/full`, `/onboard/jobs/:id` |
+| `gemini.ts` | The one Gemini client: retries, timeouts, Langfuse tracing, every LLM call |
+| `wiki-bootstrap-job.ts` | The async three-pass rich bootstrap behind `/onboard/repo/full` |
+| `db.ts` | `pg` pool, team resolution and registration |
 
-**Spec refs:** §3, §4, §5, §10
+The full route table is in the root README.
+
+**Imports:** `packages/shared` (types), `packages/scoring` (prompts and pure
+helpers), `packages/db` (schema).
 
 ## Tests
 
