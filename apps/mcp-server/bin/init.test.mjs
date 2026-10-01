@@ -398,3 +398,43 @@ test('wireClaudeCode=false skips Claude Code wiring entirely', async () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Portability: the configs init writes hold this machine's server path.
+// ---------------------------------------------------------------------------
+
+test('MCP configs init creates are gitignored; pre-existing ones are left alone and reported', async () => {
+  const home = makeHome();
+  const cwd = makeCwd();
+  try {
+    const r = await applyInit({ ...baseOpts(home, cwd), teamToken: undefined, teamFile: '.trailhead-team' });
+    assert.deepEqual(r.gitignored, ['.mcp.json']);
+    assert.deepEqual(r.machineSpecific, []);
+    assert.match(readFileSync(join(cwd, '.gitignore'), 'utf8'), /^\.mcp\.json$/m);
+    // relative, so the config holds no path from this machine for the secret
+    assert.equal(readJson(join(cwd, '.mcp.json')).mcpServers.trailhead.env.TRAILHEAD_TEAM_FILE, '.trailhead-team');
+
+    // second run: nothing new to ignore, and the file now pre-exists
+    const again = await applyInit({ ...baseOpts(home, cwd), teamToken: undefined, teamFile: '.trailhead-team' });
+    assert.deepEqual(again.gitignored, []);
+    assert.equal(readFileSync(join(cwd, '.gitignore'), 'utf8').match(/\.mcp\.json/g).length, 1);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+
+  const home2 = makeHome();
+  const cwd2 = makeCwd();
+  try {
+    mkdirSync(join(cwd2, '.vscode'), { recursive: true });
+    writeFileSync(join(cwd2, '.vscode', 'mcp.json'), JSON.stringify({ servers: { other: { command: 'x' } } }));
+    const r = await applyInit({ ...baseOpts(home2, cwd2), wireCopilot: true });
+    assert.deepEqual(r.machineSpecific, ['.vscode/mcp.json']);
+    assert.deepEqual(r.gitignored, ['.mcp.json']);
+    assert.doesNotMatch(readFileSync(join(cwd2, '.gitignore'), 'utf8'), /vscode/);
+    assert.ok(readJson(join(cwd2, '.vscode', 'mcp.json')).servers.other, "the team's other server is kept");
+  } finally {
+    rmSync(home2, { recursive: true, force: true });
+    rmSync(cwd2, { recursive: true, force: true });
+  }
+});

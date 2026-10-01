@@ -54,10 +54,12 @@ test('`cli.mjs init --team-token` writes per-repo .mcp.json + ./CLAUDE.md', () =
     const mcp = JSON.parse(readFileSync(join(home, '.mcp.json'), 'utf8'));
     assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_API_URL, 'https://test.example');
     assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_TEAM_TOKEN, undefined);
-    assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_TEAM_FILE, join(home, '.trailhead-team'));
+    assert.equal(mcp.mcpServers.trailhead.env.TRAILHEAD_TEAM_FILE, '.trailhead-team');
     assert.doesNotMatch(readFileSync(join(home, '.mcp.json'), 'utf8'), /tok-cli/);
     assert.equal(readFileSync(join(home, '.trailhead-team'), 'utf8').trim(), 'tok-cli');
     assert.match(readFileSync(join(home, '.gitignore'), 'utf8'), /^\.trailhead-team$/m);
+    // the generated config points at this machine's clone, so init ignores it
+    assert.match(readFileSync(join(home, '.gitignore'), 'utf8'), /^\.mcp\.json$/m);
     assert.ok(mcp.mcpServers.trailhead.args.some((a) => a.endsWith('index.ts')));
 
     // Default (no --user-scope, no legacy entry): ~/.claude.json untouched.
@@ -103,7 +105,7 @@ test('`cli.mjs init --user-scope` writes user-scope ~/.claude.json + ~/.claude/C
     );
     assert.equal(out.status, 0);
     const claudeJson = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-    assert.equal(claudeJson.mcpServers.trailhead.env.TRAILHEAD_TEAM_FILE, join(home, '.trailhead-team'));
+    assert.equal(claudeJson.mcpServers.trailhead.env.TRAILHEAD_TEAM_FILE, '.trailhead-team');
     const projectMd = readFileSync(join(home, 'CLAUDE.md'), 'utf8');
     const userMd = readFileSync(join(home, '.claude', 'CLAUDE.md'), 'utf8');
     assert.match(projectMd, /## Trailhead coaching/);
@@ -126,7 +128,7 @@ test('`cli.mjs init` wires Copilot when .vscode/ exists', () => {
     assert.match(out.stdout, /Copilot: MCP server registered/);
     const mcp = JSON.parse(readFileSync(join(home, '.vscode', 'mcp.json'), 'utf8'));
     assert.equal(mcp.servers.trailhead.command, 'npx');
-    assert.equal(mcp.servers.trailhead.env.TRAILHEAD_TEAM_FILE, join(home, '.trailhead-team'));
+    assert.equal(mcp.servers.trailhead.env.TRAILHEAD_TEAM_FILE, '.trailhead-team');
     assert.equal(mcp.servers.trailhead.env.TRAILHEAD_TEAM_TOKEN, undefined);
     const instructions = readFileSync(
       join(home, '.github', 'copilot-instructions.md'),
