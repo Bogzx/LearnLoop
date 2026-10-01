@@ -63,8 +63,9 @@ backend, all sharing the same TypeScript contract.
 Single source of truth. Multi-tenant: each team has a public team id and a
 server-minted secret (only its SHA-256 is stored), sent as `X-Team-Token`.
 Pre-2026-09-30 tokens derived from the git remote still work behind
-`TRAILHEAD_ACCEPT_LEGACY_TOKENS` (deprecated). Routes are in
-`apps/api/src/app.ts` (`index.ts` just serves them):
+`TRAILHEAD_ACCEPT_LEGACY_TOKENS` (deprecated). Middleware is in
+`apps/api/src/app.ts`, routes in `apps/api/src/routes/` (`index.ts` just serves
+them):
 
 | Method + Path | What it does |
 |---|---|
@@ -94,10 +95,11 @@ Pre-2026-09-30 tokens derived from the git remote still work behind
 | `GET  /onboard/jobs/:id` | Per-path progress for a rich-bootstrap job |
 | `DELETE /team/data` | Wipes the requesting team's data; demo team is protected unless `TRAILHEAD_ALLOW_DEMO_RESET=true` |
 
-LLM work runs through `apps/api/src/gemini.ts`. Model assignments live in
-`packages/scoring/src/models.mjs`: `gemini-3-flash-preview` for scoring
-(JSON-schema mode), topic extraction and diff narration; `gemma-4-31b-it` for
-async learning extraction, where latency is tolerable.
+Every LLM call runs through `apps/api/src/gemini.ts` (one client, one retry
+policy, Langfuse tracing). Model assignments live in
+`packages/scoring/src/models.mjs`; today every call uses
+`gemini-3-flash-preview` (JSON-schema mode for scoring, topic extraction,
+coaching rewrites and the rich wiki bootstrap).
 
 Every Gemini call is instrumented with **Langfuse** when
 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are set — one trace per HTTP
@@ -342,7 +344,7 @@ Single root `.env.example` — every surface reads from the same set.
 | Var | Used by | Notes |
 |---|---|---|
 | `DATABASE_URL` | api | Postgres connection string, `sslmode=require` |
-| `GEMINI_API_KEY` | api | `gemini-3-flash-preview` + `gemma-4-31b-it` |
+| `GEMINI_API_KEY` | api | Used for every call (`gemini-3-flash-preview`) |
 | `LANGFUSE_PUBLIC_KEY` | api | Optional. Hosted Langfuse public key (`pk-lf-…`) |
 | `LANGFUSE_SECRET_KEY` | api | Optional. Hosted Langfuse secret key (`sk-lf-…`) |
 | `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
@@ -437,8 +439,8 @@ contracts, builds, and tests.
 
 - **Backend:** Hono, TypeScript, Node 22, `@hono/node-server`, raw `pg`
 - **DB:** Postgres on Neon, no ORM
-- **LLMs:** `gemini-3-flash-preview` (scoring, JSON-schema mode), `gemma-4-31b-it`
-  (diff narration, rich bootstrap)
+- **LLMs:** `gemini-3-flash-preview` for every call (scoring in JSON-schema
+  mode, coaching, diff narration, rich bootstrap)
 - **Observability:** Langfuse (hosted) — one trace per request, one
   generation per LLM call
 - **Frontend:** Next.js 16 + Tailwind + Recharts + SWR (dashboard); vanilla
