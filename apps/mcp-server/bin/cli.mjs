@@ -25,7 +25,7 @@
 //   --admin-token <t>  for servers that set TRAILHEAD_ADMIN_TOKEN
 //   --api-url <url>    override TRAILHEAD_API_URL
 import { spawnSync } from 'node:child_process';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInit } from './init.mjs';
 import { maskSecret, SENTINEL_FILENAME } from '../src/token.mjs';
@@ -85,7 +85,9 @@ if (cmd === 'init') {
   await runInit({
     serverEntry: resolve(__dirname, '../src/index.ts'),
     apiUrl,
-    teamFile: join(cwd, SENTINEL_FILENAME),
+    // Relative, so the generated configs hold no path from this machine for
+    // the secret; the server finds it from its cwd up to the git root.
+    teamFile: SENTINEL_FILENAME,
     autoCoach: !flags.includes('--no-auto-coach'),
     userScope: flags.includes('--user-scope'),
     wireClaudeCode: !flags.includes('--no-claude-code'),

@@ -21,9 +21,13 @@ trailhead-mcp init --api-url http://localhost:3000
 ```
 
 The generated `.mcp.json` / `.vscode/mcp.json` point at `src/index.ts` in that
-clone by absolute path, so keep the clone where it is. They reference the team
-secret by file (`TRAILHEAD_TEAM_FILE` → `./.trailhead-team`) rather than
-containing it.
+clone by absolute path, so keep the clone where it is. That makes them
+machine-specific: when `init` creates them it also adds them to `.gitignore`
+(each teammate runs `init` once); if they already existed, `init` leaves your
+`.gitignore` alone and warns instead. They reference the team secret by a
+relative file, `TRAILHEAD_TEAM_FILE=.trailhead-team`, which the server looks
+for from its working directory up to the repo root, so it never contains the
+secret or a path from your machine.
 
 Per-repo install. Each repo gets its own team, so wikis don't collide between
 projects. Init sets up the team (below), then writes:
