@@ -20,4 +20,11 @@ examples, and the wiki-update toast.
 
 **Talks to:** `apps/api` only (HTTP + polling).
 
+**Install:** each GitHub release carries the `.vsix` (CI also uploads it as the
+`extensions` artifact on every run): `code --install-extension
+trailhead-vscode-<version>.vsix`. To build it yourself:
+`npm --workspace=apps/vscode-ext run package` (`.vscodeignore` keeps sources,
+tests and source maps out of the package). It is not on the Marketplace; the
+`publisher` id in `package.json` is a placeholder until it is.
+
 **Spec refs:** §7 A, §13 (1:40–2:50 demo beats)

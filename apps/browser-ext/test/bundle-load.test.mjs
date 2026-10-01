@@ -28,6 +28,19 @@ test('manifest.json is copied to dist/', async () => {
   await stat(resolve(distDir, 'background.js'));
 });
 
+test('every file the manifest references is in dist/ (icons included)', async () => {
+  const m = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const files = [
+    ...Object.values(m.icons ?? {}),
+    ...Object.values(m.action?.default_icon ?? {}),
+    m.action?.default_popup,
+    m.background?.service_worker,
+    ...m.content_scripts.flatMap((c) => c.js ?? []),
+  ].filter(Boolean);
+  assert.ok(Object.keys(m.icons ?? {}).length >= 3, 'manifest declares icons');
+  for (const f of files) assert.ok((await stat(resolve(distDir, f))).isFile(), `${f} missing from dist/`);
+});
+
 test('content.js bundle loads in a minimal DOM-like sandbox', async () => {
   const code = await readFile(bundlePath, 'utf8');
 

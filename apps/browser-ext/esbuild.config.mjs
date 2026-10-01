@@ -1,10 +1,11 @@
 // Bundles src/content.ts → dist/content.js (the content script Chrome
 // loads on claude.ai pages), src/background.ts → dist/background.js (the MV3
 // service worker that makes every API request) and src/popup/popup.ts → dist/popup.js (the
-// browser-action popup logic). Also copies manifest.json and popup.html
-// straight into dist/ so `dist/` is the directory you load unpacked.
+// browser-action popup logic). Also copies manifest.json, popup.html and
+// icons/*.png straight into dist/ so `dist/` is the directory you load
+// unpacked (and what scripts/zip.mjs packs for a release).
 import * as esbuild from 'esbuild';
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, readdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,6 +58,10 @@ async function copyStaticAssets() {
     resolve(__dirname, 'src/popup/popup.html'),
     resolve(distDir, 'popup.html'),
   );
+  await mkdir(resolve(distDir, 'icons'), { recursive: true });
+  for (const f of await readdir(resolve(__dirname, 'icons'))) {
+    if (f.endsWith('.png')) await copyFile(resolve(__dirname, 'icons', f), resolve(distDir, 'icons', f));
+  }
 }
 
 await copyStaticAssets();
