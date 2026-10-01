@@ -357,7 +357,8 @@ Single root `.env.example` — every surface reads from the same set.
 | `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
 | `TEAM_TOKEN` | — | Documentation only: the public demo team's token. The API does not read it; clients hardcode the same value as their fallback |
 | `PORT` | api | Defaults to 3000; Railway injects automatically |
-| `TRAILHEAD_ADMIN_TOKEN` | api | When set, `POST /teams` (registration) requires it as `X-Admin-Token` |
+| `TRAILHEAD_ADMIN_TOKEN` | api | When set, `POST /teams` (registration) requires it as `X-Admin-Token`, and the public demo team is turned off |
+| `TRAILHEAD_DEMO_TEAM` | api | `on` / `off`: the public demo team (default on, off when `TRAILHEAD_ADMIN_TOKEN` is set) |
 | `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | api | Default `true`. Accept pre-2026-09-30 remote-derived tokens for teams without a secret (deprecated) |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | api | Default `false`. Legacy only: unknown tokens create legacy teams |
 | `TRAILHEAD_SCORE_TEMPERATURE` / `TRAILHEAD_SCORE_THINKING_BUDGET` | api | Scorer sampling (defaults `0.2` / `-1` = dynamic). Measure before changing: `apps/api/eval/` |

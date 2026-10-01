@@ -23,11 +23,20 @@ import { createHash } from 'node:crypto';
 //   TRAILHEAD_ADMIN_TOKEN (default unset) — when set, POST /teams requires it
 //     in X-Admin-Token, so only the operator can register teams. Unset means
 //     open registration, which is fine while the API is bound to 127.0.0.1.
+//   TRAILHEAD_DEMO_TEAM (on | off; default on, but off when
+//     TRAILHEAD_ADMIN_TOKEN is set) — the seeded demo team's secret is public
+//     (it is in this repo), so anyone who can reach the API can write to its
+//     wiki and spend the operator's Gemini quota through it. Setting an admin
+//     token is the sign of a networked deploy, which is why it turns the demo
+//     team off unless TRAILHEAD_DEMO_TEAM=on says otherwise.
 export function authPolicy() {
+  const adminToken = process.env.TRAILHEAD_ADMIN_TOKEN || null;
+  const demo = process.env.TRAILHEAD_DEMO_TEAM;
   return {
     acceptLegacy: process.env.TRAILHEAD_ACCEPT_LEGACY_TOKENS !== 'false',
     autoCreate: process.env.TRAILHEAD_AUTO_CREATE_TEAMS === 'true',
-    adminToken: process.env.TRAILHEAD_ADMIN_TOKEN || null,
+    adminToken,
+    demoTeam: demo === 'on' || demo === 'true' ? true : demo === 'off' || demo === 'false' ? false : adminToken === null,
   };
 }
 

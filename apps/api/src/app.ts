@@ -115,6 +115,18 @@ app.use('*', async (c, next) => {
       401,
     );
   }
+  if (team.teamId === DEMO_TEAM_TOKEN && !policy.demoTeam) {
+    return c.json(
+      {
+        error: 'unauthorized',
+        reason: 'demo_team_disabled',
+        detail:
+          'The public demo team is turned off on this server (TRAILHEAD_DEMO_TEAM, off by default when ' +
+          'TRAILHEAD_ADMIN_TOKEN is set). Use your own team: run `init` in your repo, or ask the operator.',
+      },
+      401,
+    );
+  }
   c.set('team_token', team.teamId);
   c.set('legacy_auth', team.legacy);
   if (team.legacy) {
@@ -162,6 +174,7 @@ app.get('/', (c) =>
     auto_create_teams: authPolicy().autoCreate,
     accept_legacy_tokens: authPolicy().acceptLegacy,
     open_registration: authPolicy().adminToken === null,
+    demo_team: authPolicy().demoTeam,
     endpoints: [
       'POST /teams (register: returns the team secret once)',
       'POST /teams/rotate-secret',
