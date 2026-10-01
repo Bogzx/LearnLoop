@@ -19,17 +19,17 @@
 // generated `body_md` and `learnings.body` text reaches the DB.
 //
 // Spec ref: docs/superpowers/specs/2026-04-26-wiki-bootstrap-rich-design.md
-import { GoogleGenAI, Type } from '@google/genai';
+import { Type } from '@google/genai';
 import { normalize as normalizeBody } from '@trailhead/scoring';
 import type {
   OnboardRepoFullFile,
   OnboardRepoFullRequest,
 } from '@trailhead/shared';
 import { q, upsertNode } from './db.ts';
-
-// Reuse the same client GEMINI_API_KEY env var — the API server's index.ts
-// asserts this is set on startup so we can lean on it being present.
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Every call goes through gemini.ts: the same client, retry policy (429/5xx
+// retried with backoff, timeouts never retried) and Langfuse tracing as the
+// request-path calls.
+import { generateText, tryParseJson } from './gemini.ts';
 
 // Flash for all three passes (spec §6 reasoning). Sourced from the shared
 // model registry so a single rename in packages/scoring/src/models.mjs
@@ -46,9 +46,10 @@ const MAX_OUTPUT_TOKENS_FOLDER = 4_000;
 const MAX_OUTPUT_TOKENS_FILE = 700;
 const MAX_OUTPUT_TOKENS_ROOT = 5_000;
 
-// Per-call timeout. Same posture as gemini.ts withRetry: timeouts are
-// non-retryable to avoid the repetition-loop class of failures (2026-04-25
-// incident). One long Gemini call hanging shouldn't take down the job.
+// Per-call timeout (gemini.ts withRetry; timeouts are never retried, to avoid
+// the repetition-loop class of failures from the 2026-04-25 incident). Long:
+// a folder narrative is several thousand tokens. One hanging call shouldn't
+// take down the job; the 10-minute job budget is the overall safety net.
 const PER_CALL_TIMEOUT_MS = 90_000;
 
 // Cap on raw source we embed in a file node's body_md. The team-context
@@ -235,8 +236,8 @@ async function callFolderPass(folderPath: string, files: OnboardRepoFullFile[]):
     `Do not invent behavior — if a file's purpose is unclear, say so.${truncationNote}\n\n` +
     `=== Files in \`${folderPath || '/'}\` ===\n\n${filesBlock}`;
 
-  const resp = await withTimeout(
-    () => ai.models.generateContent({
+  const text = await generateText(
+    {
       model: MODEL,
       contents: userPrompt,
       config: {
@@ -254,10 +255,11 @@ async function callFolderPass(folderPath: string, files: OnboardRepoFullFile[]):
           },
         },
       },
-    }),
+    },
     `folder(${folderPath})`,
+    PER_CALL_TIMEOUT_MS,
   );
-  return parseStructured<FolderPassOutput>(resp, ['narrative_md']);
+  return parseStructured<FolderPassOutput>(text, ['narrative_md']);
 }
 
 interface FilePassOutput {
@@ -284,8 +286,8 @@ async function callFilePass(
     `Conventions visible in this file (e.g. "throws on invalid input", "logs to stderr only") MUST be returned in the conventions[] array — short imperative phrases, one rule each.${folderHint}\n\n` +
     `=== \`${file.path}\` ===\n\`\`\`\n${file.content}\n\`\`\``;
 
-  const resp = await withTimeout(
-    () => ai.models.generateContent({
+  const text = await generateText(
+    {
       model: MODEL,
       contents: userPrompt,
       config: {
@@ -302,10 +304,11 @@ async function callFilePass(
           },
         },
       },
-    }),
+    },
     `file(${file.path})`,
+    PER_CALL_TIMEOUT_MS,
   );
-  return parseStructured<FilePassOutput>(resp, ['narrative_md']);
+  return parseStructured<FilePassOutput>(text, ['narrative_md']);
 }
 
 interface RootPassOutput {
@@ -343,8 +346,8 @@ async function callRootPass(args: {
     `=== Per-folder summaries ===\n\n${folderBlock}\n\n` +
     `=== Manifests ===\n\n${manifestBlock}${seedBlock}`;
 
-  const resp = await withTimeout(
-    () => ai.models.generateContent({
+  const text = await generateText(
+    {
       model: MODEL,
       contents: userPrompt,
       config: {
@@ -360,10 +363,11 @@ async function callRootPass(args: {
           },
         },
       },
-    }),
+    },
     'root',
+    PER_CALL_TIMEOUT_MS,
   );
-  return parseStructured<RootPassOutput>(resp, ['narrative_md']);
+  return parseStructured<RootPassOutput>(text, ['narrative_md']);
 }
 
 // ============================================================================
@@ -592,43 +596,7 @@ async function runWithConcurrency<T>(items: T[], cap: number, fn: (item: T) => P
   await Promise.all(workers);
 }
 
-// Hard timeout. Mirrors gemini.ts withRetry's posture but without retries —
-// repetition-loop risk is real on long-form prose and the time budget at
-// the job level (10 min) is the safety net.
-function withTimeout<T>(fn: () => Promise<T>, label: string): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`__trailhead_timeout__:${label}`)), PER_CALL_TIMEOUT_MS);
-  });
-  return Promise.race([fn(), timeoutPromise]).finally(() => {
-    if (timeoutId !== undefined) clearTimeout(timeoutId);
-  }) as Promise<T>;
-}
-
-type GenResp = { candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[] };
-
-function extractAnswer(resp: GenResp): string {
-  const parts = resp.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .filter((p) => p.thought !== true && typeof p.text === 'string')
-    .map((p) => p.text)
-    .join('')
-    .trim();
-}
-
-function tryParseJson<T = unknown>(raw: string): T | null {
-  let s = raw.trim();
-  if (s.startsWith('```')) {
-    s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  }
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start !== -1 && end > start) s = s.slice(start, end + 1);
-  try { return JSON.parse(s) as T; } catch { return null; }
-}
-
-function parseStructured<T extends object>(resp: GenResp, requiredStrings: (keyof T & string)[]): T {
-  const text = extractAnswer(resp);
+function parseStructured<T extends object>(text: string, requiredStrings: (keyof T & string)[]): T {
   const parsed = tryParseJson<T>(text);
   if (!parsed) throw new Error('LLM response not parseable as JSON');
   for (const k of requiredStrings) {

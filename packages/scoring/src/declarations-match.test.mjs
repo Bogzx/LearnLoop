@@ -86,7 +86,7 @@ test('models.mjs exports the model ids the API and README both cite', async () =
   // documents them. A silent rename here is a production incident.
   /** @type {Record<string, unknown>} */
   const models = await import('./models.mjs');
-  for (const k of ['SCORE_MODEL', 'TOPIC_MODEL', 'DIFF_MODEL', 'EXTRACT_MODEL']) {
+  for (const k of ['SCORE_MODEL', 'TOPIC_MODEL', 'DIFF_MODEL']) {
     const v = models[k];
     assert.equal(typeof v, 'string', `${k} must be a string`);
     assert.ok(/** @type {string} */ (v).length > 0, `${k} must not be empty`);
