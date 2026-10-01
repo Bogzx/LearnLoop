@@ -265,6 +265,11 @@ docker compose up
 # → API on http://localhost:3000, Postgres schema applied automatically
 ```
 
+No key yet? `TRAILHEAD_LLM=offline docker compose up` runs the same stack with
+no model: prompts are scored by a rule-based scorer and coached with static
+templates, and every response says so
+([SELFHOSTING.md → offline mode](SELFHOSTING.md#try-it-without-a-key-offline-mode)).
+
 That is the whole setup. See [SELFHOSTING.md](SELFHOSTING.md) for pointing the
 browser extension, VS Code extension, MCP server and dashboard at it, and for
 running against an external database instead.
@@ -296,7 +301,8 @@ npm run dev
 # → http://localhost:3000
 ```
 
-The API refuses to boot without `DATABASE_URL` and `GEMINI_API_KEY`.
+The API refuses to boot without `DATABASE_URL`, and without `GEMINI_API_KEY`
+unless `TRAILHEAD_LLM=offline`.
 
 Before exposing the API beyond `localhost`, read
 [SELFHOSTING.md → Security model](SELFHOSTING.md#security-model): set
@@ -345,6 +351,7 @@ Single root `.env.example` — every surface reads from the same set.
 |---|---|---|
 | `DATABASE_URL` | api | Postgres connection string, `sslmode=require` |
 | `GEMINI_API_KEY` | api | Used for every call (`gemini-3-flash-preview`) |
+| `TRAILHEAD_LLM` | api | `gemini` (default) or `offline`: no model; rule-based scoring and template coaching (SELFHOSTING.md) |
 | `LANGFUSE_PUBLIC_KEY` | api | Optional. Hosted Langfuse public key (`pk-lf-…`) |
 | `LANGFUSE_SECRET_KEY` | api | Optional. Hosted Langfuse secret key (`sk-lf-…`) |
 | `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |

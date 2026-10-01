@@ -66,6 +66,10 @@ const dims = (n: number): Dims => ({
 
 let geminiMode: 'ok' | 'garbage' | 'error' = 'ok';
 let geminiCalls = 0;
+// Calls made on behalf of a request (score, coach, topic, diff, improve), as
+// opposed to rich-bootstrap passes, which earlier tests leave running in the
+// background.
+let requestPathCalls = 0;
 const scoreRequests: any[] = [];
 const flakySeen = new Map<string, number>();
 
@@ -120,6 +124,7 @@ function installGeminiStub(): void {
       });
     }
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+    if (!('narrative_md' in (body?.generationConfig?.responseSchema?.properties ?? {}))) requestPathCalls++;
     const answer = geminiMode === 'garbage' ? 'not json at all, no dimensions here' : geminiAnswer(body);
     return new Response(
       JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: answer }] }, finishReason: 'STOP' }] }),
@@ -854,6 +859,57 @@ test('the cached team-context bundle is dropped when the wiki is wiped or edited
   await call('DELETE', '/team/data', { token: t, body: { confirm: true } });
   const after = await system();
   assert.ok(!after.includes('CACHED-RULE-ONE') && !after.includes('CACHED-LEARNING-TWO'));
+});
+
+test('TRAILHEAD_LLM=offline: score, coach, promote, diff and improve with zero Gemini calls; rich bootstrap is 503', { skip }, async () => {
+  assert.equal((await call('GET', '/')).json.llm, 'gemini');
+  process.env.TRAILHEAD_LLM = 'offline';
+  const callsBefore = requestPathCalls;
+  try {
+    assert.equal((await call('GET', '/')).json.llm, 'offline');
+    const reg = await call('POST', '/teams', { body: { team_id: 'team_it_offline', name: 'offline' } });
+    assert.equal(reg.status, 201);
+    const C = reg.json.secret as string;
+
+    const weak = await call('POST', '/score', { token: C, body: { prompt: 'fix it', user_id: 'olga' } });
+    assert.equal(weak.status, 200);
+    assert.equal(weak.json.scorer, 'heuristic');
+    assert.ok(weak.json.overall <= 2, `overall ${weak.json.overall}`);
+    assert.equal(await count(`SELECT count(*) n FROM skill_observations WHERE team_token = 'team_it_offline'`), 5);
+
+    const coached = await call('POST', '/coach', { token: C, body: { prompt: 'fix it', user_id: 'olga' } });
+    assert.equal(coached.status, 200);
+    assert.equal(coached.json.proceed, false);
+    assert.equal(coached.json.scorer, 'heuristic');
+    assert.match(coached.json.text, /rule-based scorer/);
+
+    // A strong prompt passes the gate and reaches the library (the confirming
+    // re-score is the same rules offline), so /diff has a team prompt to use.
+    const strong =
+      'In src/api/webhooks/handler.ts, add retries to deliver() with exponential backoff (200ms, 400ms, 800ms). ' +
+      'Constraints: it must stay idempotent and add no new dependencies. Return only the diff for handler.ts.';
+    const good = await call('POST', '/coach', { token: C, body: { prompt: strong, user_id: 'olga', file_path: 'src/api/webhooks/handler.ts' } });
+    assert.equal(good.json.proceed, true);
+    await eventually(
+      async () => (await call('GET', '/prompts/proven', { token: C })).json.items.length > 0,
+      'offline promotion into the library',
+    );
+    const diff = await call('POST', '/diff', { token: C, body: { user_prompt: 'fix the retry', user_id: 'olga', file_path: 'src/api/webhooks/x.ts' } });
+    assert.equal(diff.status, 200);
+    assert.match(JSON.stringify(diff.json), /biggest gap/i);
+
+    const improve = await call('POST', '/improve', { token: C, body: { original_prompt: 'fix it', user_id: 'olga', history: [], command: 'next' } });
+    assert.equal(improve.status, 200);
+    assert.equal(improve.json.kind, 'question');
+
+    const rich = await call('POST', '/onboard/repo/full', { token: C, body: { folders: ['src/'], files: [] } });
+    assert.equal(rich.status, 503);
+    assert.equal(rich.json.error, 'llm_unavailable');
+
+    assert.equal(requestPathCalls, callsBefore, 'offline mode must never call Gemini');
+  } finally {
+    delete process.env.TRAILHEAD_LLM;
+  }
 });
 
 // Must stay last: every route in GET /'s catalog needs a test above.

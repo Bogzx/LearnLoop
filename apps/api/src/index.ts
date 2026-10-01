@@ -2,11 +2,20 @@
 // The routes live in app.ts so tests can exercise them without a listener.
 import './env.ts';
 import { serve } from '@hono/node-server';
+import { llmConfigError, llmMode } from './llm-mode.ts';
 
-// Checked before app.ts is imported: its modules open the pg pool and the
-// Gemini client at load time and would otherwise die with a less useful error.
+// Checked before app.ts is imported: its modules open the pg pool at load time
+// and would otherwise die with a less useful error.
 if (!process.env.DATABASE_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
-if (!process.env.GEMINI_API_KEY) { console.error('GEMINI_API_KEY not set'); process.exit(1); }
+const llmError = llmConfigError();
+if (llmError) { console.error(llmError); process.exit(1); }
+if (llmMode() === 'offline') {
+  console.warn(
+    '[llm] TRAILHEAD_LLM=offline: no model. Prompts are scored by the rule-based scorer ' +
+      '(packages/scoring/src/heuristic-score.mjs), coaching uses the static templates, and the ' +
+      'rich wiki bootstrap is disabled. Every /score and /coach response says so.',
+  );
+}
 
 const { app, ensureRecentMigrations } = await import('./app.ts');
 const { countLegacyTeams, failInterruptedJobs, pool } = await import('./db.ts');

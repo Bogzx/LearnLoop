@@ -1,7 +1,8 @@
 // The Hono app: middleware, the GET / catalog and the route modules (routes/),
 // no listener. Imported by index.ts (which serves it) and by the integration
 // tests (which call app.request() directly against a real Postgres). Importing
-// this module opens the pg pool and requires DATABASE_URL and GEMINI_API_KEY.
+// this module opens the pg pool and requires DATABASE_URL (and, unless
+// TRAILHEAD_LLM=offline, GEMINI_API_KEY when an LLM route is first called).
 import './env.ts';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
@@ -11,6 +12,7 @@ import { DEMO_TEAM_SECRET_HASH, DEMO_TEAM_TOKEN, isSecretTeamId, q, resolveTeam 
 import type { LimitName } from './rate-limit.ts';
 import { randomUUID } from 'node:crypto';
 import { langfuse, withTrace } from './langfuse.ts';
+import { llmMode } from './llm-mode.ts';
 import { authPolicy, clientIp, opaqueTeamId, rateLimit, teamIdFromHeader, type AppEnv } from './http.ts';
 import { scoreRoutes } from './routes/score.ts';
 import { coachRoutes } from './routes/coach.ts';
@@ -155,6 +157,8 @@ app.get('/', (c) =>
     name: 'trailhead-api',
     status: 'ok',
     multi_tenant: true,
+    // 'offline' = no model: rule-based scoring, template coaching (llm-mode.ts).
+    llm: llmMode(),
     auto_create_teams: authPolicy().autoCreate,
     accept_legacy_tokens: authPolicy().acceptLegacy,
     open_registration: authPolicy().adminToken === null,

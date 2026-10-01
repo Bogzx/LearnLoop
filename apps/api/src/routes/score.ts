@@ -9,7 +9,7 @@ import type {
 } from '@trailhead/shared';
 import { q } from '../db.ts';
 import { isUnparseableScore } from '../coach-degraded.ts';
-import { overallScore, scorePrompt } from '../gemini.ts';
+import { overallScore, scorePrompt, scorerName } from '../llm.ts';
 import { renderTeamContext } from '../team-context.ts';
 import { PROMPT_TOO_LONG, promptTooLong, writeSkillObservations, type AppEnv } from '../http.ts';
 
@@ -61,6 +61,7 @@ scoreRoutes.post('/score', async (c) => {
     overall,
     dimensions: result.dimensions,
     missing: result.missing,
+    scorer: scorerName(),
   };
   return c.json(res);
 });
