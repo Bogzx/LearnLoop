@@ -25,18 +25,24 @@ import {
   UNTRUSTED_NOTE,
 } from '@trailhead/scoring';
 
-if (!process.env.GEMINI_API_KEY) {
-  throw new Error('GEMINI_API_KEY not set');
+// Created on first use, so importing this module needs no key: with
+// TRAILHEAD_LLM=offline nothing here is ever called (llm.ts routes to
+// offline-llm.ts). index.ts refuses to start in Gemini mode without a key.
+let client: GoogleGenAI | undefined;
+function ai(): GoogleGenAI {
+  if (!client) {
+    if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not set');
+    client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+  return client;
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-// Langfuse-instrumented wrapper around ai.models.generateContent.
+// Langfuse-instrumented wrapper around ai().models.generateContent.
 // Emits one generation per Gemini call, hung off the per-request trace
 // stored in AsyncLocalStorage by the Hono middleware. No-op when no
 // trace is active (e.g. background jobs that don't run inside a request).
-type GenContentParams = Parameters<typeof ai.models.generateContent>[0];
-type GenContentResp = Awaited<ReturnType<typeof ai.models.generateContent>>;
+type GenContentParams = Parameters<GoogleGenAI['models']['generateContent']>[0];
+type GenContentResp = Awaited<ReturnType<GoogleGenAI['models']['generateContent']>>;
 
 async function tracedGenerate(params: GenContentParams): Promise<GenContentResp> {
   const trace = currentTrace();
@@ -54,7 +60,7 @@ async function tracedGenerate(params: GenContentParams): Promise<GenContentResp>
     },
   });
   try {
-    const resp = await ai.models.generateContent(params);
+    const resp = await ai().models.generateContent(params);
     if (gen) {
       const u = (resp as unknown as {
         usageMetadata?: {
@@ -673,7 +679,7 @@ export async function summarizeCoaching(args: {
 }
 
 // ----- topic extraction (used by /diff to find a graduated prompt) ----------
-const TOPIC_VALUES = [
+export const TOPIC_VALUES = [
   'retry', 'auth', 'webhook', 'db_migration', 'error_handling',
   'logging', 'testing', 'deployment', 'refactor', 'performance',
   'schema', 'validation', 'other',

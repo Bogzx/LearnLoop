@@ -86,7 +86,7 @@ jobs:
         run: npm audit --audit-level=high
 
   docker:
-    name: docker image builds
+    name: docker image + compose smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -97,6 +97,31 @@ jobs:
         run: GEMINI_API_KEY=ci-placeholder docker compose config --quiet
       - name: build api image
         run: docker build -f apps/api/Dockerfile -t trailhead-api:ci .
+      # Run the quick start the way a stranger would, with no key (offline
+      # mode), and check the stack actually works: schema applied, API up,
+      # registration, a wiki write, a rule-based score, and the demo seed.
+      - name: compose smoke test (offline mode, demo seed)
+        env:
+          TRAILHEAD_LLM: offline
+        run: |
+          set -euo pipefail
+          docker compose -p ci up -d --build --wait --wait-timeout 180
+          docker compose -p ci --profile demo run --rm seed
+          api=http://127.0.0.1:3000
+          curl -fsS $api/ | jq -e '.status == "ok" and .llm == "offline"'
+          secret=$(curl -fsS -X POST $api/teams -H 'content-type: application/json' \
+            -d '{"team_id":"team_ci_smoke","name":"ci"}' | jq -er .secret)
+          curl -fsS -X POST $api/wiki/propose -H "X-Team-Token: $secret" -H 'content-type: application/json' \
+            -d '{"node_path":"src/","insight":"Errors return JSON {error, detail}.","user_id":"ci"}' | jq -e '.action == "created"'
+          curl -fsS -X POST $api/score -H "X-Team-Token: $secret" -H 'content-type: application/json' \
+            -d '{"prompt":"fix it","user_id":"ci"}' | jq -e '.scorer == "heuristic" and .overall <= 2'
+          curl -fsS $api/team/metrics -H 'X-Team-Token: trailhead_demo_acme_2026' | jq -e '.total_obs >= 700 and .active_users == 3'
+      - name: compose logs
+        if: failure()
+        run: docker compose -p ci --profile demo logs
+      - name: compose down
+        if: always()
+        run: docker compose -p ci --profile demo down -v
 
   integration:
     name: api integration tests (Postgres)

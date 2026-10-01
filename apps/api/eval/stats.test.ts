@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DimensionScores } from '@trailhead/shared';
-import { buildReport, renderMarkdown, reportPrompt, summarize, validateGoldenSet, type GoldenPrompt } from './stats.ts';
+import { buildReport, orderingAgreement, renderMarkdown, reportPrompt, summarize, validateGoldenSet, type GoldenPrompt } from './stats.ts';
 import { main, parseArgs } from './run.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -102,6 +102,34 @@ test('--dry-run runs the whole pipeline offline and writes the report', async ()
     assert.deepEqual(json.prompts.map((p: { id: string }) => p.id), ['vague-fix', 'strong-retry']);
   } finally {
     globalThis.fetch = realFetch;
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('orderingAgreement compares only pairs whose bands do not overlap; ties count against', () => {
+  const p = (lo: number, hi: number, exactMean: number) => ({ band: [lo, hi] as [number, number], exactMean });
+  // vague [0,2] < mid [3,7] < strong [7,10]; mid and strong overlap at 7, so that pair is skipped.
+  const r = orderingAgreement([p(0, 2, 1), p(3, 7, 4), p(7, 10, 9)]);
+  assert.deepEqual(r, { pairs: 2, agree: 2, rate: 1 });
+  assert.equal(orderingAgreement([p(0, 2, 5), p(3, 7, 5)]).agree, 0); // tie
+  assert.equal(orderingAgreement([p(0, 2, 6), p(3, 7, 4)]).agree, 0); // inverted
+  assert.ok(Number.isNaN(orderingAgreement([p(0, 2, 1), p(3, 7, NaN)]).rate)); // no scored pair
+});
+
+test('--scorer heuristic runs offline with no key and no --yes', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'trailhead-eval-'));
+  const realFetch = globalThis.fetch;
+  const had = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  globalThis.fetch = (() => assert.fail('the heuristic scorer must not call the network')) as typeof fetch;
+  try {
+    assert.equal(await main(['--scorer', 'heuristic', '--runs', '1', '--only', 'vague-fix,strong-retry', '--out', out]), 0);
+    const json = JSON.parse(readFileSync(join(out, readdirSync(out).find((f) => f.endsWith('.json'))!), 'utf8'));
+    assert.match(json.config.model, /heuristic/);
+    assert.deepEqual(json.totals.ordering, { pairs: 1, agree: 1, rate: 1 });
+  } finally {
+    globalThis.fetch = realFetch;
+    if (had !== undefined) process.env.GEMINI_API_KEY = had;
     rmSync(out, { recursive: true, force: true });
   }
 });
