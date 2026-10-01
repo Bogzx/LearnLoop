@@ -85,7 +85,7 @@ function CtaLinks() {
         href="#demo"
         className="rounded-md px-6 py-4 font-medium text-base tracking-wide transition inline-flex items-center gap-2 text-ink-700 hover:text-ink-900"
       >
-        Watch the 3-min demo
+        Watch the demo
       </a>
     </>
   );

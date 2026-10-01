@@ -5,7 +5,7 @@
 //     stack runs and coaches with no API key;
 //   - the in-browser demo on the landing page (apps/landing-page/assets keeps a
 //     byte-identical copy: no imports, no Node APIs, plain ESM);
-//   - the floor the Gemini scorer has to beat in apps/api/eval.
+//   - a baseline for the Gemini scorer in apps/api/eval (not compared yet).
 //
 // What it is not: a substitute for the model. It reads surface features —
 // file paths, identifiers, numbers with units, constraint and output phrasing —
