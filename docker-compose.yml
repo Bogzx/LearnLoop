@@ -11,6 +11,26 @@
 # up on http://localhost:3000. See SELFHOSTING.md for pointing the clients at it.
 
 services:
+  # Stops `docker compose up` before anything starts, with a message saying
+  # what to set, when there is neither a Gemini key nor TRAILHEAD_LLM=offline.
+  # (Compose can't make a variable required only when another is unset, so the
+  # check runs here; it reuses the Postgres image for its shell.) The API
+  # checks the same thing again at startup.
+  config-check:
+    image: postgres:16-alpine
+    entrypoint: ['sh', '-c']
+    command:
+      - |
+        if [ -z "$$GEMINI_API_KEY" ] && [ "$$TRAILHEAD_LLM" != offline ]; then
+          echo 'GEMINI_API_KEY is not set. Put a key in .env (cp .env.example .env; https://aistudio.google.com/apikey),'
+          echo 'or run with TRAILHEAD_LLM=offline to try LearnLoop without one.'
+          exit 1
+        fi
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      TRAILHEAD_LLM: ${TRAILHEAD_LLM:-}
+    restart: 'no'
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -55,8 +75,8 @@ services:
       # Defaults to the postgres service above. Set DATABASE_URL in .env to
       # point at an external database instead (Neon, RDS, ...).
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-trailhead}:${POSTGRES_PASSWORD:-trailhead}@postgres:5432/${POSTGRES_DB:-trailhead}}
-      # Every LLM call uses it. Without it the API refuses to start (and logs
-      # how to fix it) unless TRAILHEAD_LLM=offline.
+      # Every LLM call uses it. Required unless TRAILHEAD_LLM=offline: the
+      # config-check service above stops `up` with a message when it's missing.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # gemini (default) | offline: no model at all — prompts are scored by the
       # rule-based scorer, coaching uses the static templates, and the rich
@@ -115,6 +135,8 @@ services:
         # Don't start until Postgres answers pg_isready — the API opens its
         # pool and runs a startup migration check immediately.
         condition: service_healthy
+      config-check:
+        condition: service_completed_successfully
     healthcheck:
       # GET / is the API's status endpoint (no auth). wget ships with the
       # busybox userland in node:22-alpine.
