@@ -25,7 +25,39 @@ artifact talks to. Single source of truth.
 | `wiki-bootstrap-job.ts` | The async three-pass rich bootstrap behind `/onboard/repo/full` |
 | `db.ts` | `pg` pool, team resolution and registration |
 
-The full route table is in the root README.
+## Routes
+
+Every route except `GET /` and `POST /teams` needs `X-Team-Token` (the team
+secret). `GET /` lists them all, and the integration suite fails if one listed
+there has no test.
+
+| Method + Path | What it does |
+|---|---|
+| `GET  /` | Health + endpoint catalog (unauth) |
+| `POST /teams` | Register a team (unauth; gated by `TRAILHEAD_ADMIN_TOKEN` when set). Returns `{ team_id, name, secret }` once; `409` if the id is taken — the join flow |
+| `POST /teams/rotate-secret` | New secret for the caller's team; the old credential stops working. Upgrades a legacy team |
+| `GET  /teams` | Resolves the caller's own team. Never returns the secret — `{ name, id, legacy, team_id? }` (`id` is an opaque digest; `team_id` only for non-legacy teams) |
+| `POST /score` | 5-dimension Gemini score; writes `skill_observation` rows with a 30 s per-dimension dedup window |
+| `POST /coach` | Stateless teach→reveal coaching loop, capped at 5 rounds |
+| `POST /capture` | Stores a `(prompt, response, outcome)` capture from any surface |
+| `POST /wiki/propose` | Normalize + dedup an insight on `(node_id, body_normalized)`, increment `reinforcement_count`, promote `draft → durable` at ≥ 3 |
+| `GET  /context?path=` | Ancestor walk: returns every wiki node whose path is a prefix of the file path, plus its durable learnings |
+| `GET  /examples?path=` | Top graduated prompts for an ancestor of a file path |
+| `GET  /prompts/proven` | The team's graduated prompts, filterable by score, path, topic |
+| `GET  /prompts/pending` | Library candidates awaiting review (`TRAILHEAD_PROMOTION_MODE=review`) |
+| `POST /prompts/:id/review` | `{ approve: true }` graduates a pending prompt, `false` discards it |
+| `GET  /search?q=&scope=` | Substring search over rules, durable learnings and graduated prompts |
+| `GET  /wiki/recent?since=ISO` | Polling endpoint for the VS Code wiki-toast surface |
+| `POST /diff` | Picks the closest graduated team prompt by topic + ancestry, scores both prompts, asks Gemini to narrate the difference |
+| `POST /improve` | Multi-turn Gemini-driven prompt rewrite, capped at 5 user replies |
+| `GET  /skill-arc` | Time-series of per-dimension scores (powers the dashboard hero chart) |
+| `GET  /team/metrics` | Snapshot: avg overall, reuse rate, durable count, draft count, active users |
+| `GET  /wiki/tree` | Full node + learnings tree |
+| `GET  /wiki/export` | The whole team wiki as one markdown document (`?drafts=true`, `?format=json`) |
+| `POST /onboard/repo` | Bulk-upsert one node per path, idempotent, optional `initial_rules[path]` for seeding `body_md` |
+| `POST /onboard/repo/full` | Async rich bootstrap: accepts a folder + file bundle (capped at 16 MB / 2 000 files / 32 KB per file), enqueues a `wiki_jobs` row, three-pass Gemini fan-out via `setImmediate` |
+| `GET  /onboard/jobs/:id` | Per-path progress for a rich-bootstrap job |
+| `DELETE /team/data` | Wipes the requesting team's data; demo team is protected unless `TRAILHEAD_ALLOW_DEMO_RESET=true` |
 
 **Imports:** `packages/shared` (types), `packages/scoring` (prompts and pure
 helpers), `packages/db` (schema).

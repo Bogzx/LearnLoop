@@ -148,10 +148,18 @@
 <body class="min-h-screen overflow-x-hidden">
   <div id="root"></div>
 
+  <!-- The rule-based scorer for the Try it section (components/try-it.jsx). -->
+  <script type="module">
+    import { heuristicScore } from './assets/heuristic-score.js';
+    window.heuristicScore = heuristicScore;
+    window.dispatchEvent(new Event('heuristic-score-ready'));
+  </script>
+
   <script type="text/babel" data-presets="react" src="components/primitives.jsx"></script>
   <script type="text/babel" data-presets="react" src="components/nav.jsx"></script>
   <script type="text/babel" data-presets="react" src="components/hero.jsx"></script>
   <script type="text/babel" data-presets="react" src="components/sections.jsx"></script>
+  <script type="text/babel" data-presets="react" src="components/try-it.jsx"></script>
   <script type="text/babel" data-presets="react" src="components/footer.jsx"></script>
   <script type="text/babel" data-presets="react" src="app.jsx"></script>
 </body>
