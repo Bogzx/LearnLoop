@@ -95,6 +95,38 @@ ones you are most likely to touch:
 | `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | `true` | Set `false` once every team has upgraded from a pre-2026-09-30 token. |
 | `TRAILHEAD_AUTO_CREATE_TEAMS` | `false` | Legacy only: let unknown tokens create teams on the fly. Throwaway demos only. |
 
+### All variables
+
+Single root `.env` (template: `.env.example`); every surface reads from the
+same set.
+
+| Var | Used by | Notes |
+|---|---|---|
+| `DATABASE_URL` | api | Postgres connection string. Unset with compose: the bundled Postgres. Hosted databases usually need `?sslmode=require` |
+| `GEMINI_API_KEY` | api | Used for every call (`gemini-3-flash-preview`) |
+| `TRAILHEAD_LLM` | api | `gemini` (default) or `offline`: no model; rule-based scoring and template coaching (SELFHOSTING.md) |
+| `LANGFUSE_PUBLIC_KEY` | api | Optional. Hosted Langfuse public key (`pk-lf-…`) |
+| `LANGFUSE_SECRET_KEY` | api | Optional. Hosted Langfuse secret key (`sk-lf-…`) |
+| `LANGFUSE_BASEURL` | api | Defaults to `https://cloud.langfuse.com` (EU). Use `https://us.cloud.langfuse.com` for US |
+| `TEAM_TOKEN` | — | Documentation only: the public demo team's token. The API does not read it; clients hardcode the same value as their fallback |
+| `PORT` | api | Defaults to 3000 (with compose, the host port); platforms like Railway inject it |
+| `TRAILHEAD_ADMIN_TOKEN` | api | When set, `POST /teams` (registration) requires it as `X-Admin-Token`, and the public demo team is turned off |
+| `TRAILHEAD_DEMO_TEAM` | api | `on` / `off`: the public demo team (default on, off when `TRAILHEAD_ADMIN_TOKEN` is set) |
+| `TRAILHEAD_ACCEPT_LEGACY_TOKENS` | api | Default `true`. Accept pre-2026-09-30 remote-derived tokens for teams without a secret (deprecated) |
+| `TRAILHEAD_AUTO_CREATE_TEAMS` | api | Default `false`. Legacy only: unknown tokens create legacy teams |
+| `TRAILHEAD_SCORE_TEMPERATURE` / `TRAILHEAD_SCORE_THINKING_BUDGET` | api | Scorer sampling (defaults `0.2` / `-1` = dynamic). Measure before changing: `apps/api/eval/` |
+| `TRAILHEAD_RL_REGISTER_PER_IP` / `TRAILHEAD_RL_LLM_PER_TEAM` / `TRAILHEAD_RL_LLM_PER_IP` / `TRAILHEAD_RL_BOOTSTRAP_PER_TEAM` | api | Rate limits as `N/W` (defaults `10/1h`, `120/1m`, `120/1m`, `6/1h`), or `off`. In-process, so per replica — see SELFHOSTING.md |
+| `TRAILHEAD_RATE_LIMIT` | api | `off` disables every rate limit |
+| `TRAILHEAD_TRUST_PROXY` | api | `true` behind your own (single-hop) reverse proxy: per-IP limits key on the last `X-Forwarded-For` entry, the one the proxy appended |
+| `TRAILHEAD_EXPOSE_ERRORS` | api | `true` to include the raw error message in 500 responses (local debugging). Default: only a `request_id` that matches the server log |
+| `TRAILHEAD_PROMOTION_MODE` | api | `auto` (default): gated auto-promotion into the library. `review`: promoted prompts wait for a teammate's approval |
+| `TRAILHEAD_ALLOW_DEMO_RESET` | api | `true` to allow `DELETE /team/data` on the demo team |
+| `TRAILHEAD_API_URL` | dashboard | Server-side, runtime. Where the dashboard fetches (fallback: legacy `NEXT_PUBLIC_API_URL`) |
+| `TRAILHEAD_TEAM_TOKEN` | dashboard | Server-side, runtime. The team secret; never sent to the browser (fallback: legacy `NEXT_PUBLIC_TEAM_TOKEN`) |
+| `trailhead.apiUrl` / `.teamToken` / `.userId` / `.shareUserId` | vscode-ext | VS Code settings. `userId` empty = random per-install id; `shareUserId: false` sends `anonymous` |
+| `TRAILHEAD_USER_ID` / `TRAILHEAD_SHARE_USER_ID` | mcp-server | Override the per-machine anonymous id, or `false` to send `anonymous` (see SELFHOSTING.md → Security model) |
+| `TRAILHEAD_API_URL` / `TRAILHEAD_TEAM_FILE` / `TRAILHEAD_TEAM_TOKEN` | mcp-server | Per-repo MCP config. `init` writes `TEAM_FILE` (path to `.trailhead-team`); `TEAM_TOKEN` overrides it |
+
 ### Data management
 
 ```bash
