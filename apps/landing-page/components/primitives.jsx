@@ -1,6 +1,8 @@
 /* Shared primitives */
 const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
+const REPO_URL = 'https://github.com/Bogzx/LearnLoop';
+
 function Logomark({ size = 32, className = '' }) {
   const w = size * 1.6;
   return (
@@ -96,4 +98,4 @@ function Container({ children, className = '' }) {
   return <div className={`max-w-[1200px] mx-auto px-5 md:px-8 ${className}`}>{children}</div>;
 }
 
-Object.assign(window, { Logomark, Wordmark, SectionKicker, SectionTitle, Reveal, LiveDot, Orbs, Container });
+Object.assign(window, { REPO_URL, Logomark, Wordmark, SectionKicker, SectionTitle, Reveal, LiveDot, Orbs, Container });
