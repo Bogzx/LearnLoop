@@ -48,10 +48,16 @@ fix `.env`. It never quietly falls back to offline mode.
 ### Try it without a key (offline mode)
 
 ```bash
-TRAILHEAD_LLM=offline docker compose up
+TRAILHEAD_LLM=offline docker compose --profile demo up --build
 ```
 
-Same stack, no model, nothing sent to Google:
+Same stack, no model, nothing sent to Google. `--profile demo` also runs the
+`seed` service once, which fills the public demo team (`trailhead_demo_acme_2026`)
+with synthetic data, so the dashboard has something to show: a small wiki,
+four library prompts, and six days of prompt activity from three made-up users
+(`packages/db/seed.mjs`; re-run it to move the activity window up to now).
+Drop `--profile demo` for an empty stack.
+
 
 - `/score` and `/coach` use the rule-based scorer in
   `packages/scoring/src/heuristic-score.mjs`. It reads surface features (file
