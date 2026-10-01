@@ -284,6 +284,14 @@ test('COACH_DIRECTIVE references the 4 hero tool names', () => {
   assert.doesNotMatch(COACH_DIRECTIVE, /wiki_context_for/);
 });
 
+test('the directive adds to the agent tools: no replacing Read/Grep, no unasked bootstrap, short', () => {
+  assert.doesNotMatch(COACH_DIRECTIVE, /REPLACE|INSTEAD OF|MANDATORY/);
+  assert.match(COACH_DIRECTIVE, /don't replace\s+reading the code/);
+  assert.match(COACH_DIRECTIVE, /once at the start of each new code task/);
+  assert.match(COACH_DIRECTIVE, /don't start it unasked/);
+  assert.ok(COACH_DIRECTIVE.split('\n').length <= 60, `${COACH_DIRECTIVE.split('\n').length} lines`);
+});
+
 test('directive section is replaced (not duplicated) when content changes', async () => {
   const home = makeHome();
   const cwd = makeCwd();
