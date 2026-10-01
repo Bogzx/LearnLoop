@@ -1,19 +1,23 @@
-# scoring — Gemini prompt templates
+# scoring — prompt templates and pure helpers
 
-Locked prompts that score, augment, and extract. Versioned in one place
-so `apps/api` and `apps/mcp-server` use the same wording. Prompt-cache
-friendly — system prompts stay byte-stable across calls so cache hit
-rate is high.
+Locked prompts and the pure functions around them, versioned in one place so
+`apps/api`, `apps/mcp-server` and the browser extension use the same wording.
+System prompts stay byte-stable across calls so the prompt cache hits.
 
-**Templates (spec §18):**
-- `score-prompt.ts`   — 5-dim Gemini scorer (lock by hour 4, §18 #1)
-- `augment-prompt.ts` — "Have Claude clarify" template (§6, §18 #2)
-- `extract-prompt.ts` — learning-extraction prompt (§18 #3)
-- `topic-prompt.ts`   — Prompt Diff topic extraction (§18 #4)
+Runtime code is plain ESM (`.mjs`, no build step) with a `.d.mts` declaration
+next to each file; `declarations-match.test.mjs` fails if the two drift.
 
-**Why a separate package:** `apps/api` uses score, augment, topic.
-Sharing prevents the "three slightly different scoring prompts" failure
-mode and keeps cost-per-call predictable.
+| File | What it holds |
+|---|---|
+| `score-prompt.mjs` | The 5-dimension scorer's system prompt (the rubric) |
+| `score-helpers.mjs` | `buildScoreUserPrompt`, `buildAugmentation` ("have Claude clarify") |
+| `teach-prompt.mjs` | System prompt for the coaching rewrite (`/coach`) |
+| `teach-templates.mjs` | Per-dimension teach text: title, definition, why, question |
+| `reveal-render.mjs` | Renderers for the teach / success / skip blocks `/coach` returns |
+| `topic-prompt.mjs` | Topic classifier prompt (`/diff` finds a team prompt on the same topic) |
+| `fence.mjs` | `fenceUntrusted`: wraps team-authored text before it reaches an LLM |
+| `normalize.mjs` | Text normalisation behind wiki dedup |
+| `path-helpers.mjs` | `normalizePath`, `ancestorPaths` |
+| `models.mjs` | Model id per call site (single source of truth) |
 
-**Spec refs:** §5 (scoring prompt template), §18 (open implementation
-questions — which prompts must be locked when)
+**Spec refs:** §5 (scoring prompt template), §18 (which prompts are locked).
